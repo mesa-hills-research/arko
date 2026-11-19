@@ -1,38 +1,42 @@
 size 80 24
 cursor 0 0 hidden
-text 0 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 0 2 78 dim
-text 1 ""
-text 2 "▎ Check the quoting and the lexer, and update the docs"
-style 2 0 2 fg=cyan
+text 0 "  │ Project    AGENTS.md                                                     │"
+style 0 2 15 dim
+style 0 76 78 dim
+text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 1 2 15 dim
+style 1 76 78 dim
+text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 2 2 78 dim
 text 3 ""
-text 4 "  I'll start three workers."
+text 4 "▎ Check the quoting and the lexer, and update the docs"
+style 4 0 2 fg=cyan
 text 5 ""
-text 6 "▸ r1 Check the quoting tests · running · 6 tool calls · 1m"
-style 6 0 2 dim
-style 6 2 5 bold
-style 6 28 31 dim
-style 6 31 38 fg=cyan
-style 6 38 58 dim
-text 7 "▸ r2 Read the lexer · 5 tool calls · 48s"
-style 7 0 2 dim
-style 7 2 5 bold
-style 7 19 40 dim
-text 8 "▸ r3 Update the docs · failed · 3 tool calls · 9s"
+text 6 "  I'll start three workers."
+text 7 ""
+text 8 "▸ r1 Check the quoting tests · running · 6 tool calls · 1m"
 style 8 0 2 dim
 style 8 2 5 bold
-style 8 20 23 dim
-style 8 23 29 fg=red
-style 8 29 49 dim
-text 9 "▸ r2 reported"
+style 8 28 31 dim
+style 8 31 38 fg=cyan
+style 8 38 58 dim
+text 9 "▸ r2 Read the lexer · 5 tool calls · 48s"
 style 9 0 2 dim
 style 9 2 5 bold
-text 10 ""
-text 11 "⣟ Working…"
-style 11 0 1 dim
-style 11 2 4 dim
-style 11 8 10 dim
-text 12 ""
+style 9 19 40 dim
+text 10 "▸ r3 Update the docs · failed · 3 tool calls · 9s"
+style 10 0 2 dim
+style 10 2 5 bold
+style 10 20 23 dim
+style 10 23 29 fg=red
+style 10 29 49 dim
+text 11 "▸ r2 reported"
+style 11 0 2 dim
+style 11 2 5 bold
+text 12 "⣟ Working…"
+style 12 0 1 dim
+style 12 2 4 dim
+style 12 8 10 dim
 text 13 "────────────────────────────────────────────────────────────────────────────────"
 style 13 0 80 dim
 text 14 " ● working 1m00s · 142k/250k · main: $3.20   Enter  view   Esc  back to the box"

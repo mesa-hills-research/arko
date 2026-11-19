@@ -1,43 +1,45 @@
 size 80 24
 cursor 3 22 visible default
-text 0 "  │ Workers    parallel workers                                              │"
+text 0 "  │ Model      gpt-6-luna (high effort)                                      │"
 style 0 2 15 dim
 style 0 76 78 dim
-text 1 "  │ Workspace  /home/ada/proj                                                │"
+text 1 "  │ Workers    parallel workers                                              │"
 style 1 2 15 dim
 style 1 76 78 dim
-text 2 "  │ Session    20261110-101010-abcd                                          │"
+text 2 "  │ Workspace  /home/ada/proj                                                │"
 style 2 2 15 dim
 style 2 76 78 dim
-text 3 "  │ Project    AGENTS.md                                                     │"
+text 3 "  │ Session    20261110-101010-abcd                                          │"
 style 3 2 15 dim
 style 3 76 78 dim
-text 4 "  │ Tools      2 skills · 1 MCP server                                       │"
+text 4 "  │ Project    AGENTS.md                                                     │"
 style 4 2 15 dim
 style 4 76 78 dim
-text 5 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 5 2 78 dim
-text 6 ""
-text 7 "▎ Fix the parser's failing tests"
-style 7 0 2 fg=cyan
-text 8 ""
-text 9 "  I'll read the failing test and the parser first."
-text 10 ""
-text 11 "▸ 4 tool calls · 1 failed · running"
-style 11 0 2 dim
-style 11 14 25 fg=red
-style 11 25 35 dim
-text 12 "! retrying in 2 s"
-style 12 0 17 fg=yellow
-text 13 ""
-text 14 "  The parser skipped the blank line at the end of a file. I changed the loop,"
-text 15 "  and now I run the tests again."
-text 16 ""
-text 17 "⣟ Running cargo test…"
-style 17 0 1 dim
-style 17 2 10 dim
-style 17 13 21 dim
-text 18 ""
+text 5 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 5 2 15 dim
+style 5 76 78 dim
+text 6 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 6 2 78 dim
+text 7 ""
+text 8 "▎ Fix the parser's failing tests"
+style 8 0 2 fg=cyan
+text 9 ""
+text 10 "  I'll read the failing test and the parser first."
+text 11 ""
+text 12 "▸ 4 tool calls · 1 failed · running"
+style 12 0 2 dim
+style 12 14 25 fg=red
+style 12 25 35 dim
+text 13 "! retrying in 2 s"
+style 13 0 17 fg=yellow
+text 14 ""
+text 15 "  The parser skipped the blank line at the end of a file. I changed the loop,"
+text 16 "  and now I run the tests again."
+text 17 ""
+text 18 "⣟ Running cargo test…"
+style 18 0 1 dim
+style 18 2 10 dim
+style 18 13 21 dim
 text 19 "────────────────────────────────────────────────────────────────────────────────"
 style 19 0 80 dim
 text 20 " ● working 1m00s · 142k/250k · main: $3.20 · messages              Ctrl+C  stop"

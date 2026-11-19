@@ -1,47 +1,51 @@
 size 80 24
 cursor 0 0 hidden
-text 0 "  │ Tools ┌ Quit Arko ───────────────────────────────────────────────┐       │"
+text 0 "  │ Sessio┌ Quit Arko ───────────────────────────────────────────────┐       │"
 style 0 2 10 dim
 style 0 11 22 bold
 style 0 76 78 dim
-text 1 "  └───────│                                                          │───────┘"
+text 1 "  │ Projec│                                                          │       │"
 style 1 2 10 dim
-style 1 70 78 dim
-text 2 "          │ 2 background jobs are running. They stop when Arko       │"
-text 3 "▎ Check th│ exits.                                                   │"
-style 3 0 2 fg=cyan
+style 1 76 78 dim
+text 2 "  │ Tools │ 2 background jobs are running. They stop when Arko       │       │"
+style 2 2 10 dim
+style 2 76 78 dim
+text 3 "  └───────│ exits.                                                   │───────┘"
+style 3 2 10 dim
+style 3 70 78 dim
 text 4 "          │                                                          │"
-text 5 "  I'll sta│   cargo watch -x test                                 2m │"
+text 5 "▎ Check th│   cargo watch -x test                                 2m │"
+style 5 0 2 fg=cyan
 style 5 66 68 dim
 text 6 "          │   npm run dev                                      1h 1m │"
 style 6 63 68 dim
-text 7 "▸ r1 Check│                                                          │"
-style 7 0 2 dim
-style 7 2 5 bold
-text 8 "▸ r2 Read │ Quit now?                                                │"
-style 8 0 2 dim
-style 8 2 5 bold
-text 9 "▸ r3 Updat│                                                          │"
+text 7 "  I'll sta│                                                          │"
+text 8 "          │ Quit now?                                                │"
+text 9 "▸ r1 Check│                                                          │"
 style 9 0 2 dim
 style 9 2 5 bold
-text 10 "▸ r2 repor│  Yes    No      [x] Don't ask again                      │"
+text 10 "▸ r2 Read │  Yes    No      [x] Don't ask again                      │"
 style 10 0 2 dim
 style 10 2 5 bold
 style 10 12 17 reverse
 style 10 19 23 reverse
 style 10 27 48 reverse
-text 11 "          │                                                          │"
-text 12 "⣟ Working…└────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
-style 12 0 1 dim
-style 12 2 4 dim
-style 12 8 10 dim
+text 11 "▸ r3 Updat│                                                          │"
+style 11 0 2 dim
+style 11 2 5 bold
+text 12 "▸ r2 repor└────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
+style 12 0 2 dim
+style 12 2 5 bold
 style 12 29 34 reverse
 style 12 34 39 dim
 style 12 41 48 reverse
 style 12 48 55 dim
 style 12 57 62 reverse
 style 12 62 67 dim
-text 13 ""
+text 13 "⣟ Working…"
+style 13 0 1 dim
+style 13 2 4 dim
+style 13 8 10 dim
 text 14 "────────────────────────────────────────────────────────────────────────────────"
 style 14 0 80 dim
 text 15 " ● working 1m00s · 142k/250k · main: $3.20                         Ctrl+C  stop"

@@ -1,54 +1,49 @@
 size 40 24
 cursor 4 22 visible default
-text 0 "  │ Workspace  /home/ada/proj        │"
+text 0 "  │ Session    20261110-101010-abcd  │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 15 fg=#9d9d9d bg=#131313
 style 0 15 36 fg=#dedede bg=#131313
 style 0 36 38 fg=#303030 bg=#131313
 style 0 38 40 fg=#dedede bg=#131313
-text 1 "  │ Session    20261110-101010-abcd  │"
+text 1 "  │ Project    AGENTS.md             │"
 style 1 0 2 fg=#dedede bg=#131313
 style 1 2 4 fg=#303030 bg=#131313
 style 1 4 15 fg=#9d9d9d bg=#131313
 style 1 15 36 fg=#dedede bg=#131313
 style 1 36 38 fg=#303030 bg=#131313
 style 1 38 40 fg=#dedede bg=#131313
-text 2 "  │ Project    AGENTS.md             │"
+text 2 "  │ Tools      2 skills · 1 MCP      │"
 style 2 0 2 fg=#dedede bg=#131313
 style 2 2 4 fg=#303030 bg=#131313
 style 2 4 15 fg=#9d9d9d bg=#131313
 style 2 15 36 fg=#dedede bg=#131313
 style 2 36 38 fg=#303030 bg=#131313
 style 2 38 40 fg=#dedede bg=#131313
-text 3 "  │ Tools      2 skills · 1 MCP      │"
+text 3 "  │            server                │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 4 fg=#303030 bg=#131313
 style 3 4 15 fg=#9d9d9d bg=#131313
 style 3 15 36 fg=#dedede bg=#131313
 style 3 36 38 fg=#303030 bg=#131313
 style 3 38 40 fg=#dedede bg=#131313
-text 4 "  │            server                │"
+text 4 "  └──────────────────────────────────┘"
 style 4 0 2 fg=#dedede bg=#131313
-style 4 2 4 fg=#303030 bg=#131313
-style 4 4 15 fg=#9d9d9d bg=#131313
-style 4 15 36 fg=#dedede bg=#131313
-style 4 36 38 fg=#303030 bg=#131313
+style 4 2 38 fg=#303030 bg=#131313
 style 4 38 40 fg=#dedede bg=#131313
-text 5 "  └──────────────────────────────────┘"
-style 5 0 2 fg=#dedede bg=#131313
-style 5 2 38 fg=#303030 bg=#131313
-style 5 38 40 fg=#dedede bg=#131313
-text 6 ""
-style 6 0 40 fg=#dedede bg=#131313
-text 7 "▎ Add a README with a usage section"
-style 7 0 2 fg=#419cff bg=#202020
-style 7 2 40 fg=#dedede bg=#202020
-text 8 ""
+text 5 ""
+style 5 0 40 fg=#dedede bg=#131313
+text 6 "▎ Add a README with a usage section"
+style 6 0 2 fg=#419cff bg=#202020
+style 6 2 40 fg=#dedede bg=#202020
+text 7 ""
+style 7 0 40 fg=#dedede bg=#131313
+text 8 "  Done. The README has an install"
 style 8 0 40 fg=#dedede bg=#131313
-text 9 "  Done. The README has an install"
+text 9 "  section and a usage example."
 style 9 0 40 fg=#dedede bg=#131313
-text 10 "  section and a usage example."
+text 10 ""
 style 10 0 40 fg=#dedede bg=#131313
 text 11 "   /new                   start a new"
 style 11 0 40 fg=#f2f9ff bg=#006ee5

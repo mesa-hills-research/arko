@@ -1,41 +1,45 @@
 size 80 24
 cursor 0 0 hidden
-text 0 "  │ Tools      2 skills · 1 MCP server                                       │"
+text 0 "  │ Session    20261110-101010-abcd                                          │"
 style 0 2 15 dim
 style 0 76 78 dim
-text 1 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 1 2 78 dim
-text 2 ""
-text 3 "▎ Check the quoting and the lexer, and update the docs"
-style 3 0 2 fg=cyan
+text 1 "  │ Project    AGENTS.md                                                     │"
+style 1 2 15 dim
+style 1 76 78 dim
+text 2 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 2 2 15 dim
+style 2 76 78 dim
+text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 3 2 78 dim
 text 4 ""
-text 5 "  I'll start three workers."
+text 5 "▎ Check the quoting and the lexer, and update the docs"
+style 5 0 2 fg=cyan
 text 6 ""
-text 7 "▸ r1 Check the quoting tests · running · 6 tool calls · 1m"
-style 7 0 2 dim
-style 7 2 5 bold
-style 7 28 31 dim
-style 7 31 38 fg=cyan
-style 7 38 58 dim
-text 8 "▸ r2 Read the lexer · 5 tool calls · 48s"
-style 8 0 2 dim
-style 8 2 5 bold
-style 8 19 40 dim
-text 9 "▸ r3 Update the docs · failed · 3 tool calls · 9s"
+text 7 "  I'll start three workers."
+text 8 ""
+text 9 "▸ r1 Check the quoting tests · running · 6 tool calls · 1m"
 style 9 0 2 dim
 style 9 2 5 bold
-style 9 20 23 dim
-style 9 23 29 fg=red
-style 9 29 49 dim
-text 10 "▸ r2 reported"
+style 9 28 31 dim
+style 9 31 38 fg=cyan
+style 9 38 58 dim
+text 10 "▸ r2 Read the lexer · 5 tool calls · 48s"
 style 10 0 2 dim
 style 10 2 5 bold
-text 11 ""
-text 12 "⣟ Working…"
-style 12 0 1 dim
-style 12 2 4 dim
-style 12 8 10 dim
-text 13 ""
+style 10 19 40 dim
+text 11 "▸ r3 Update the docs · failed · 3 tool calls · 9s"
+style 11 0 2 dim
+style 11 2 5 bold
+style 11 20 23 dim
+style 11 23 29 fg=red
+style 11 29 49 dim
+text 12 "▸ r2 reported"
+style 12 0 2 dim
+style 12 2 5 bold
+text 13 "⣟ Working…"
+style 13 0 1 dim
+style 13 2 4 dim
+style 13 8 10 dim
 text 14 "────────────────────────────────────────────────────────────────────────────────"
 style 14 0 80 dim
 text 15 " ● working 1m00s · 142k/250k · main: $3.20   Enter  view   Esc  back to the box"

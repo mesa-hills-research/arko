@@ -52,14 +52,14 @@ style 16 29 30 dim
 text 17 "▸ r2 reported                 │                                                          │"
 style 17 0 2 dim
 style 17 2 5 bold
-text 18 "                              │  Yes    No      [x] Don't ask again                      │"
+text 18 "⣟ Working…                    │  Yes    No      [x] Don't ask again                      │"
+style 18 0 1 dim
+style 18 2 4 dim
+style 18 8 10 dim
 style 18 32 37 reverse
 style 18 39 43 reverse
 style 18 47 68 reverse
-text 19 "⣟ Working…                    │                                                          │"
-style 19 0 1 dim
-style 19 2 4 dim
-style 19 8 10 dim
+text 19 "                              │                                                          │"
 text 20 "                              └────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
 style 20 49 54 reverse
 style 20 54 59 dim

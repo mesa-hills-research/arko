@@ -1,9 +1,9 @@
 //! What each input does to following, from each state, on termelon's
 //! emulator through the app. The reader chooses to follow the end or to
 //! read, and a press holds the view. A frame follows when they chose to,
-//! nothing holds the view and the end shows. Each input of the table runs
-//! from each state, alone and with output in the same frame, and every
-//! frame is checked against what those three say.
+//! nothing holds the view and the end shows down to its blank row. Each
+//! input of the table runs from each state, alone and with output in the
+//! same frame, and every frame is checked against what those three say.
 
 use termelon::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use termelon::testing::TestTerminal;
@@ -179,16 +179,16 @@ impl Run {
     }
 
     /// The checks of every frame. The view follows exactly when the reader
-    /// chose to, nothing holds it and the end shows. The marker shows
-    /// exactly when it doesn't follow and the end is off the screen. Text
-    /// shows while there is any.
+    /// chose to, nothing holds it and the end shows down to its blank row.
+    /// The marker shows exactly when it doesn't follow and the end's last
+    /// line is off the screen. Text shows while there is any.
     fn check(&self, what: &str) {
         let t = &self.s.app.transcript;
-        let shows = t.end_shows();
+        let (shows, bottom) = (t.end_shows(), t.bottom_shows());
         assert_eq!(
             self.following(),
-            !self.reading() && !self.held() && shows,
-            "{what}: following, reading {}, held {}, end shows {shows}\n{}",
+            !self.reading() && !self.held() && bottom,
+            "{what}: following, reading {}, held {}, bottom shows {bottom}\n{}",
             self.reading(),
             self.held(),
             self.rows.join("\n")
@@ -764,6 +764,81 @@ fn a_double_click_on_a_tall_fold_leaves_a_follower_following() {
     assert!(run.following(), "{}", after.join("\n"));
 }
 
+/// A follower opens the last fold, and its last line comes to the screen's
+/// last row, with only the end's blank row below. The end's last line
+/// shows, so no marker does, but the view waits rather than follow, as it
+/// would for a line of the fold below the screen, so the line clicked
+/// stays where it is, also in the next frame. A scroll down shows the blank
+/// row and follows. Output instead comes below with a marker of its new
+/// lines, and a scroll down to the end follows.
+#[test]
+fn a_fold_opened_to_the_last_row_keeps_its_line_and_shows_no_marker() {
+    for output in [0, 5] {
+        let what = format!("{output} lines after the open");
+        let mut thought = None;
+        let mut run = Run::bare(|run| {
+            run.reply(1);
+            let item = run.s.item(Kind::Thinking, "first");
+            run.s.add(item.clone());
+            thought = Some(item);
+        });
+        run.check(&what);
+        assert!(run.following(), "{what}");
+        let y = run.row_of("first").expect("the thought shows");
+        // As many lines as fill the rows from its own to the last.
+        let height = run.rows.len();
+        let mut item = thought.expect("the thought");
+        item.text = (0..height - y)
+            .map(|n| format!("line{n} of the thought"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let first = "line0 of the thought";
+        let last = format!("line{} of the thought", height - y - 1);
+        run.app().update(Update::Change(item), Activity::default);
+        let closed = run.draw();
+        run.check(&what);
+        assert!(closed[y].contains(first), "{what}\n{}", closed.join("\n"));
+        run.click(y);
+        let open = run.draw();
+        run.check(&what);
+        assert!(open[y].contains(first), "{what}: the line clicked stays");
+        assert!(
+            open[height - 1].contains(&last),
+            "{what}: its last line on the last row\n{}",
+            open.join("\n")
+        );
+        let t = &run.s.app.transcript;
+        assert!(t.end_shows() && !t.bottom_shows(), "{what}");
+        assert!(!run.reading() && !run.held() && !run.following(), "{what}");
+        assert_eq!(run.marker(), None, "{what}: only the blank row is below");
+        let idle = run.draw();
+        run.check(&what);
+        assert_eq!(idle, open, "{what}: the next frame moves nothing");
+        assert!(!run.following() && run.marker().is_none(), "{what}");
+        if output > 0 {
+            run.output(output);
+            let more = run.draw();
+            run.check(&what);
+            check_moves(Moves::Same, &open, &more, None, &what);
+            assert_eq!(
+                run.new_lines(),
+                Some(output + 1),
+                "{what}: the output and the blank row above it\n{}",
+                more.join("\n")
+            );
+            assert!(!run.following(), "{what}");
+        }
+        run.steps(MouseEventKind::ScrollDown, 40);
+        let end = run.draw();
+        run.check(&what);
+        assert!(run.following(), "{what}\n{}", end.join("\n"));
+        assert_eq!(end[height - 1], "", "{what}: the end's blank row shows");
+        if output == 0 {
+            assert!(end[height - 2].contains(&last), "{what}: one row up");
+        }
+    }
+}
+
 /// A flick down to the end and a click in one frame follow.
 #[test]
 fn a_flick_to_the_end_and_a_click_in_one_frame_follow() {
@@ -909,10 +984,11 @@ fn output_in_the_frame_following_stops_counts() {
 #[test]
 fn the_marker_counts_only_rows_below_the_screen() {
     let mut run = State::Rv.make(View::Full);
-    run.output(7);
+    run.output(8);
     run.draw();
     run.check("output");
-    // (Seven rows, six of them in the blank rows.)
+    // (Eight rows, one where the end's blank row was and six in the blank
+    // rows. The end's blank row is no new line.)
     assert_eq!(run.new_lines(), Some(1));
     run.steps(MouseEventKind::ScrollDown, 1);
     run.draw();
@@ -1417,11 +1493,12 @@ fn the_place_kept_for_the_views_goes_at_another_width() {
 impl Run {
     fn state(&self) -> String {
         format!(
-            "choice {} · following {} · held {} · end shows {} · gap {} · marker {:?} · view {:?}",
+            "choice {} · following {} · held {} · end shows {} · bottom shows {} · gap {} · marker {:?} · view {:?}",
             if self.reading() { "read" } else { "follow" },
             self.following(),
             self.held(),
             self.s.app.transcript.end_shows(),
+            self.s.app.transcript.bottom_shows(),
             self.gap(),
             self.marker(),
             self.s.app.view,
@@ -1463,9 +1540,10 @@ fn shifts(before: &[String], after: &[String]) -> Vec<i64> {
 /// shorter end, Home, focus, Ctrl+O and the views round, Ctrl+G and keys
 /// on the rows, other sizes, the command menu, sending, a worker's view and
 /// back, and the marker. Every frame follows exactly when the reader chose
-/// to, nothing holds the view and the end shows, the marker shows exactly
-/// when it doesn't follow and the end is off the screen, and each input
-/// does to the choice and the lines what the table says.
+/// to, nothing holds the view and the end shows down to its blank row, the
+/// marker shows exactly when it doesn't follow and the end's last line is
+/// off the screen, and each input does to the choice and the lines what the
+/// table says.
 #[test]
 fn a_wider_reader_at_random_through_the_app() {
     let seeds: u64 = std::env::var("READER_SEEDS")
@@ -1484,7 +1562,9 @@ fn a_wider_reader_at_random_through_the_app() {
         for step in 0..steps {
             let before = p.rows.clone();
             let (reading, held, following) = (p.reading(), p.held(), p.following());
-            let (ends, gap) = (p.s.app.transcript.end_shows(), p.gap());
+            // (The end down to its blank row, where Esc and another view
+            // follow from.)
+            let (ends, gap) = (p.s.app.transcript.bottom_shows(), p.gap());
             let marker = p.marker();
             let focus = p.s.app.transcript.focus.is_some();
             let was = p.state();
@@ -1689,8 +1769,9 @@ fn a_wider_reader_at_random_through_the_app() {
                 continue;
             }
             // The frame follows exactly when the reader chose to, nothing
-            // holds the view and the end shows.
-            if p.following() != (!p.reading() && !p.held() && p.s.app.transcript.end_shows()) {
+            // holds the view and the end shows down to its blank row. The
+            // marker goes by the end's last line.
+            if p.following() != (!p.reading() && !p.held() && p.s.app.transcript.bottom_shows()) {
                 say("following isn't choice, hold and end", now.clone());
             }
             if p.s.app.transcript.drawn.marker.is_some()

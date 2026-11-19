@@ -130,8 +130,17 @@ style 17 30 31 fg=#303030 bg=#101010
 style 17 31 89 fg=#dedede bg=#101010
 style 17 89 90 fg=#303030 bg=#101010
 style 17 90 120 fg=#dedede bg=#131313
-text 18 "                              │  Yes    No      [ ] Don't ask again                      │"
-style 18 0 30 fg=#dedede bg=#131313
+text 18 "⣟ Working…                    │  Yes    No      [ ] Don't ask again                      │"
+style 18 0 1 fg=#9d9d9d bg=#131313
+style 18 1 2 fg=#dedede bg=#131313
+style 18 2 3 fg=#9d9d9d bg=#131313
+style 18 3 4 fg=#a1a1a1 bg=#131313
+style 18 4 5 fg=#bebebe bg=#131313
+style 18 5 7 fg=#dadada bg=#131313
+style 18 7 8 fg=#bebebe bg=#131313
+style 18 8 9 fg=#a1a1a1 bg=#131313
+style 18 9 10 fg=#9d9d9d bg=#131313
+style 18 10 30 fg=#dedede bg=#131313
 style 18 30 31 fg=#303030 bg=#101010
 style 18 31 32 fg=#dedede bg=#101010
 style 18 32 37 fg=#dedede bg=#232323
@@ -140,17 +149,8 @@ style 18 39 43 fg=#f2f9ff bg=#006ee5
 style 18 43 89 fg=#dedede bg=#101010
 style 18 89 90 fg=#303030 bg=#101010
 style 18 90 120 fg=#dedede bg=#131313
-text 19 "⣟ Working…                    │                                                          │"
-style 19 0 1 fg=#9d9d9d bg=#131313
-style 19 1 2 fg=#dedede bg=#131313
-style 19 2 3 fg=#9d9d9d bg=#131313
-style 19 3 4 fg=#a1a1a1 bg=#131313
-style 19 4 5 fg=#bebebe bg=#131313
-style 19 5 7 fg=#dadada bg=#131313
-style 19 7 8 fg=#bebebe bg=#131313
-style 19 8 9 fg=#a1a1a1 bg=#131313
-style 19 9 10 fg=#9d9d9d bg=#131313
-style 19 10 30 fg=#dedede bg=#131313
+text 19 "                              │                                                          │"
+style 19 0 30 fg=#dedede bg=#131313
 style 19 30 31 fg=#303030 bg=#101010
 style 19 31 89 fg=#dedede bg=#101010
 style 19 89 90 fg=#303030 bg=#101010

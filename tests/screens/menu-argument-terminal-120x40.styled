@@ -50,11 +50,11 @@ style 16 29 49 dim
 text 17 "▸ r2 reported"
 style 17 0 2 dim
 style 17 2 5 bold
-text 18 ""
-text 19 "⣟ Working…"
-style 19 0 1 dim
-style 19 2 4 dim
-style 19 8 10 dim
+text 18 "⣟ Working…"
+style 18 0 1 dim
+style 18 2 4 dim
+style 18 8 10 dim
+text 19 ""
 text 20 ""
 text 21 ""
 text 22 ""

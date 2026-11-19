@@ -1,21 +1,19 @@
 size 80 24
 cursor 6 13 visible default
-text 0 "  │ Project    AGENTS.md                                                     │"
+text 0 "  │ Tools      2 skills · 1 MCP server                                       │"
 style 0 2 15 dim
 style 0 76 78 dim
-text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
-style 1 2 15 dim
-style 1 76 78 dim
-text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 2 2 78 dim
-text 3 ""
-text 4 "? Arko asked 3 questions"
-style 4 0 2 fg=cyan
-style 4 2 24 dim
-text 5 ""
-text 6 "? Arko asked a question"
-style 6 0 2 fg=cyan
-style 6 2 23 dim
+text 1 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 1 2 78 dim
+text 2 ""
+text 3 "? Arko asked 3 questions"
+style 3 0 2 fg=cyan
+style 3 2 24 dim
+text 4 ""
+text 5 "? Arko asked a question"
+style 5 0 2 fg=cyan
+style 5 2 23 dim
+text 6 ""
 text 7 "┌ Question 1 of 4 ─────────────────────────────────────────────────────────────┐"
 style 7 0 1 fg=cyan
 style 7 1 18 fg=cyan bold

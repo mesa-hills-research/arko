@@ -3980,9 +3980,10 @@ mod tests {
             item.id = id as u64 + 1;
             app.update(Update::Item(item), Activity::default);
         }
-        // Eight rows of transcript, scrolled up to the block's lines.
+        // Eight rows of transcript, scrolled up to the block's lines (past
+        // the output's blank row at the end).
         screen(&mut app, 40, 13);
-        app.transcript.scroll(-4);
+        app.transcript.scroll(-5);
         let rows = screen(&mut app, 40, 13);
         assert_eq!(rows[0], "│ line 1");
         assert_eq!(rows[4], "│ … 6 more lines");

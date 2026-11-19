@@ -1,21 +1,19 @@
 size 80 24
 cursor 0 0 hidden
-text 0 "  │ Session    20261110-101010-abcd                                          │"
+text 0 "  │ Project    AGENTS.md                                                     │"
 style 0 2 15 dim
 style 0 76 78 dim
-text 1 "  │ Project    AGENTS.md                                                     │"
+text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
 style 1 2 15 dim
 style 1 76 78 dim
-text 2 "  │ Tools      2 skills · 1 MCP server                                       │"
-style 2 2 15 dim
-style 2 76 78 dim
-text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 3 2 78 dim
-text 4 ""
-text 5 "▎ Add a README with a usage section"
-style 5 0 2 fg=cyan
-text 6 ""
-text 7 "  Done. The README has an install section and a usage example."
+text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 2 2 78 dim
+text 3 ""
+text 4 "▎ Add a README with a usage section"
+style 4 0 2 fg=cyan
+text 5 ""
+text 6 "  Done. The README has an install section and a usage example."
+text 7 ""
 text 8 " 4 approvals       Space  select   A  all   Enter  approve all   R  reject all"
 style 8 0 12 fg=cyan bold
 style 8 18 25 reverse

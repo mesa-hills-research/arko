@@ -91,17 +91,17 @@ text 17 "▸ r2 reported"
 style 17 0 2 fg=idx:247 bg=idx:233
 style 17 2 5 fg=idx:253 bg=idx:233 bold
 style 17 5 120 fg=idx:253 bg=idx:233
-text 18 ""
-style 18 0 120 fg=idx:253 bg=idx:233
-text 19 "⣟ Working…"
-style 19 0 1 fg=idx:247 bg=idx:233
-style 19 1 2 fg=idx:253 bg=idx:233
-style 19 2 4 fg=idx:247 bg=idx:233
-style 19 4 5 fg=idx:250 bg=idx:233
-style 19 5 7 fg=idx:188 bg=idx:233
-style 19 7 8 fg=idx:250 bg=idx:233
-style 19 8 10 fg=idx:247 bg=idx:233
-style 19 10 120 fg=idx:253 bg=idx:233
+text 18 "⣟ Working…"
+style 18 0 1 fg=idx:247 bg=idx:233
+style 18 1 2 fg=idx:253 bg=idx:233
+style 18 2 4 fg=idx:247 bg=idx:233
+style 18 4 5 fg=idx:250 bg=idx:233
+style 18 5 7 fg=idx:188 bg=idx:233
+style 18 7 8 fg=idx:250 bg=idx:233
+style 18 8 10 fg=idx:247 bg=idx:233
+style 18 10 120 fg=idx:253 bg=idx:233
+text 19 ""
+style 19 0 120 fg=idx:253 bg=idx:233
 text 20 ""
 style 20 0 120 fg=idx:253 bg=idx:233
 text 21 ""

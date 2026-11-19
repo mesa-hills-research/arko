@@ -1,85 +1,90 @@
 size 60 24
 cursor 3 22 visible default
-text 0 "  │ Workers    parallel workers                          │"
+text 0 "  │ Model      gpt-6-luna (high effort)                  │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 15 fg=#9d9d9d bg=#131313
 style 0 15 56 fg=#dedede bg=#131313
 style 0 56 58 fg=#303030 bg=#131313
 style 0 58 60 fg=#dedede bg=#131313
-text 1 "  │ Workspace  /home/ada/proj                            │"
+text 1 "  │ Workers    parallel workers                          │"
 style 1 0 2 fg=#dedede bg=#131313
 style 1 2 4 fg=#303030 bg=#131313
 style 1 4 15 fg=#9d9d9d bg=#131313
 style 1 15 56 fg=#dedede bg=#131313
 style 1 56 58 fg=#303030 bg=#131313
 style 1 58 60 fg=#dedede bg=#131313
-text 2 "  │ Session    20261110-101010-abcd                      │"
+text 2 "  │ Workspace  /home/ada/proj                            │"
 style 2 0 2 fg=#dedede bg=#131313
 style 2 2 4 fg=#303030 bg=#131313
 style 2 4 15 fg=#9d9d9d bg=#131313
 style 2 15 56 fg=#dedede bg=#131313
 style 2 56 58 fg=#303030 bg=#131313
 style 2 58 60 fg=#dedede bg=#131313
-text 3 "  │ Project    AGENTS.md                                 │"
+text 3 "  │ Session    20261110-101010-abcd                      │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 4 fg=#303030 bg=#131313
 style 3 4 15 fg=#9d9d9d bg=#131313
 style 3 15 56 fg=#dedede bg=#131313
 style 3 56 58 fg=#303030 bg=#131313
 style 3 58 60 fg=#dedede bg=#131313
-text 4 "  │ Tools      2 skills · 1 MCP server                   │"
+text 4 "  │ Project    AGENTS.md                                 │"
 style 4 0 2 fg=#dedede bg=#131313
 style 4 2 4 fg=#303030 bg=#131313
 style 4 4 15 fg=#9d9d9d bg=#131313
 style 4 15 56 fg=#dedede bg=#131313
 style 4 56 58 fg=#303030 bg=#131313
 style 4 58 60 fg=#dedede bg=#131313
-text 5 "  └──────────────────────────────────────────────────────┘"
+text 5 "  │ Tools      2 skills · 1 MCP server                   │"
 style 5 0 2 fg=#dedede bg=#131313
-style 5 2 58 fg=#303030 bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 56 fg=#dedede bg=#131313
+style 5 56 58 fg=#303030 bg=#131313
 style 5 58 60 fg=#dedede bg=#131313
-text 6 ""
-style 6 0 60 fg=#dedede bg=#131313
-text 7 "▎ Fix the parser's failing tests"
-style 7 0 2 fg=#419cff bg=#202020
-style 7 2 60 fg=#dedede bg=#202020
-text 8 ""
-style 8 0 60 fg=#dedede bg=#131313
-text 9 "  I'll read the failing test and the parser first."
+text 6 "  └──────────────────────────────────────────────────────┘"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 58 fg=#303030 bg=#131313
+style 6 58 60 fg=#dedede bg=#131313
+text 7 ""
+style 7 0 60 fg=#dedede bg=#131313
+text 8 "▎ Fix the parser's failing tests"
+style 8 0 2 fg=#419cff bg=#202020
+style 8 2 60 fg=#dedede bg=#202020
+text 9 ""
 style 9 0 60 fg=#dedede bg=#131313
-text 10 ""
+text 10 "  I'll read the failing test and the parser first."
 style 10 0 60 fg=#dedede bg=#131313
-text 11 "▸ 4 tool calls · 1 failed · running"
-style 11 0 2 fg=#9d9d9d bg=#131313
-style 11 2 14 fg=#dedede bg=#131313
-style 11 14 25 fg=#ff5257 bg=#131313
-style 11 25 35 fg=#9d9d9d bg=#131313
-style 11 35 60 fg=#dedede bg=#131313
-text 12 "! retrying in 2 s"
-style 12 0 17 fg=#ffc600 bg=#131313
-style 12 17 60 fg=#dedede bg=#131313
-text 13 ""
-style 13 0 60 fg=#dedede bg=#131313
-text 14 "  The parser skipped the blank line at the end of a file. I"
+text 11 ""
+style 11 0 60 fg=#dedede bg=#131313
+text 12 "▸ 4 tool calls · 1 failed · running"
+style 12 0 2 fg=#9d9d9d bg=#131313
+style 12 2 14 fg=#dedede bg=#131313
+style 12 14 25 fg=#ff5257 bg=#131313
+style 12 25 35 fg=#9d9d9d bg=#131313
+style 12 35 60 fg=#dedede bg=#131313
+text 13 "! retrying in 2 s"
+style 13 0 17 fg=#ffc600 bg=#131313
+style 13 17 60 fg=#dedede bg=#131313
+text 14 ""
 style 14 0 60 fg=#dedede bg=#131313
-text 15 "  changed the loop, and now I run the tests again."
+text 15 "  The parser skipped the blank line at the end of a file. I"
 style 15 0 60 fg=#dedede bg=#131313
-text 16 ""
+text 16 "  changed the loop, and now I run the tests again."
 style 16 0 60 fg=#dedede bg=#131313
-text 17 "⣟ Running cargo test…"
-style 17 0 1 fg=#9d9d9d bg=#131313
-style 17 1 2 fg=#dedede bg=#131313
-style 17 2 9 fg=#9d9d9d bg=#131313
-style 17 9 10 fg=#adadad bg=#131313
-style 17 10 11 fg=#cecece bg=#131313
-style 17 11 12 fg=#dedede bg=#131313
-style 17 12 13 fg=#cecece bg=#131313
-style 17 13 14 fg=#adadad bg=#131313
-style 17 14 21 fg=#9d9d9d bg=#131313
-style 17 21 60 fg=#dedede bg=#131313
-text 18 ""
-style 18 0 60 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 60 fg=#dedede bg=#131313
+text 18 "⣟ Running cargo test…"
+style 18 0 1 fg=#9d9d9d bg=#131313
+style 18 1 2 fg=#dedede bg=#131313
+style 18 2 9 fg=#9d9d9d bg=#131313
+style 18 9 10 fg=#adadad bg=#131313
+style 18 10 11 fg=#cecece bg=#131313
+style 18 11 12 fg=#dedede bg=#131313
+style 18 12 13 fg=#cecece bg=#131313
+style 18 13 14 fg=#adadad bg=#131313
+style 18 14 21 fg=#9d9d9d bg=#131313
+style 18 21 60 fg=#dedede bg=#131313
 text 19 "────────────────────────────────────────────────────────────"
 style 19 0 60 fg=#303030 bg=#131313
 text 20 " ● working 1m00s · 142k/250k · main: $3.20 · messages"

@@ -91,19 +91,19 @@ text 17 "▸ r2 reported"
 style 17 0 2 fg=#9d9d9d bg=#131313
 style 17 2 5 fg=#dedede bg=#131313 bold
 style 17 5 120 fg=#dedede bg=#131313
-text 18 ""
-style 18 0 120 fg=#dedede bg=#131313
-text 19 "⣟ Working…"
-style 19 0 1 fg=#9d9d9d bg=#131313
-style 19 1 2 fg=#dedede bg=#131313
-style 19 2 3 fg=#9d9d9d bg=#131313
-style 19 3 4 fg=#a1a1a1 bg=#131313
-style 19 4 5 fg=#bebebe bg=#131313
-style 19 5 7 fg=#dadada bg=#131313
-style 19 7 8 fg=#bebebe bg=#131313
-style 19 8 9 fg=#a1a1a1 bg=#131313
-style 19 9 10 fg=#9d9d9d bg=#131313
-style 19 10 120 fg=#dedede bg=#131313
+text 18 "⣟ Working…"
+style 18 0 1 fg=#9d9d9d bg=#131313
+style 18 1 2 fg=#dedede bg=#131313
+style 18 2 3 fg=#9d9d9d bg=#131313
+style 18 3 4 fg=#a1a1a1 bg=#131313
+style 18 4 5 fg=#bebebe bg=#131313
+style 18 5 7 fg=#dadada bg=#131313
+style 18 7 8 fg=#bebebe bg=#131313
+style 18 8 9 fg=#a1a1a1 bg=#131313
+style 18 9 10 fg=#9d9d9d bg=#131313
+style 18 10 120 fg=#dedede bg=#131313
+text 19 ""
+style 19 0 120 fg=#dedede bg=#131313
 text 20 ""
 style 20 0 120 fg=#dedede bg=#131313
 text 21 ""

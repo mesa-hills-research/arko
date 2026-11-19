@@ -5179,7 +5179,8 @@ pub(super) mod tests {
         app.focus_changed(false);
         rows(&mut app);
         app.transcript.apply(crate::remote::Update::Item(line(6)));
-        assert_eq!(rows(&mut app)[3], "  line 6");
+        // (The output has a blank row under it at the end.)
+        assert_eq!(rows(&mut app)[2..], ["  line 6", ""]);
     }
 
     /// Losing the focus with no press doesn't follow again, also where a
@@ -5227,13 +5228,18 @@ pub(super) mod tests {
         app.focus_changed(false);
         assert_eq!(rows(&mut app), up);
         assert!(!app.transcript.following());
-        // What comes next waits below.
+        // What comes next waits below, filling the blank row under the end
+        // first.
         for id in 12..=14 {
             let text = format!("more {id}");
             app.transcript
                 .apply(crate::remote::Update::Item(line(id, &text)));
         }
-        assert_eq!(rows(&mut app)[..3], up[..3]);
+        assert_eq!(up[2], "");
+        assert_eq!(
+            rows(&mut app)[..3],
+            [up[0].as_str(), up[1].as_str(), "  more 12"]
+        );
     }
 
     /// What a check of the ways finds while the names menu waits behind

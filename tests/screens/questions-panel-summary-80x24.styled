@@ -1,35 +1,30 @@
 size 80 24
 cursor 0 0 hidden
-text 0 "  │ Project    AGENTS.md                                                     │"
+text 0 "  │ Tools      2 skills · 1 MCP server                                       │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 15 fg=#9d9d9d bg=#131313
 style 0 15 76 fg=#dedede bg=#131313
 style 0 76 78 fg=#303030 bg=#131313
 style 0 78 80 fg=#dedede bg=#131313
-text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
+text 1 "  └──────────────────────────────────────────────────────────────────────────┘"
 style 1 0 2 fg=#dedede bg=#131313
-style 1 2 4 fg=#303030 bg=#131313
-style 1 4 15 fg=#9d9d9d bg=#131313
-style 1 15 76 fg=#dedede bg=#131313
-style 1 76 78 fg=#303030 bg=#131313
+style 1 2 78 fg=#303030 bg=#131313
 style 1 78 80 fg=#dedede bg=#131313
-text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 2 0 2 fg=#dedede bg=#131313
-style 2 2 78 fg=#303030 bg=#131313
-style 2 78 80 fg=#dedede bg=#131313
-text 3 ""
-style 3 0 80 fg=#dedede bg=#131313
-text 4 "? Arko asked 3 questions"
-style 4 0 2 fg=#419cff bg=#131313
-style 4 2 24 fg=#9d9d9d bg=#131313
-style 4 24 80 fg=#dedede bg=#131313
-text 5 ""
-style 5 0 80 fg=#dedede bg=#131313
-text 6 "? Arko asked a question"
-style 6 0 2 fg=#419cff bg=#131313
-style 6 2 23 fg=#9d9d9d bg=#131313
-style 6 23 80 fg=#dedede bg=#131313
+text 2 ""
+style 2 0 80 fg=#dedede bg=#131313
+text 3 "? Arko asked 3 questions"
+style 3 0 2 fg=#419cff bg=#131313
+style 3 2 24 fg=#9d9d9d bg=#131313
+style 3 24 80 fg=#dedede bg=#131313
+text 4 ""
+style 4 0 80 fg=#dedede bg=#131313
+text 5 "? Arko asked a question"
+style 5 0 2 fg=#419cff bg=#131313
+style 5 2 23 fg=#9d9d9d bg=#131313
+style 5 23 80 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 80 fg=#dedede bg=#131313
 text 7 "┌ Your answers ────────────────────────────────────────────────────────────────┐"
 style 7 0 1 fg=#419cff bg=#131313
 style 7 1 15 fg=#419cff bg=#131313 bold

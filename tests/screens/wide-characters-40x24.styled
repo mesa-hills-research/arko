@@ -1,78 +1,73 @@
 size 40 24
 cursor 21 22 visible default
-text 0 "  │ Workers    parallel workers      │"
+text 0 "  │ Workspace  /home/ada/proj        │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 15 fg=#9d9d9d bg=#131313
 style 0 15 36 fg=#dedede bg=#131313
 style 0 36 38 fg=#303030 bg=#131313
 style 0 38 40 fg=#dedede bg=#131313
-text 1 "  │ Workspace  /home/ada/proj        │"
+text 1 "  │ Session    20261110-101010-abcd  │"
 style 1 0 2 fg=#dedede bg=#131313
 style 1 2 4 fg=#303030 bg=#131313
 style 1 4 15 fg=#9d9d9d bg=#131313
 style 1 15 36 fg=#dedede bg=#131313
 style 1 36 38 fg=#303030 bg=#131313
 style 1 38 40 fg=#dedede bg=#131313
-text 2 "  │ Session    20261110-101010-abcd  │"
+text 2 "  │ Project    AGENTS.md             │"
 style 2 0 2 fg=#dedede bg=#131313
 style 2 2 4 fg=#303030 bg=#131313
 style 2 4 15 fg=#9d9d9d bg=#131313
 style 2 15 36 fg=#dedede bg=#131313
 style 2 36 38 fg=#303030 bg=#131313
 style 2 38 40 fg=#dedede bg=#131313
-text 3 "  │ Project    AGENTS.md             │"
+text 3 "  │ Tools      2 skills · 1 MCP      │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 4 fg=#303030 bg=#131313
 style 3 4 15 fg=#9d9d9d bg=#131313
 style 3 15 36 fg=#dedede bg=#131313
 style 3 36 38 fg=#303030 bg=#131313
 style 3 38 40 fg=#dedede bg=#131313
-text 4 "  │ Tools      2 skills · 1 MCP      │"
+text 4 "  │            server                │"
 style 4 0 2 fg=#dedede bg=#131313
 style 4 2 4 fg=#303030 bg=#131313
 style 4 4 15 fg=#9d9d9d bg=#131313
 style 4 15 36 fg=#dedede bg=#131313
 style 4 36 38 fg=#303030 bg=#131313
 style 4 38 40 fg=#dedede bg=#131313
-text 5 "  │            server                │"
+text 5 "  └──────────────────────────────────┘"
 style 5 0 2 fg=#dedede bg=#131313
-style 5 2 4 fg=#303030 bg=#131313
-style 5 4 15 fg=#9d9d9d bg=#131313
-style 5 15 36 fg=#dedede bg=#131313
-style 5 36 38 fg=#303030 bg=#131313
+style 5 2 38 fg=#303030 bg=#131313
 style 5 38 40 fg=#dedede bg=#131313
-text 6 "  └──────────────────────────────────┘"
-style 6 0 2 fg=#dedede bg=#131313
-style 6 2 38 fg=#303030 bg=#131313
-style 6 38 40 fg=#dedede bg=#131313
-text 7 ""
-style 7 0 40 fg=#dedede bg=#131313
-text 8 "▎ Fix the parser 修复解析器的测试 🎉"
-style 8 0 2 fg=#419cff bg=#202020
-style 8 2 40 fg=#dedede bg=#202020
-text 9 ""
+text 6 ""
+style 6 0 40 fg=#dedede bg=#131313
+text 7 "▎ Fix the parser 修复解析器的测试 🎉"
+style 7 0 2 fg=#419cff bg=#202020
+style 7 2 40 fg=#dedede bg=#202020
+text 8 ""
+style 8 0 40 fg=#dedede bg=#131313
+text 9 "  日本語のテキストは二列ずつ。A flag 🇯🇵,"
 style 9 0 40 fg=#dedede bg=#131313
-text 10 "  日本語のテキストは二列ずつ。A flag 🇯🇵,"
+text 10 "  a heart ❤️, a family 👨‍👩‍👧, a coder"
 style 10 0 40 fg=#dedede bg=#131313
-text 11 "  a heart ❤️, a family 👨‍👩‍👧, a coder"
+text 11 "  👩‍💻, an accent é and café."
 style 11 0 40 fg=#dedede bg=#131313
-text 12 "  👩‍💻, an accent é and café."
+text 12 ""
 style 12 0 40 fg=#dedede bg=#131313
-text 13 ""
+text 13 "  •"
 style 13 0 40 fg=#dedede bg=#131313
-text 14 "  •"
+text 14 "    漢字とかなが行の終わりにかかると、次"
 style 14 0 40 fg=#dedede bg=#131313
-text 15 "    漢字とかなが行の終わりにかかると、次"
+text 15 "    の行に移ります。漢字とかな漢字とかな"
 style 15 0 40 fg=#dedede bg=#131313
-text 16 "    の行に移ります。漢字とかな漢字とかな"
+text 16 "    漢字とかな"
 style 16 0 40 fg=#dedede bg=#131313
-text 17 "    漢字とかな"
-style 17 0 40 fg=#dedede bg=#131313
-text 18 "  • 日本語 in code"
-style 18 0 4 fg=#dedede bg=#131313
-style 18 4 10 fg=#dedede bg=#232323
-style 18 10 40 fg=#dedede bg=#131313
+text 17 "  • 日本語 in code"
+style 17 0 4 fg=#dedede bg=#131313
+style 17 4 10 fg=#dedede bg=#232323
+style 17 10 40 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 40 fg=#dedede bg=#131313
 text 19 "────────────────────────────────────────"
 style 19 0 40 fg=#303030 bg=#131313
 text 20 " last turn 4s"

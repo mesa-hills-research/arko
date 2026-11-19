@@ -506,25 +506,65 @@ fn the_marker_shows_once_output_passes_the_bottom_row() {
     assert!(!t.following());
     assert_eq!(t.gap(), 2, "{rows:?}");
     assert!(t.drawn.marker.is_none(), "{rows:?}");
-    // Two lines fill the blank rows.
+    // Two lines fill the end's blank row and a blank row, and the end's
+    // blank row stands below them.
     for id in 22..=23 {
         t.apply(Update::Item(item(id, Kind::Output, &format!("more {id}"))));
     }
     let rows = screen(&mut t, &filter, 40, 10);
-    assert!(rows[9].contains("more 23"), "{rows:?}");
+    assert!(rows[8].contains("more 23"), "{rows:?}");
+    assert_eq!(rows[9], "", "{rows:?}");
     assert!(t.drawn.marker.is_none(), "{rows:?}");
-    // Two more pass the bottom row, and the rows stay.
+    // Two more pass the bottom row, and the rows stay. (The end's blank
+    // row is no new line.)
     for id in 24..=25 {
         t.apply(Update::Item(item(id, Kind::Output, &format!("more {id}"))));
     }
     let rows = screen(&mut t, &filter, 40, 10);
-    assert!(rows[9].contains("more 23"), "{rows:?}");
-    assert!(rows[9].contains("2 new lines"), "{rows:?}");
-    // A row down shows one of them, and the marker counts the other.
+    assert!(rows[8].contains("more 23"), "{rows:?}");
+    assert!(rows[9].contains("more 24"), "{rows:?}");
+    assert_eq!(new_lines(&rows), Some(1), "{rows:?}");
+    // A row down shows the other, and only the blank row is below.
     t.scroll(1);
     let rows = screen(&mut t, &filter, 40, 10);
-    assert!(rows[9].contains("more 24"), "{rows:?}");
-    assert!(rows[9].contains("1 new line"), "{rows:?}");
+    assert!(rows[9].contains("more 25"), "{rows:?}");
+    assert!(t.drawn.marker.is_none(), "{rows:?}");
+}
+
+/// The count of new lines the marker says on the last of `rows`, if it
+/// shows.
+fn new_lines(rows: &[String]) -> Option<usize> {
+    let last = rows.last()?;
+    let at = last.find('↓')?;
+    last[at..].split_whitespace().nth(1)?.parse().ok()
+}
+
+/// While the reader reads, lines that grow the last block below the screen
+/// and the rows of a block that comes after it count as new, and the blank
+/// row under the end doesn't.
+#[test]
+fn the_marker_counts_new_lines_but_not_the_ends_blank_row() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    t.apply(Update::Item(item(21, Kind::Text, "First.")));
+    screen(&mut t, &filter, 40, 10);
+    t.scroll(-3);
+    screen(&mut t, &filter, 40, 10);
+    assert!(!t.following());
+    // The text grows by a blank line and a paragraph.
+    t.apply(Update::Append {
+        id: 21,
+        text: "\n\nSecond.".into(),
+    });
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert_eq!(new_lines(&rows), Some(2), "{rows:?}");
+    // Text after it, a blank row and its line.
+    t.apply(Update::Item(item(22, Kind::Text, "Third.")));
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert_eq!(new_lines(&rows), Some(4), "{rows:?}");
 }
 
 /// A Quiet row of one command whose line cut its words opens to the command
@@ -668,14 +708,15 @@ fn the_first_step_up_is_whole_while_text_streams() {
     for id in 1..=30 {
         t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
     }
+    // (The output has a blank row under it at the end.)
     let before = screen(&mut t, &filter, 40, 10);
-    assert_eq!(before[0], "  line 21");
+    assert_eq!(before[0], "  line 22");
     // Two lines come in the frame the wheel turns in.
     t.apply(Update::Item(item(31, Kind::Output, "line 31")));
     t.apply(Update::Item(item(32, Kind::Output, "line 32")));
     t.scroll(-3);
     let after = screen(&mut t, &filter, 40, 10);
-    assert_eq!(after[0], "  line 18", "{after:?}");
+    assert_eq!(after[0], "  line 19", "{after:?}");
 }
 
 /// When the transcript's area gets a few rows back (the command menu
@@ -687,11 +728,12 @@ fn a_taller_area_brings_the_end_to_the_last_row() {
     for id in 1..=30 {
         t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
     }
+    // (The output has a blank row under it at the end.)
     let before = screen(&mut t, &filter, 40, 10);
-    assert_eq!(before[9], "  line 30");
+    assert_eq!(before[8..], ["  line 30", ""]);
     // The menu takes two rows, then gives them back.
     let menu = screen(&mut t, &filter, 40, 8);
-    assert_eq!(menu[7], "  line 30");
+    assert_eq!(menu[6..], ["  line 30", ""]);
     let after = screen(&mut t, &filter, 40, 10);
     assert_eq!(after, before, "the rows the menu took are blank");
 }

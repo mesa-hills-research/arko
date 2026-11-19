@@ -1,69 +1,64 @@
 size 40 24
 cursor 3 22 visible default
-text 0 "  │ Tools      2 skills · 1 MCP      │"
+text 0 "  │            server                │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 15 fg=#9d9d9d bg=#131313
 style 0 15 36 fg=#dedede bg=#131313
 style 0 36 38 fg=#303030 bg=#131313
 style 0 38 40 fg=#dedede bg=#131313
-text 1 "  │            server                │"
+text 1 "  └──────────────────────────────────┘"
 style 1 0 2 fg=#dedede bg=#131313
-style 1 2 4 fg=#303030 bg=#131313
-style 1 4 15 fg=#9d9d9d bg=#131313
-style 1 15 36 fg=#dedede bg=#131313
-style 1 36 38 fg=#303030 bg=#131313
+style 1 2 38 fg=#303030 bg=#131313
 style 1 38 40 fg=#dedede bg=#131313
-text 2 "  └──────────────────────────────────┘"
-style 2 0 2 fg=#dedede bg=#131313
-style 2 2 38 fg=#303030 bg=#131313
-style 2 38 40 fg=#dedede bg=#131313
-text 3 ""
-style 3 0 40 fg=#dedede bg=#131313
-text 4 "▎ Why does the last test fail?"
-style 4 0 2 fg=#419cff bg=#202020
-style 4 2 40 fg=#dedede bg=#202020
-text 5 ""
-style 5 0 40 fg=#dedede bg=#131313
-text 6 "  Reading the failure"
+text 2 ""
+style 2 0 40 fg=#dedede bg=#131313
+text 3 "▎ Why does the last test fail?"
+style 3 0 2 fg=#419cff bg=#202020
+style 3 2 40 fg=#dedede bg=#202020
+text 4 ""
+style 4 0 40 fg=#dedede bg=#131313
+text 5 "  Reading the failure"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 21 fg=#9d9d9d bg=#131313 bold italic
+style 5 21 40 fg=#dedede bg=#131313
+text 6 "  The last test expects a blank line at"
 style 6 0 2 fg=#dedede bg=#131313
-style 6 2 21 fg=#9d9d9d bg=#131313 bold italic
-style 6 21 40 fg=#dedede bg=#131313
-text 7 "  The last test expects a blank line at"
+style 6 2 39 fg=#9d9d9d bg=#131313 italic
+style 6 39 40 fg=#dedede bg=#131313
+text 7 "  the end of the file."
 style 7 0 2 fg=#dedede bg=#131313
-style 7 2 39 fg=#9d9d9d bg=#131313 italic
-style 7 39 40 fg=#dedede bg=#131313
-text 8 "  the end of the file."
+style 7 2 22 fg=#9d9d9d bg=#131313 italic
+style 7 22 40 fg=#dedede bg=#131313
+text 8 "  The loop stops at the first newline,"
 style 8 0 2 fg=#dedede bg=#131313
-style 8 2 22 fg=#9d9d9d bg=#131313 italic
-style 8 22 40 fg=#dedede bg=#131313
-text 9 "  The loop stops at the first newline,"
+style 8 2 38 fg=#9d9d9d bg=#131313 italic
+style 8 38 40 fg=#dedede bg=#131313
+text 9 "  so the blank line never counts."
 style 9 0 2 fg=#dedede bg=#131313
-style 9 2 38 fg=#9d9d9d bg=#131313 italic
-style 9 38 40 fg=#dedede bg=#131313
-text 10 "  so the blank line never counts."
-style 10 0 2 fg=#dedede bg=#131313
-style 10 2 33 fg=#9d9d9d bg=#131313 italic
-style 10 33 40 fg=#dedede bg=#131313
-text 11 ""
-style 11 0 40 fg=#dedede bg=#131313
-text 12 "  The fix is in the loop's condition."
-style 12 0 2 fg=#dedede bg=#131313
-style 12 2 37 fg=#9d9d9d bg=#131313 italic
-style 12 37 40 fg=#dedede bg=#131313
-text 13 ""
-style 13 0 40 fg=#dedede bg=#131313
-text 14 "  The loop in parse stops at the first"
-style 14 0 14 fg=#dedede bg=#131313
-style 14 14 19 fg=#dedede bg=#232323
-style 14 19 40 fg=#dedede bg=#131313
-text 15 "  newline, so the blank line at the end"
+style 9 2 33 fg=#9d9d9d bg=#131313 italic
+style 9 33 40 fg=#dedede bg=#131313
+text 10 ""
+style 10 0 40 fg=#dedede bg=#131313
+text 11 "  The fix is in the loop's condition."
+style 11 0 2 fg=#dedede bg=#131313
+style 11 2 37 fg=#9d9d9d bg=#131313 italic
+style 11 37 40 fg=#dedede bg=#131313
+text 12 ""
+style 12 0 40 fg=#dedede bg=#131313
+text 13 "  The loop in parse stops at the first"
+style 13 0 14 fg=#dedede bg=#131313
+style 13 14 19 fg=#dedede bg=#232323
+style 13 19 40 fg=#dedede bg=#131313
+text 14 "  newline, so the blank line at the end"
+style 14 0 40 fg=#dedede bg=#131313
+text 15 "  is lost."
 style 15 0 40 fg=#dedede bg=#131313
-text 16 "  is lost."
+text 16 ""
 style 16 0 40 fg=#dedede bg=#131313
-text 17 ""
+text 17 "  I can change the loop if you like."
 style 17 0 40 fg=#dedede bg=#131313
-text 18 "  I can change the loop if you like."
+text 18 ""
 style 18 0 40 fg=#dedede bg=#131313
 text 19 "────────────────────────────────────────"
 style 19 0 40 fg=#303030 bg=#131313

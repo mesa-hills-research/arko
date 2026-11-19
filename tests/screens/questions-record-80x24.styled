@@ -1,117 +1,112 @@
 size 80 24
 cursor 3 22 visible default
-text 0 "  │ Workspace  /home/ada/proj                                                │"
+text 0 "  │ Session    20261110-101010-abcd                                          │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 15 fg=#9d9d9d bg=#131313
 style 0 15 76 fg=#dedede bg=#131313
 style 0 76 78 fg=#303030 bg=#131313
 style 0 78 80 fg=#dedede bg=#131313
-text 1 "  │ Session    20261110-101010-abcd                                          │"
+text 1 "  │ Project    AGENTS.md                                                     │"
 style 1 0 2 fg=#dedede bg=#131313
 style 1 2 4 fg=#303030 bg=#131313
 style 1 4 15 fg=#9d9d9d bg=#131313
 style 1 15 76 fg=#dedede bg=#131313
 style 1 76 78 fg=#303030 bg=#131313
 style 1 78 80 fg=#dedede bg=#131313
-text 2 "  │ Project    AGENTS.md                                                     │"
+text 2 "  │ Tools      2 skills · 1 MCP server                                       │"
 style 2 0 2 fg=#dedede bg=#131313
 style 2 2 4 fg=#303030 bg=#131313
 style 2 4 15 fg=#9d9d9d bg=#131313
 style 2 15 76 fg=#dedede bg=#131313
 style 2 76 78 fg=#303030 bg=#131313
 style 2 78 80 fg=#dedede bg=#131313
-text 3 "  │ Tools      2 skills · 1 MCP server                                       │"
+text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
 style 3 0 2 fg=#dedede bg=#131313
-style 3 2 4 fg=#303030 bg=#131313
-style 3 4 15 fg=#9d9d9d bg=#131313
-style 3 15 76 fg=#dedede bg=#131313
-style 3 76 78 fg=#303030 bg=#131313
+style 3 2 78 fg=#303030 bg=#131313
 style 3 78 80 fg=#dedede bg=#131313
-text 4 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 4 0 2 fg=#dedede bg=#131313
-style 4 2 78 fg=#303030 bg=#131313
-style 4 78 80 fg=#dedede bg=#131313
-text 5 ""
-style 5 0 80 fg=#dedede bg=#131313
-text 6 "  ┌ Arko asked 3 questions ──────────────────────────────────────────────────┐"
+text 4 ""
+style 4 0 80 fg=#dedede bg=#131313
+text 5 "  ┌ Arko asked 3 questions ──────────────────────────────────────────────────┐"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 3 fg=#303030 bg=#131313
+style 5 3 27 fg=#9d9d9d bg=#131313
+style 5 27 78 fg=#303030 bg=#131313
+style 5 78 80 fg=#dedede bg=#131313
+text 6 "  │   1. Tabs or spaces?                                                     │"
 style 6 0 2 fg=#dedede bg=#131313
-style 6 2 3 fg=#303030 bg=#131313
-style 6 3 27 fg=#9d9d9d bg=#131313
-style 6 27 78 fg=#303030 bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 76 fg=#dedede bg=#131313
+style 6 76 78 fg=#303030 bg=#131313
 style 6 78 80 fg=#dedede bg=#131313
-text 7 "  │   1. Tabs or spaces?                                                     │"
+text 7 "  │      Spaces                                                              │"
 style 7 0 2 fg=#dedede bg=#131313
 style 7 2 4 fg=#303030 bg=#131313
-style 7 4 76 fg=#dedede bg=#131313
+style 7 4 9 fg=#dedede bg=#131313
+style 7 9 15 fg=#9d9d9d bg=#131313
+style 7 15 76 fg=#dedede bg=#131313
 style 7 76 78 fg=#303030 bg=#131313
 style 7 78 80 fg=#dedede bg=#131313
-text 8 "  │      Spaces                                                              │"
+text 8 "  │   2. Which checks?                                                       │"
 style 8 0 2 fg=#dedede bg=#131313
 style 8 2 4 fg=#303030 bg=#131313
-style 8 4 9 fg=#dedede bg=#131313
-style 8 9 15 fg=#9d9d9d bg=#131313
-style 8 15 76 fg=#dedede bg=#131313
+style 8 4 76 fg=#dedede bg=#131313
 style 8 76 78 fg=#303030 bg=#131313
 style 8 78 80 fg=#dedede bg=#131313
-text 9 "  │   2. Which checks?                                                       │"
+text 9 "  │      Answered in your message                                            │"
 style 9 0 2 fg=#dedede bg=#131313
 style 9 2 4 fg=#303030 bg=#131313
-style 9 4 76 fg=#dedede bg=#131313
+style 9 4 9 fg=#dedede bg=#131313
+style 9 9 33 fg=#9d9d9d bg=#131313
+style 9 33 76 fg=#dedede bg=#131313
 style 9 76 78 fg=#303030 bg=#131313
 style 9 78 80 fg=#dedede bg=#131313
-text 10 "  │      Answered in your message                                            │"
+text 10 "  │   3. How should I update the configuration?                              │"
 style 10 0 2 fg=#dedede bg=#131313
 style 10 2 4 fg=#303030 bg=#131313
-style 10 4 9 fg=#dedede bg=#131313
-style 10 9 33 fg=#9d9d9d bg=#131313
-style 10 33 76 fg=#dedede bg=#131313
+style 10 4 76 fg=#dedede bg=#131313
 style 10 76 78 fg=#303030 bg=#131313
 style 10 78 80 fg=#dedede bg=#131313
-text 11 "  │   3. How should I update the configuration?                              │"
+text 11 "  │      Arko closed it. The user said to leave it                           │"
 style 11 0 2 fg=#dedede bg=#131313
 style 11 2 4 fg=#303030 bg=#131313
-style 11 4 76 fg=#dedede bg=#131313
+style 11 4 9 fg=#dedede bg=#131313
+style 11 9 50 fg=#9d9d9d bg=#131313
+style 11 50 76 fg=#dedede bg=#131313
 style 11 76 78 fg=#303030 bg=#131313
 style 11 78 80 fg=#dedede bg=#131313
-text 12 "  │      Arko closed it. The user said to leave it                           │"
+text 12 "  └──────────────────────────────────────────────────────────────────────────┘"
 style 12 0 2 fg=#dedede bg=#131313
-style 12 2 4 fg=#303030 bg=#131313
-style 12 4 9 fg=#dedede bg=#131313
-style 12 9 50 fg=#9d9d9d bg=#131313
-style 12 50 76 fg=#dedede bg=#131313
-style 12 76 78 fg=#303030 bg=#131313
+style 12 2 78 fg=#303030 bg=#131313
 style 12 78 80 fg=#dedede bg=#131313
-text 13 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 13 0 2 fg=#dedede bg=#131313
-style 13 2 78 fg=#303030 bg=#131313
-style 13 78 80 fg=#dedede bg=#131313
-text 14 ""
-style 14 0 80 fg=#dedede bg=#131313
-text 15 "  ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+text 13 ""
+style 13 0 80 fg=#dedede bg=#131313
+text 14 "  ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+style 14 0 2 fg=#dedede bg=#131313
+style 14 2 3 fg=#303030 bg=#131313
+style 14 3 26 fg=#9d9d9d bg=#131313
+style 14 26 78 fg=#303030 bg=#131313
+style 14 78 80 fg=#dedede bg=#131313
+text 15 "  │   Anything else I should know?                                           │"
 style 15 0 2 fg=#dedede bg=#131313
-style 15 2 3 fg=#303030 bg=#131313
-style 15 3 26 fg=#9d9d9d bg=#131313
-style 15 26 78 fg=#303030 bg=#131313
+style 15 2 4 fg=#303030 bg=#131313
+style 15 4 76 fg=#dedede bg=#131313
+style 15 76 78 fg=#303030 bg=#131313
 style 15 78 80 fg=#dedede bg=#131313
-text 16 "  │   Anything else I should know?                                           │"
+text 16 "  │   Dismissed                                                              │"
 style 16 0 2 fg=#dedede bg=#131313
 style 16 2 4 fg=#303030 bg=#131313
-style 16 4 76 fg=#dedede bg=#131313
+style 16 4 6 fg=#dedede bg=#131313
+style 16 6 15 fg=#9d9d9d bg=#131313
+style 16 15 76 fg=#dedede bg=#131313
 style 16 76 78 fg=#303030 bg=#131313
 style 16 78 80 fg=#dedede bg=#131313
-text 17 "  │   Dismissed                                                              │"
+text 17 "  └──────────────────────────────────────────────────────────────────────────┘"
 style 17 0 2 fg=#dedede bg=#131313
-style 17 2 4 fg=#303030 bg=#131313
-style 17 4 6 fg=#dedede bg=#131313
-style 17 6 15 fg=#9d9d9d bg=#131313
-style 17 15 76 fg=#dedede bg=#131313
-style 17 76 78 fg=#303030 bg=#131313
+style 17 2 78 fg=#303030 bg=#131313
 style 17 78 80 fg=#dedede bg=#131313
-text 18 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 18 0 2 fg=#dedede bg=#131313
-style 18 2 78 fg=#303030 bg=#131313
-style 18 78 80 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 80 fg=#dedede bg=#131313
 text 19 "────────────────────────────────────────────────────────────────────────────────"
 style 19 0 80 fg=#303030 bg=#131313
 text 20 ""

@@ -79,12 +79,14 @@ mod tests {
             Above::Nothing,
         ];
 
-        /// The blank rows on each side in the full view, one where the line
-        /// follows what was said, none among the agent's calls.
+        /// The blank rows above the line in the full view, one where it
+        /// follows what was said or the user's message, none after a line of
+        /// work (a call, a worker's line, a notice), as the shared table
+        /// spaces a line of work.
         fn blank_rows(self) -> usize {
             match self {
-                Above::Worker | Above::Call | Above::Result | Above::Nothing => 0,
-                _ => 1,
+                Above::Worker | Above::Notice | Above::Call | Above::Result | Above::Nothing => 0,
+                Above::User | Above::Text | Above::Message | Above::Reply | Above::Output => 1,
             }
         }
     }
@@ -221,16 +223,14 @@ mod tests {
         runs
     }
 
-    /// Whatever started the turn, the line has the same number of blank rows
-    /// above and below, a blank row on each side after what was said (the
-    /// user's message, the agent's text, a message, a notice, a command's
-    /// output, a reply), none on either side among the agent's calls (a
-    /// call, its output, a worker's line), where it stands flush against the
-    /// status line's rule. With a note waiting above it, a blank row on each
-    /// side in every case. In every view, at
-    /// every size, with ARKO_SYMBOLS=ascii and with the command menu docked.
+    /// The line is a line of work. It has a blank row above it after what
+    /// was said (the user's message, the agent's text, a message, a
+    /// command's output, a reply) and none after a line of work (a call, its
+    /// output, a worker's line, a notice), and it stands flush against the
+    /// status line's rule. With a note waiting above it, a blank row above
+    /// in every case. In every view, at every size, with ARKO_SYMBOLS=ascii.
     #[test]
-    fn the_working_line_has_as_much_room_below_as_above() {
+    fn the_working_line_is_spaced_as_a_line_of_work() {
         for ascii in [false, true] {
             let _ascii = ascii.then(|| choose_symbols(Symbols::Ascii));
             for (width, height, view) in runs(ascii) {
@@ -255,22 +255,18 @@ mod tests {
                         assert_eq!(note, rows[0].contains("Use tabs."), "{case}");
                         continue;
                     }
-                    assert_eq!(above_rows, below_rows, "{case}");
-                    // The Messages view leaves a notice out, so the reply
-                    // before it is above the line, and counts the calls in
-                    // one row.
+                    assert_eq!(below_rows, 0, "{case}");
+                    // (The Messages view counts the calls in one row.)
                     let wanted = match (view, above) {
                         _ if note => 1,
-                        (View::Messages, Above::Notice) => 1,
                         (View::Messages, Above::Call | Above::Result) => 0,
                         _ => above.blank_rows(),
                     };
                     assert_eq!(above_rows, wanted, "{case}");
                     // The note waits above the line's blank row, and the
-                    // rule above the status line follows the blank rows
-                    // below.
+                    // rule above the status line follows the line.
                     if note {
-                        let at = next - below_rows - 1;
+                        let at = next - 1;
                         assert!(rows[at - above_rows - 1].contains("Use tabs."), "{case}");
                     }
                     assert!(is_rule(&rows[next], width), "{case}");
@@ -446,12 +442,13 @@ mod tests {
     /// Whatever starts the turn (a worker's report, a job or a monitor, the
     /// user's answers, the notes they typed, a model switch), and whatever
     /// comes in before the agent's own output (a worker's calls, a queued
-    /// worker's card, a worker's warning), the line has the room the
-    /// user's message gives it, a blank row above and one below, before
-    /// the chip, the panel, the menu or the status line's rule. The notes
-    /// the user typed wait above it.
+    /// worker's card, a worker's warning), the line is spaced as a line of
+    /// work below what's above it: a blank row after the user's message, a
+    /// note or a reply, none after a notice, a worker's line or its calls.
+    /// None comes below it, before the chip, the panel, the menu or the
+    /// status line's rule. The notes the user typed wait above it.
     #[test]
-    fn a_turn_that_starts_by_itself_gives_the_line_the_room_a_message_does() {
+    fn a_turn_that_starts_by_itself_spaces_the_line_by_what_is_above_it() {
         let (width, height) = (80, 30);
         // Every case that fails, and the screen of the first.
         let mut failed: Vec<String> = Vec::new();
@@ -467,6 +464,23 @@ mod tests {
                     for start in Start::ALL {
                         let mut app = started(start, then, below, view);
                         let rows = screen(&mut app, width, height);
+                        // (A note waits last. The main view shows a worker's
+                        // card, not its calls or warnings, and Messages
+                        // leaves out a notice that opens a turn.)
+                        let work_above = match (start, then) {
+                            (Start::Unread, _) => false,
+                            (_, Then::WorkerStarts) => true,
+                            (Start::Message | Start::Answers, _) => false,
+                            (
+                                Start::Report
+                                | Start::Job
+                                | Start::Alert
+                                | Start::EndsSoon
+                                | Start::Switch,
+                                _,
+                            ) => view != View::Messages,
+                        };
+                        let blank_above = usize::from(!work_above);
                         let case = format!("{start:?}, then {then:?}, below {below:?}, {view:?}");
                         let room = padding(&rows).map(|(before, after, next)| {
                             let at = next - after - 1;
@@ -480,7 +494,7 @@ mod tests {
                                 || rows[at - before - 1].contains("Use tabs.");
                             (before, after, follows && note)
                         });
-                        if room != Some((1, 1, true)) {
+                        if room != Some((blank_above, 0, true)) {
                             failed.push(format!("{case}: {room:?}"));
                             first.get_or_insert_with(|| format!("{case}\n{}", rows.join("\n")));
                         }
@@ -497,9 +511,9 @@ mod tests {
         );
     }
 
-    /// The command menu docked above the status line's rule leaves the
-    /// line its room below it too, and a question has no line at all (the
-    /// agent waits for the user, not for its model).
+    /// The command menu docked above the status line's rule follows the
+    /// line with no blank row, as the rule does, and a question has no line
+    /// at all (the agent waits for the user, not for its model).
     #[test]
     fn the_menu_and_a_question_leave_the_line_as_it_is() {
         for above in [Above::User, Above::Call] {
@@ -508,7 +522,7 @@ mod tests {
             assert!(!app.menu_items().is_empty());
             let rows = screen(&mut app, 80, 30);
             let (before, after, next) = padding(&rows).expect("the line shows above the menu");
-            assert_eq!(before, after, "{above:?}\n{}", rows.join("\n"));
+            assert_eq!(after, 0, "{above:?}\n{}", rows.join("\n"));
             assert_eq!(before, above.blank_rows(), "{above:?}");
             // The menu's first row, not the rule, follows it.
             assert!(!is_rule(&rows[next], 80), "{above:?}\n{}", rows.join("\n"));
@@ -521,10 +535,10 @@ mod tests {
         assert!(padding(&rows).is_none(), "{}", rows.join("\n"));
     }
 
-    /// A worker's own view has the same room, its text above and below, a
-    /// blank row on each side, and none among its calls.
+    /// A worker's own view spaces the line the same way, a blank row above
+    /// it after its text and none after its calls, and none below it.
     #[test]
-    fn a_watched_workers_line_has_as_much_room_below_as_above() {
+    fn a_watched_workers_line_is_spaced_as_a_line_of_work() {
         for (kind, blank_rows) in [(Kind::Text, 1), (Kind::Call, 0)] {
             let mut app = new_app();
             let mut running = worker("r1", WorkerState::Running);
@@ -550,7 +564,7 @@ mod tests {
                 let rows = screen(&mut app, width, height);
                 let case = format!("{kind:?} {width}x{height}\n{}", rows.join("\n"));
                 let (above, below, next) = padding(&rows).unwrap_or_else(|| panic!("{case}"));
-                assert_eq!((above, below), (blank_rows, blank_rows), "{case}");
+                assert_eq!((above, below), (blank_rows, 0), "{case}");
                 assert!(is_rule(&rows[next], width), "{case}");
             }
         }
@@ -563,10 +577,11 @@ mod tests {
             .unwrap_or_else(|| panic!("{text:?} not drawn:\n{}", rows.join("\n")))
     }
 
-    /// Nothing above the line moves as it comes and goes. Among the agent's
-    /// calls it is one row that the next call takes over. After what was
-    /// said, the next block (thinking, a call, text) takes its row, and the
-    /// blank row it had below stays blank until more comes.
+    /// Nothing above the line moves as it comes and goes. It is one row,
+    /// which the next line of work takes over, a call among the agent's
+    /// calls or a thought after what was said. Text has a blank row under
+    /// it at the end, so drawn with text there, the rows above it stand a
+    /// row higher.
     #[test]
     fn the_transcript_stays_where_it_is_as_the_line_goes() {
         // A call ended, the line stands under it, the next call begins.
@@ -587,7 +602,12 @@ mod tests {
 
         // The user's message, the line, then thinking begins.
         let mut app = working(Above::User, false, View::Full);
-        let before = row_of(&screen(&mut app, 60, 24), "Fix the tests.");
+        let drawn = screen(&mut app, 60, 24);
+        let before = row_of(&drawn, "Fix the tests.");
+        let line = drawn
+            .iter()
+            .position(|row| is_working(row))
+            .expect("the line");
         app.transcript
             .apply(Update::Item(item(300, Kind::Thinking, "Where to start?")));
         let rows = screen(&mut app, 60, 24);
@@ -596,17 +616,16 @@ mod tests {
             before,
             "nothing moves down"
         );
-        let thinking = row_of(&rows, "Where to start?");
-        assert_eq!(rows[thinking + 1], "", "a blank row below the end");
-        // Drawn with the text already there, the end is on the last row.
+        assert_eq!(
+            row_of(&rows, "Where to start?"),
+            line,
+            "the thought takes the line's row"
+        );
+        // Drawn with the text already there, the end is the text's blank row.
         let mut app = working(Above::User, false, View::Full);
         app.transcript
             .apply(Update::Item(item(300, Kind::Text, "Starting.")));
         let after = row_of(&screen(&mut app, 60, 24), "Fix the tests.");
-        assert_eq!(
-            after,
-            before + 1,
-            "the text has the blank row the line had above"
-        );
+        assert_eq!(after + 1, before, "the text has a blank row under it");
     }
 }

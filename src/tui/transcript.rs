@@ -39,6 +39,7 @@ use super::motion;
 use super::theme::{Theme, Tint};
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
+use crate::remote::spacing::{self, Above, Below, Class};
 use crate::remote::{
     ActKind, CallStatus, Calls, ContentKind, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot,
     Source, Update, WorkerState, WorkerSummary, content, quiet,
@@ -409,10 +410,9 @@ struct Block {
     shown: Shown,
     /// A blank line before it.
     gap: bool,
-    /// A blank line after it (the "Working…" line has one, at the end).
+    /// A blank line after it, at the end, where a row of its kind would
+    /// stand apart from it ([`spacing`]).
     tail: bool,
-    /// It's open, so a blank line sets it apart from what follows.
-    open: bool,
     /// What its lines are drawn from, besides its items.
     face: Face,
     /// A number for everything its lines are made from, which changes when
@@ -429,7 +429,6 @@ impl Block {
             shown,
             gap,
             tail: false,
-            open: false,
             face: Face::default(),
             sig: 0,
         }
@@ -670,6 +669,11 @@ pub struct Transcript {
     /// The width the blocks were last made for, which decides what a line
     /// cuts and so what opens.
     width: usize,
+    /// The rows of the screen the transcript was last drawn on (0 before
+    /// the first), which decide whether the end has room for its blank row.
+    height: usize,
+    /// The last block as last drawn has a blank row below it.
+    tail: bool,
 }
 
 impl Default for Transcript {
@@ -709,6 +713,8 @@ impl Transcript {
             workers_laid: std::cell::RefCell::new(None),
             focus: None,
             width: 0,
+            height: 0,
+            tail: false,
         }
     }
 
@@ -1465,18 +1471,6 @@ impl Transcript {
         }
     }
 
-    /// Whether `agent` made a call or thought in its turn that began at
-    /// `since`, meaning its own run of calls has begun. Before that, the calls of
-    /// its workers and their cards don't make one.
-    fn calls_begun(&self, agent: &str, since: i64) -> bool {
-        self.entries.iter().rev().any(|entry| {
-            let item = &entry.item;
-            item.agent == agent
-                && item.at >= since
-                && matches!(item.kind, Kind::Call | Kind::Result | Kind::Thinking)
-        })
-    }
-
     /// The blocks of `filter`'s view of the items, at `width`, in order. It
     /// wraps none of their lines but an open block's among the work, whose
     /// neighbours stand apart from it when it shows more than one line.
@@ -1502,10 +1496,16 @@ impl Transcript {
         // Quiet rows, each where it came.
         let (counts, opened) = self.counted(filter);
         let as_quiet = filter.in_view(View::Quiet);
-        // The group of the block before, and whether it's open. A blank line
-        // stands between what is said and the work, and below anything open,
-        // and lines of work stack.
-        let mut last: Option<(Group, bool)> = blocks.first().map(|_| (Group::Prose, false));
+        // What the block before is, for the space above the next, which the
+        // shared table gives (`spacing`). The banner and a worker's heading
+        // read as what is said. The first block of all has nothing drawn
+        // above it, so it starts at the screen's top.
+        let mut last: Option<Class> = blocks.first().map(|_| Class::Said);
+        // Whether the block before is a command's output.
+        let mut last_output = false;
+        let apart = |above: Option<Class>, below: Class| {
+            above.is_some_and(|above| spacing::gap(Above::Row(above), Below::Row(below)).rows() > 0)
+        };
         let now = chrono::Utc::now().timestamp_millis();
         let quiet = filter.view() == View::Quiet;
         let placed: Arc<Vec<Placed>> = if quiet || !opened.is_empty() {
@@ -1536,7 +1536,7 @@ impl Transcript {
             let item = &self.entries[index].item;
             let opens = opened.contains(&index);
             if let Some(Counted { count, open }) = counts.get(&item.id) {
-                let gap = last.is_some_and(|(group, open)| open || group != Group::Activity);
+                let gap = apart(last, Class::Work);
                 let counter = Shown::Counter {
                     calls: count.calls,
                     failed: count.failed,
@@ -1544,7 +1544,8 @@ impl Transcript {
                     open: *open,
                 };
                 blocks.push(Block::other(COUNT_KEY | count.first, counter, gap));
-                last = Some((Group::Activity, false));
+                last = Some(Class::Work);
+                last_output = false;
             }
             let shown = match shown {
                 Some(shown) => shown,
@@ -1629,23 +1630,25 @@ impl Transcript {
                 }
                 _ => (Face::default(), false),
             };
-            // (Never above an open block, so opening or closing one leaves
-            // every line above it where it was.)
-            let gap = match last {
-                None => false,
-                _ if content => false,
-                Some((Group::Output, _)) if output => false,
-                Some((last, was_open)) => {
-                    was_open || !(last == Group::Activity && group == Group::Activity)
-                }
+            let class = if content {
+                Class::Held
+            } else {
+                block_class(&shown, &self.entries, group, open)
             };
-            last = Some((group, open));
+            // A command's output that came in lines, and a call's content
+            // that came in parts, are one block, so no space parts them.
+            // (The gap above a block never depends on whether it's open, so
+            // opening or closing one leaves every line above it where it
+            // was.)
+            let continues = content || (output && last_output);
+            let gap = !continues && apart(last, class);
+            last = Some(class);
+            last_output = output;
             blocks.push(Block {
                 key: self.entries[index].item.id,
                 shown,
                 gap,
                 tail: false,
-                open,
                 face,
                 sig: 0,
             });
@@ -1672,38 +1675,23 @@ impl Transcript {
         if self.motion.working {
             // At the end, below the notes the agent hasn't read, so a note
             // keeps its row as Working… comes and goes and as the agent
-            // reads it.
-            let at = blocks.len();
-            // It has as many blank lines below as above, whatever started the
-            // turn. Among the agent's own calls (a call, its result, its
-            // thinking, a worker's line) it is one more row of that list,
-            // which runs together and stands against the status line's rule,
-            // none on either side. After anything else (the user's message,
-            // a note waiting, the agent's text, a message, a notice, a
-            // command's output) it is a paragraph of its own, a blank line on
-            // each side. So it is before the agent's first call of the turn,
-            // under the calls of its workers or the card of one that started
-            // from the queue, as it is under the user's message. Anything
-            // open above sets it apart as text does.
-            let among_calls = at
-                .checked_sub(1)
-                .is_some_and(|last| self.is_call_run(&blocks[last]))
-                && self
-                    .under_way(filter)
-                    .is_some_and(|(agent, since)| self.calls_begun(agent, since));
-            let after_open = at.checked_sub(1).is_some_and(|last| blocks[last].open);
-            let apart = at > 0 && (!among_calls || after_open);
-            let mut working = Block::other(WORKING_KEY, Shown::Working, apart);
-            working.tail = apart;
-            blocks.push(working);
+            // reads it. It's a line of work, so it runs on from the agent's
+            // other lines of work and stands apart from what is said and from
+            // anything open.
+            let gap = apart(last, Class::Work);
+            blocks.push(Block::other(WORKING_KEY, Shown::Working, gap));
+            last = Some(Class::Work);
         }
-        // The notes the agent hasn't read wait at the end, with a blank line
-        // below them, before the status line, as there is above them. Below
-        // them, Working… brings its own.
-        if let Some(last) = blocks.last_mut()
-            && matches!(last.shown, Shown::Entry(index) if self.entries[index].item.pending)
+        // The status line's rule stands where a row of the last block's kind
+        // would, so a blank row comes under what is said, a note waiting and
+        // anything open, and none under a line of work.
+        // (The banner or a heading alone is no row, and on a screen of one
+        // row, the row shows text rather than the blank.)
+        if let (Some(block), Some(class)) = (blocks.last_mut(), last)
+            && !matches!(block.shown, Shown::Banner | Shown::Heading(_))
+            && self.height != 1
         {
-            last.tail = true;
+            block.tail = spacing::gap(Above::Row(class), Below::Composer).rows() > 0;
         }
         for block in &mut blocks {
             block.sig = self.sig(block);
@@ -1870,6 +1858,12 @@ impl Transcript {
         usize::from(block.gap) + self.body(block, theme, width, own).len() + usize::from(block.tail)
     }
 
+    /// The rows of `block` without the blank row at the end, which is no
+    /// line, as the marker of new lines counts them.
+    fn new_rows(&mut self, block: &Block, theme: &Theme, width: usize, own: bool) -> usize {
+        self.height(block, theme, width, own) - usize::from(block.tail)
+    }
+
     /// The marks of `block`'s lines but its blank ones ([`body_marks`]), from
     /// the caches for an entry and a Quiet row.
     fn marks(&mut self, block: &Block, theme: &Theme, width: usize, own: bool) -> Cow<'_, [u64]> {
@@ -1904,19 +1898,6 @@ impl Transcript {
                 .call
                 .and_then(|call| self.index(call))
                 .is_some_and(|call| !self.entries[call].open)
-    }
-
-    /// Whether `block` is part of the agent's run of calls, namely a call, its
-    /// result, its thinking, a worker's line or a turn's count of calls.
-    fn is_call_run(&self, block: &Block) -> bool {
-        match &block.shown {
-            Shown::Entry(index) => matches!(
-                self.entries[*index].item.kind,
-                Kind::Call | Kind::Result | Kind::Thinking
-            ),
-            Shown::Worker(_) | Shown::Counter { .. } | Shown::Quiet(_) => true,
-            _ => false,
-        }
     }
 
     /// What the Quiet view shows, in order, with each run of the agent's calls
@@ -2414,7 +2395,9 @@ impl Transcript {
         {
             self.selection = None;
         }
+        self.height = area.height as usize;
         let blocks = self.blocks(filter, theme, width);
+        self.tail = blocks.last().is_some_and(|block| block.tail);
         let at: HashMap<u64, usize> = blocks
             .iter()
             .enumerate()
@@ -2504,6 +2487,11 @@ impl Transcript {
             let height = drawn.height;
             let shown = view.layout(drawn, &mut rows).clone();
             let feed = view.feed_mut();
+            // (The end down to its blank row, where a following view stands.
+            // A follower whose fold opened to the last row, with only the
+            // blank row below, waits there, so the line they clicked keeps
+            // its row, and the marker, which goes by the last line, stays
+            // away.)
             let ends = shows_end(feed, &shown, height);
             // A scroll up or Home that moved a line chose to read, and a
             // scroll down that reached the end chose to follow.
@@ -2594,7 +2582,7 @@ impl Transcript {
                 Some(baseline) if !following && baseline.key == key => baseline.grown,
                 _ => 0,
             };
-            let height = last.map_or(0, |block| self.height(block, theme, width, own));
+            let height = last.map_or(0, |block| self.new_rows(block, theme, width, own));
             self.baseline = Some(Baseline {
                 filter: filter.clone(),
                 newest,
@@ -2612,7 +2600,7 @@ impl Transcript {
                 // grown by stays.
                 let grown = match baseline.key.and_then(|key| at.get(&key)) {
                     Some(&index) => {
-                        let now = self.height(&blocks[index], theme, width, own);
+                        let now = self.new_rows(&blocks[index], theme, width, own);
                         if baseline.width != width || (pinned.is_some() && pinned == baseline.key) {
                             baseline.height = now.saturating_sub(baseline.grown);
                             baseline.width = width;
@@ -2629,10 +2617,11 @@ impl Transcript {
                     .filter(|block| {
                         block.shown != Shown::Working && item(block.key) > baseline.newest
                     })
-                    .map(|block| self.height(block, theme, width, own))
+                    .map(|block| self.new_rows(block, theme, width, own))
                     .sum();
                 self.baseline = Some(baseline);
-                // (Those the reader saw as they filled blank rows aren't.)
+                // (Those the reader saw as they filled blank rows aren't. The
+                // end's blank row is no line, in what came nor below.)
                 let came = grown + came;
                 came.min(self.rows_below(&blocks, &at, theme, width, own, came))
             }
@@ -2703,7 +2692,8 @@ impl Transcript {
         let Some(&index) = feed.key(last.item).and_then(|key| at.get(key)) else {
             return 0;
         };
-        let past = last.y + i64::from(last.height) - i64::from(area.height);
+        let tail = i64::from(blocks[index].tail);
+        let past = last.y + i64::from(last.height) - tail - i64::from(area.height);
         let mut below = match blocks[index].shown {
             Shown::Working => 0,
             _ => usize::try_from(past).unwrap_or(0),
@@ -2713,7 +2703,7 @@ impl Transcript {
                 break;
             }
             if block.shown != Shown::Working {
-                below += self.height(block, theme, width, own);
+                below += self.new_rows(block, theme, width, own);
             }
         }
         below.min(cap)
@@ -3067,17 +3057,36 @@ impl Transcript {
         self.hold
     }
 
-    /// Whether the last frame showed the end (tests).
+    /// Whether the last frame showed the end's last line, which the marker
+    /// goes by (tests).
     #[cfg(test)]
     pub(super) fn end_shows(&self) -> bool {
         self.end_in_sight()
     }
 
-    /// Whether the last frame showed the end, with no rows of it below the
-    /// screen.
+    /// Whether the last frame showed the end down to its blank row, which
+    /// following goes by (tests).
+    #[cfg(test)]
+    pub(super) fn bottom_shows(&self) -> bool {
+        self.end_within(0)
+    }
+
+    /// Whether the last frame showed the end's last line. The end's blank
+    /// row may be below the screen, as no line of it, so a fold the reader
+    /// opens at the end doesn't put "↓ end" under its last line.
     fn end_in_sight(&self) -> bool {
+        self.end_within(u16::from(self.tail))
+    }
+
+    /// Whether the last frame showed the end with no more than `below` of
+    /// its rows under the screen.
+    fn end_within(&self, below: u16) -> bool {
         match self.view.area() {
-            Some(area) => shows_end(self.view.feed(), self.view.placement(), area.height),
+            Some(area) => shows_end(
+                self.view.feed(),
+                self.view.placement(),
+                area.height.saturating_add(below),
+            ),
             None => self.view.feed().is_empty(),
         }
     }
@@ -3177,8 +3186,9 @@ impl Transcript {
         {
             usize::from(block.gap)
         } else {
+            // (Its last line of text, above the blank row at the end.)
             let own = matches!(filter, Filter::Worker(..));
-            self.height(block, theme, width, own).saturating_sub(1)
+            self.new_rows(block, theme, width, own).saturating_sub(1)
         }
     }
 
@@ -4238,6 +4248,36 @@ fn group(item: &Item) -> Group {
         Kind::Call | Kind::Result | Kind::WorkerLine => Group::Activity,
         Kind::Notice | Kind::Thinking => Group::Activity,
         _ => Group::Prose,
+    }
+}
+
+/// What a block is, for the space around it ([`spacing`]). The work's
+/// lines are lines of work, open or not, a worker's report or message to
+/// its lead among them, and the terminal draws a worker as one. The banner
+/// and a worker's heading read as what is said.
+fn block_class(shown: &Shown, entries: &VecDeque<Entry>, group: Group, open: bool) -> Class {
+    let line = if open { Class::Open } else { Class::Work };
+    match shown {
+        Shown::Banner | Shown::Heading(_) => Class::Said,
+        Shown::Worker(_) | Shown::Counter { .. } | Shown::Working | Shown::Quiet(_) => line,
+        Shown::Entry(index) => match (entries[*index].item.kind, group) {
+            (_, Group::Activity) => line,
+            (Kind::User, Group::Prose | Group::Output) => Class::User,
+            (Kind::Turn | Kind::Conversation, Group::Prose | Group::Output) => Class::TurnEnd,
+            (Kind::Result, Group::Prose | Group::Output) => Class::Held,
+            (
+                Kind::Text
+                | Kind::Reply
+                | Kind::Message
+                | Kind::Question
+                | Kind::Output
+                | Kind::Call
+                | Kind::Thinking
+                | Kind::Notice
+                | Kind::WorkerLine,
+                Group::Prose | Group::Output,
+            ) => Class::Said,
+        },
     }
 }
 
@@ -5920,13 +5960,15 @@ mod tests {
         let top = format!("  ┌ Arko asked 2 questions {}┐", "─".repeat(10));
         let bottom = format!("  └{}┘", "─".repeat(34));
         let boxed = |text: &str| format!("  │ {text:<32} │");
+        // (What is said has a blank row under it at the end.)
         assert_eq!(
-            rows(&mut t, &full(), 40, 4),
+            rows(&mut t, &full(), 40, 5),
             [
                 top.clone(),
                 boxed("  1. Tabs or spaces?"),
                 boxed("     Spaces"),
                 bottom.clone(),
+                String::new(),
             ]
         );
         questions[1].state = QuestionState::Closed {
@@ -5935,7 +5977,7 @@ mod tests {
         card.questions = Some(questions);
         t.apply(Update::Change(card));
         assert_eq!(
-            rows(&mut t, &full(), 40, 6),
+            rows(&mut t, &full(), 40, 7),
             [
                 top,
                 boxed("  1. Tabs or spaces?"),
@@ -5943,6 +5985,7 @@ mod tests {
                 boxed("  2. Push now?"),
                 boxed("     Arko closed it. Found it"),
                 bottom,
+                String::new(),
             ]
         );
     }
@@ -5965,8 +6008,8 @@ mod tests {
             ["· message r1: Also the docs. · ✓ sent", ""]
         );
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 2),
-            ["✉ main to r1", "  Also the docs."]
+            rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 3),
+            ["✉ main to r1", "  Also the docs.", ""]
         );
     }
 
@@ -5988,8 +6031,8 @@ mod tests {
             );
         }
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 3),
-            ["  Looking.", "", "✉ Found it."]
+            rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 4),
+            ["  Looking.", "", "✉ Found it.", ""]
         );
     }
 
@@ -6052,10 +6095,10 @@ mod tests {
             );
             t.toggle(4, 2, &filter, &theme);
             t.toggle(7, 3, &filter, &theme);
-            // (Open, a blank line follows each.)
+            // (Open, a blank line follows each, the last's at the end.)
             t.follow();
             assert_eq!(
-                rows(&mut t, &filter, 40, 7),
+                rows(&mut t, &filter, 40, 8),
                 [
                     "▎ Fix it",
                     "",
@@ -6063,7 +6106,8 @@ mod tests {
                     "│ Halfway.",
                     "",
                     "▾ r3 reported",
-                    "│ Fixed it."
+                    "│ Fixed it.",
+                    ""
                 ],
                 "{view:?}"
             );
@@ -6096,10 +6140,10 @@ mod tests {
         t.apply(Update::Item(opening(3, "r3 reported", Some(""))));
         t.apply(Update::Item(item(4, Kind::Text, "Merging it.")));
         for view in [View::Full, View::Quiet] {
-            let shown = rows(&mut t, &Filter::Main(view), 40, 5);
+            let shown = rows(&mut t, &Filter::Main(view), 40, 6);
             assert_eq!(
                 shown,
-                ["▎ Fix it", "", "▸ r3 reported", "", "  Merging it."],
+                ["▎ Fix it", "", "▸ r3 reported", "", "  Merging it.", ""],
                 "{view:?}"
             );
         }
@@ -6186,11 +6230,13 @@ mod tests {
         assert_eq!(rows(&mut t, &main, 40, 3)[2], "▸ r1 messaged the lead");
         t.toggle(2, 2, &main, &theme);
         t.follow();
-        let shown = rows(&mut t, &main, 40, 20);
+        // (Open at the end, it has a blank row under it.)
+        let shown = rows(&mut t, &main, 40, 21);
         assert_eq!(shown[2], "▾ r1 messaged the lead", "{shown:?}");
         assert_eq!(shown[3], "│ Line 1");
         assert_eq!(shown[18], "│ Line 16");
         assert_eq!(shown[19], "│ … 24 more lines", "its door, not all 40");
+        assert_eq!(shown[20], "");
         // Its door opens the rest.
         t.toggle(3, 19, &main, &theme);
         t.follow();
@@ -6400,9 +6446,10 @@ mod tests {
         t.apply(Update::Item(
             item(3, Kind::Thinking, "Where is the parser?").agent("r1"),
         ));
+        // (The text has a blank row under it at the end.)
         let folded = ["  Planning …", "", "  Running them."];
-        assert_eq!(rows(&mut t, &full(), 40, 3), folded);
-        assert_eq!(rows(&mut t, &Filter::Main(View::Quiet), 40, 3), folded);
+        assert_eq!(rows(&mut t, &full(), 40, 4)[..3], folded);
+        assert_eq!(rows(&mut t, &Filter::Main(View::Quiet), 40, 4)[..3], folded);
         assert_eq!(
             rows(&mut t, &Filter::Main(View::Messages), 40, 1),
             ["  Running them."]
@@ -6435,7 +6482,7 @@ mod tests {
         }
         assert_eq!(t.fold_at(4, 2, &full(), &theme), None, "not the text after");
         // Its words are dim and italic.
-        let area = Rect::new(0, 0, 40, 3);
+        let area = Rect::new(0, 0, 40, 4);
         let mut buffer = Buffer::empty(area);
         t.draw(&mut buffer, area, &full(), &theme);
         let cell = buffer.cell((2, 0)).unwrap();
@@ -6620,9 +6667,10 @@ mod tests {
             !shown.iter().any(|row| row.contains("Thinking")),
             "{shown:?}"
         );
-        // The reply ends it, and its words stay put.
+        // The reply ends it, and its words stay put. (The reply has a blank
+        // row under it at the end.)
         t.apply(Update::Item(item(3, Kind::Reply, "Done.")));
-        let shown = rows(&mut t, &full(), 40, 5);
+        let shown = rows(&mut t, &full(), 40, 6);
         assert_eq!(shown[2], "  Where to start?", "{shown:?}");
         // It fits on its line, so it has nothing to open.
         assert_eq!(t.fold_at(MARGIN as u16, 2, &full(), &theme), None);
@@ -6653,7 +6701,8 @@ mod tests {
         );
         t.apply(Update::Item(item(2, Kind::Reply, "Done.")));
         t.working = None;
-        assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  Where to start? …"]);
+        // (The reply has a blank row under it at the end.)
+        assert_eq!(rows(&mut t, &quiet, 40, 4)[..1], ["  Where to start? …"]);
         // A click opens it there, and leaves the full view as it was.
         assert_eq!(
             t.fold_at(MARGIN as u16, 0, &quiet, &theme)
@@ -6669,9 +6718,9 @@ mod tests {
         assert_eq!(rows(&mut t, &full(), 40, 6)[0], "  Where to start?");
         t.toggle(1, 0, &quiet, &theme);
         t.follow();
-        assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  Where to start? …"]);
+        assert_eq!(rows(&mut t, &quiet, 40, 4)[..1], ["  Where to start? …"]);
         assert_eq!(
-            rows(&mut t, &full(), 40, 5)[..2],
+            rows(&mut t, &full(), 40, 6)[..2],
             ["  Where to start?", "  The parser."]
         );
     }
@@ -7501,8 +7550,9 @@ mod tests {
         );
         t.apply(Update::Item(item(1, Kind::Text, "Reading.").agent("r1")));
         t.apply(Update::Item(item(2, Kind::Result, "done").agent("r1")));
-        // (A content whose call isn't there stands apart, as open.)
-        let shown = rows(&mut t, &own, 40, 7);
+        // (A content whose call isn't there stands apart, as open. The line
+        // has no blank row under it.)
+        let shown = rows(&mut t, &own, 40, 6);
         assert!(is_working(&shown[5]), "{shown:?}");
         // Selected to the end, it isn't copied.
         assert_eq!(shown[1], "  Reading.");
@@ -7587,7 +7637,7 @@ mod tests {
             event,
         };
         let chunk = |text: &str| event(AgentEvent::AssistantResponseChunk(text.into()));
-        let (width, height) = (60, 5);
+        let (width, height) = (60, 6);
         let mut draw = |t: &mut Transcript| {
             while let Ok(update) = updates.try_recv() {
                 t.apply(update);
@@ -7643,6 +7693,7 @@ mod tests {
                 "▎ Keep the old name.",
                 "",
                 "  Renamed it back.",
+                "",
             ]
         );
         assert_eq!(colours, Some((theme.accent, theme.text)));
@@ -7920,8 +7971,9 @@ mod tests {
             t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
         }
         let filter = full();
+        // (The output has a blank row under it at the end.)
         let before = rows(&mut t, &filter, 30, 6);
-        assert_eq!(before[5], "  line 20");
+        assert_eq!(before[4..], ["  line 20", ""]);
         t.scroll(-10);
         let scrolled = rows(&mut t, &filter, 30, 6);
         assert!(!t.following());
@@ -7944,7 +7996,7 @@ mod tests {
         t.scroll(1000);
         let bottom = rows(&mut t, &filter, 30, 6);
         assert!(t.following());
-        assert!(bottom[5].contains("more and more"));
+        assert!(bottom[4].contains("more and more"), "{bottom:?}");
     }
 
     /// A selection copies what the screen shows as it is written, without
@@ -8083,7 +8135,8 @@ mod tests {
         assert_eq!(held[..3], before[..3]);
         t.release(Release::Drag);
         t.follow();
-        assert_eq!(rows(&mut t, &filter, 20, 4)[3], "  line 6");
+        // (The output has a blank row under it at the end.)
+        assert_eq!(rows(&mut t, &filter, 20, 4)[2..], ["  line 6", ""]);
     }
 
     /// A drag whose release never came (the terminal lost it) doesn't stop
@@ -8100,7 +8153,7 @@ mod tests {
         t.follow();
         rows(&mut t, &filter, 20, 4);
         t.apply(Update::Item(item(6, Kind::Output, "line 6")));
-        assert_eq!(rows(&mut t, &filter, 20, 4)[3], "  line 6");
+        assert_eq!(rows(&mut t, &filter, 20, 4)[2], "  line 6");
         assert!(t.following());
     }
 
@@ -8569,8 +8622,9 @@ mod tests {
         output.more = Some("… 38 more lines".into());
         output.call = Some(1);
         t.apply(Update::Item(output));
-        let shown = rows(&mut t, &full(), 40, 4);
-        assert_eq!(shown[3], "│ No longer kept", "{shown:?}");
+        // (Open at the end, it has a blank row under it.)
+        let shown = rows(&mut t, &full(), 40, 5);
+        assert_eq!(shown[3..], ["│ No longer kept", ""], "{shown:?}");
         assert!(!t.item(2).is_some_and(|item| t.folds(item)));
     }
 

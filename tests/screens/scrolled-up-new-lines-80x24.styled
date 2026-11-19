@@ -1,68 +1,67 @@
 size 80 24
 cursor 3 22 visible default
-text 0 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 0 0 2 fg=#dedede bg=#131313
-style 0 2 78 fg=#303030 bg=#131313
-style 0 78 80 fg=#dedede bg=#131313
-text 1 ""
-style 1 0 80 fg=#dedede bg=#131313
-text 2 "▎ Fix the parser's failing tests"
-style 2 0 2 fg=#419cff bg=#202020
-style 2 2 80 fg=#dedede bg=#202020
-text 3 ""
-style 3 0 80 fg=#dedede bg=#131313
-text 4 "  Planning the fix …"
-style 4 0 2 fg=#dedede bg=#131313
-style 4 2 20 fg=#9d9d9d bg=#131313 italic
-style 4 20 80 fg=#dedede bg=#131313
-text 5 ""
+text 0 ""
+style 0 0 80 fg=#dedede bg=#131313
+text 1 "▎ Fix the parser's failing tests"
+style 1 0 2 fg=#419cff bg=#202020
+style 1 2 80 fg=#dedede bg=#202020
+text 2 ""
+style 2 0 80 fg=#dedede bg=#131313
+text 3 "  Planning the fix …"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 20 fg=#9d9d9d bg=#131313 italic
+style 3 20 80 fg=#dedede bg=#131313
+text 4 ""
+style 4 0 80 fg=#dedede bg=#131313
+text 5 "  I'll read the failing test and the parser first."
 style 5 0 80 fg=#dedede bg=#131313
-text 6 "  I'll read the failing test and the parser first."
+text 6 ""
 style 6 0 80 fg=#dedede bg=#131313
-text 7 ""
-style 7 0 80 fg=#dedede bg=#131313
-text 8 "▸ read src/parser.rs · ✓"
+text 7 "▸ read src/parser.rs · ✓"
+style 7 0 2 fg=#9d9d9d bg=#131313
+style 7 2 20 fg=#dedede bg=#131313
+style 7 20 23 fg=#9d9d9d bg=#131313
+style 7 23 24 fg=#30d158 bg=#131313
+style 7 24 80 fg=#dedede bg=#131313
+text 8 "▸ edit src/parser.rs · ✓"
 style 8 0 2 fg=#9d9d9d bg=#131313
 style 8 2 20 fg=#dedede bg=#131313
 style 8 20 23 fg=#9d9d9d bg=#131313
 style 8 23 24 fg=#30d158 bg=#131313
 style 8 24 80 fg=#dedede bg=#131313
-text 9 "▸ edit src/parser.rs · ✓"
+text 9 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
 style 9 0 2 fg=#9d9d9d bg=#131313
-style 9 2 20 fg=#dedede bg=#131313
-style 9 20 23 fg=#9d9d9d bg=#131313
-style 9 23 24 fg=#30d158 bg=#131313
-style 9 24 80 fg=#dedede bg=#131313
-text 10 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
+style 9 2 27 fg=#dedede bg=#131313
+style 9 27 30 fg=#9d9d9d bg=#131313
+style 9 30 31 fg=#ff5257 bg=#131313
+style 9 31 61 fg=#9d9d9d bg=#131313
+style 9 61 80 fg=#dedede bg=#131313
+text 10 "│ running 4 tests"
 style 10 0 2 fg=#9d9d9d bg=#131313
-style 10 2 27 fg=#dedede bg=#131313
-style 10 27 30 fg=#9d9d9d bg=#131313
-style 10 30 31 fg=#ff5257 bg=#131313
-style 10 31 61 fg=#9d9d9d bg=#131313
-style 10 61 80 fg=#dedede bg=#131313
-text 11 "│ running 4 tests"
+style 10 2 80 fg=#dedede bg=#131313
+text 11 "│ test parser::tests::reads ... ok"
 style 11 0 2 fg=#9d9d9d bg=#131313
 style 11 2 80 fg=#dedede bg=#131313
-text 12 "│ test parser::tests::reads ... ok"
+text 12 "│ test parser::tests::skips_blank ... FAILED"
 style 12 0 2 fg=#9d9d9d bg=#131313
 style 12 2 80 fg=#dedede bg=#131313
-text 13 "│ test parser::tests::skips_blank ... FAILED"
+text 13 "│ test parser::tests::quotes ... ok"
 style 13 0 2 fg=#9d9d9d bg=#131313
 style 13 2 80 fg=#dedede bg=#131313
-text 14 "│ test parser::tests::quotes ... ok"
+text 14 "│ test parser::tests::empty ... ok"
 style 14 0 2 fg=#9d9d9d bg=#131313
 style 14 2 80 fg=#dedede bg=#131313
-text 15 "│ test parser::tests::empty ... ok"
+text 15 "│"
 style 15 0 2 fg=#9d9d9d bg=#131313
 style 15 2 80 fg=#dedede bg=#131313
-text 16 "│"
+text 16 "│ test result: FAILED. 3 passed; 1 failed"
 style 16 0 2 fg=#9d9d9d bg=#131313
 style 16 2 80 fg=#dedede bg=#131313
-text 17 "│ test result: FAILED. 3 passed; 1 failed"
-style 17 0 2 fg=#9d9d9d bg=#131313
-style 17 2 80 fg=#dedede bg=#131313
-text 18 "                                                                 ↓ 6 new lines"
-style 18 0 64 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 80 fg=#dedede bg=#131313
+text 18 "! retrying in 2 s                                                ↓ 6 new lines"
+style 18 0 17 fg=#ffc600 bg=#131313
+style 18 17 64 fg=#dedede bg=#131313
 style 18 64 79 fg=#f2f9ff bg=#006ee5
 style 18 79 80 fg=#dedede bg=#131313
 text 19 "────────────────────────────────────────────────────────────────────────────────"
