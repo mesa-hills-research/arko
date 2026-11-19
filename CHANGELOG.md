@@ -18,6 +18,20 @@
 - `run_code` calls `apply_diff` in place of `edit_file`.
 - A session saved with `edit_file` resumes with it.
 
+### Code only
+
+- `--tools code` (or `ARKO_TOOLS=code`) offers the agents `run_code` in place of `read_file`,
+  `list_files`, `write_file`, `apply_diff`, `shell`, `index_search` and `index_status`, which they
+  then reach only from code. `run_code`'s description declares each of them with its whole
+  description and arguments, and a direct call of one is answered as unavailable. `index_create`,
+  jobs, terminals, monitors, workers, questions, messages, notes, skills and MCP servers stay
+  direct.
+- A conversation or worker saved with one `--tools` keeps its tools and `run_code`'s description
+  when the session resumes with another.
+- The notice of what saved conversations lack names `run_code` and the direct calls a saved `code`
+  run lacks, and says that a conversation Claude Code compacts keeps the tools it started with,
+  where it promised them at the next handover.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript

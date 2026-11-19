@@ -20,6 +20,11 @@ fn equip(
     let shell = Shell::detect(WindowsShell::Cmd);
     let managers = Managers::open(&harness.session, &shell).unwrap();
     harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.run_code = Arc::new(crate::code_mode::RunCodeTool::new(
+        crate::code_mode::file_tool_definitions()
+            .into_iter()
+            .chain(harness.tools.iter().map(|tool| tool.definition())),
+    ));
     harness.outside = Arc::new(outside::Outside::new(
         false,
         managers.list(),
@@ -77,19 +82,35 @@ fn offered(body: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The description a request offered `tool` with.
+fn offered_description(body: &str, tool: &str) -> String {
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    body["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|offered| offered["name"] == tool))
+        .and_then(|offered| offered["description"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// What the request after the run read of `run_code`'s result.
 fn run_result(bodies: &Bodies) -> String {
+    call_result(bodies, "call_c1")
+}
+
+/// What the request after call `call_id` read of its result.
+fn call_result(bodies: &Bodies, call_id: &str) -> String {
     let bodies = bodies.lock().unwrap();
     let body = bodies
         .iter()
-        .find(|body| body.contains("call_c1"))
-        .expect("a request after the run");
+        .find(|body| body.contains(call_id))
+        .expect("a request after the call");
     let body: serde_json::Value = serde_json::from_str(body).unwrap();
     body["input"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "call_c1")
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
         .and_then(|item| item["output"].as_str())
         .unwrap_or_default()
         .to_string()
@@ -156,6 +177,162 @@ async fn a_classic_session_offers_no_run_code() {
     let tools = offered(&first);
     assert!(tools.contains(&"read_file".to_string()), "{tools:?}");
     assert!(!tools.contains(&RUN_CODE.to_string()), "{tools:?}");
+}
+
+/// Under `code` the model is offered `run_code`, whose description declares
+/// the tools code calls, and none of those tools. A direct call of one is
+/// answered as unavailable, and the same call from code runs.
+#[tokio::test]
+async fn a_session_with_code_reaches_the_tools_code_calls_only_from_code() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("call_c1") {
+                    complete("c2", "Done.")
+                } else if body.contains("call_d1") {
+                    tool_call(
+                        "c1",
+                        RUN_CODE,
+                        serde_json::json!({
+                            "code": "return await tools.read_file({ path: 'a.txt' });",
+                            "purpose": "read a file"
+                        }),
+                    )
+                } else {
+                    tool_call("d1", "read_file", serde_json::json!({"path": "a.txt"}))
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, Tools::Code, |_| {});
+    std::fs::write(harness.settings.workspace.join("a.txt"), "hello from a\n").unwrap();
+    run_turn(&mut harness, &mut inputs).await;
+    let first = bodies.lock().unwrap()[0].clone();
+    let tools = offered(&first);
+    assert!(tools.contains(&RUN_CODE.to_string()), "{tools:?}");
+    for name in crate::code_mode::CALLABLE {
+        assert!(!tools.contains(&name.to_string()), "{name}: {tools:?}");
+    }
+    let description = offered_description(&first, RUN_CODE);
+    assert!(
+        description.contains("The tools declared below are reachable only from here")
+            && description.contains("\nread_file(args: {")
+            && description.contains("\nshell(args: {"),
+        "{description}"
+    );
+    let direct = call_result(&bodies, "call_d1");
+    assert!(
+        direct.contains("Tool 'read_file' is not available."),
+        "{direct}"
+    );
+    let read = run_result(&bodies);
+    assert!(read.contains("1 | hello from a"), "{read}");
+}
+
+/// A conversation saved under one `--tools` keeps its tools and run_code's
+/// description when the session resumes with another, while a worker it
+/// starts then and a new conversation take the new setting.
+#[tokio::test]
+async fn a_saved_conversation_keeps_its_tools_when_the_setting_changes() {
+    let code_only = |body: &str| {
+        let tools = offered(body);
+        let description = offered_description(body, RUN_CODE);
+        assert!(tools.contains(&RUN_CODE.to_string()), "{tools:?}");
+        (
+            !tools.contains(&"read_file".to_string()),
+            description.contains("reachable only from here"),
+        )
+    };
+    for (was, now) in [(Tools::Code, Tools::Both), (Tools::Both, Tools::Code)] {
+        let temp = tempfile::tempdir().unwrap();
+        let bodies: Bodies = Arc::default();
+        // After the resume the main agent starts a worker.
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                Box::pin(async move {
+                    if body.contains("You are agent run r") {
+                        complete("w1", "Looked.")
+                    } else if body.contains("call_m2") {
+                        complete("m3", "Started r1.")
+                    } else if body.contains("Again.") {
+                        tool_call(
+                            "m2",
+                            crew::START_AGENT,
+                            serde_json::json!({"agent": WORKER, "task": "Look around."}),
+                        )
+                    } else {
+                        complete("m1", "Noted.")
+                    }
+                })
+            }
+        }))
+        .await;
+        // The main agent's latest request that holds `text`, or the worker's.
+        let request = |text: &str| {
+            bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .rfind(|body| {
+                    body.contains(text)
+                        && (text.starts_with("You are agent run")
+                            || !body.contains("You are agent run r"))
+                })
+                .unwrap_or_else(|| panic!("no request with {text}"))
+                .clone()
+        };
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        let _managers = equip(&mut harness, was, |_| {});
+        harness
+            .turn(Prompt::User("First.".into()), &mut inputs)
+            .await;
+        let started = was == Tools::Code;
+        assert_eq!(code_only(&request("First.")), (started, started), "{was:?}");
+        // The session is resumed with the other setting.
+        harness.settings.tools = now;
+        harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
+        harness.worker_config = agents::worker_config(&agent_settings_of(&harness)).unwrap();
+        harness.open(true).unwrap();
+        harness
+            .turn(Prompt::User("Again.".into()), &mut inputs)
+            .await;
+        assert_eq!(
+            code_only(&request("Again.")),
+            (started, started),
+            "{was:?} resumed with {now:?}"
+        );
+        until(|| {
+            bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|body| body.contains("You are agent run r1,"))
+        })
+        .await;
+        assert_eq!(
+            code_only(&request("You are agent run r1,")),
+            (!started, !started),
+            "a worker started under {now:?}"
+        );
+        harness.new_conversation();
+        harness
+            .turn(Prompt::User("Fresh.".into()), &mut inputs)
+            .await;
+        assert_eq!(
+            code_only(&request("Fresh.")),
+            (!started, !started),
+            "a new conversation under {now:?}"
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
 }
 
 /// From code, a write outside the working directory is refused while

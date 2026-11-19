@@ -2,13 +2,43 @@
 
 use super::*;
 
-/// The description is the only place that teaches the model the API, so
-/// it changes only on purpose. `UPDATE_GOLDENS=1` writes it again.
-#[test]
-fn the_description_is_its_golden() {
-    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/code_mode/run_code-description.txt");
-    let definition = RunCodeTool::new(&super::super::CALLABLE).definition();
+use super::super::arko_definitions;
+
+/// A definition named `name` and nothing more.
+fn named(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        name: name.into(),
+        description: String::new(),
+        output_based_example: None,
+        parameters: Vec::new(),
+        parallel_safe: false,
+        read_only: false,
+        tool_type_details: ToolTypeDetails::DeveloperDefined,
+        raw_json_schema_override: None,
+    }
+}
+
+/// The main agent's tool configuration under `tools`, with the search
+/// index tools.
+fn tool_config(tools: super::super::Tools) -> AgentToolConfig {
+    let model = crate::agents::ModelSettings {
+        model: crate::agents::resolve_model("opus").unwrap().id,
+        effort: crate::agents::Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let settings = crate::agents::AgentSettings {
+        tools,
+        index_tools: crate::index::TOOL_NAMES,
+        ..crate::agents::AgentSettings::for_test(&model, &model)
+    };
+    crate::agents::main_config(&settings).unwrap().tool_config
+}
+
+/// `definition` as a golden shows it, its description and then each
+/// parameter.
+fn shown(definition: &ToolDefinition) -> String {
     let mut shown = definition.description.clone();
     for parameter in &definition.parameters {
         shown.push_str(&format!(
@@ -23,21 +53,98 @@ fn the_description_is_its_golden() {
         ));
     }
     shown.push('\n');
+    shown
+}
+
+/// `shown` is the golden file `name`. `UPDATE_GOLDENS=1` writes it again.
+fn assert_golden(name: &str, shown: &str) {
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/code_mode")
+        .join(name);
     if std::env::var_os("UPDATE_GOLDENS").is_some() {
         std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
-        std::fs::write(&golden, &shown).unwrap();
+        std::fs::write(&golden, shown).unwrap();
     }
     // (A checkout on Windows may end its lines with \r\n.)
     let expected = std::fs::read_to_string(&golden)
         .unwrap()
         .replace("\r\n", "\n");
     assert_eq!(shown, expected);
+}
+
+/// Under `--tools code` the description is the only place that teaches the
+/// model the API and the tools, which it declares whole as the agent's
+/// configuration shows them, so it changes only on purpose.
+#[test]
+fn under_code_the_description_declares_the_tools_and_is_its_golden() {
+    let tool = RunCodeTool::new(arko_definitions());
+    let definition = tool.offered_definition(&tool_config(super::super::Tools::Code));
+    let description = &definition.description;
+    for name in super::super::CALLABLE
+        .iter()
+        .filter(|name| **name != arko_agents::builtins::EDIT_FILE_TOOL_NAME)
+    {
+        assert!(description.contains(&format!("\n{name}(args")), "{name}");
+    }
+    assert!(!description.contains("edit_file(args"));
+    // As the agent's configuration shows them, line ranges and the hint
+    // that points write_file's callers to apply_diff included.
+    assert!(description.contains("  end_line?: number;"));
+    assert!(description.contains("To change part of a file, use `apply_diff`."));
+    // index_status takes no argument it needs.
+    assert!(description.contains("\nindex_status(args?: {"));
+    assert_golden("run_code-code-description.txt", &shown(&definition));
+}
+
+/// Under the other settings the agents are offered the tools code calls,
+/// so `run_code` describes none of them, and a run's description follows
+/// its own configuration, not the session's.
+#[test]
+fn the_description_follows_the_configuration() {
+    let tool = RunCodeTool::new(arko_definitions());
+    for tools in [super::super::Tools::Classic, super::super::Tools::Both] {
+        assert_eq!(
+            tool.offered_definition(&tool_config(tools)).description,
+            tool.definition().description,
+            "{tools:?}"
+        );
+    }
+    assert_ne!(
+        tool.offered_definition(&tool_config(super::super::Tools::Code))
+            .description,
+        tool.definition().description
+    );
+}
+
+#[test]
+fn a_declaration_holds_the_whole_description_and_no_comment_end() {
+    let mut definition = named("probe");
+    definition.description = "First line.\n\nSee `a */ b`.".into();
+    definition.parameters = vec![
+        parameter("text", "What to say.", true),
+        ToolParameterDefinition {
+            param_type: ToolParameterType::Bool,
+            ..parameter("loud", "Whether to shout.", false)
+        },
+    ];
+    assert_eq!(
+        declaration(&definition),
+        "/**\n * First line.\n *\n * See `a *\\/ b`.\n */\nprobe(args: {\n  /** What to say. */\n  text: string;\n  /** Whether to shout. */\n  loud?: boolean;\n}): Promise<string>;"
+    );
+}
+
+/// The description is the only place that teaches the model the API, so
+/// it changes only on purpose. `UPDATE_GOLDENS=1` writes it again.
+#[test]
+fn the_description_is_its_golden() {
+    let definition = RunCodeTool::new(arko_definitions()).definition();
+    assert_golden("run_code-description.txt", &shown(&definition));
     assert!(!definition.read_only && !definition.parallel_safe);
 }
 
 #[test]
 fn the_description_names_only_the_tools_the_session_has() {
-    let tool = RunCodeTool::new(&["read_file", "shell", "terminal_start"]);
+    let tool = RunCodeTool::new(["read_file", "shell", "terminal_start"].map(named));
     assert!(
         tool.description()
             .contains("The tools it can call are read_file and shell.")
@@ -46,7 +153,7 @@ fn the_description_names_only_the_tools_the_session_has() {
 
 #[test]
 fn the_run_keeps_its_own_time_limit_and_stops_when_asked() {
-    let tool = RunCodeTool::new(&super::super::CALLABLE);
+    let tool = RunCodeTool::new(arko_definitions());
     assert!(!tool.uses_host_timeout());
     assert!(tool.interruptible());
     assert_eq!(tool.background_mode(), arko_agents::ToolBackground::Never);
@@ -76,7 +183,7 @@ fn timeout_seconds_takes_the_shells_range() {
 
 #[tokio::test]
 async fn code_too_large_or_missing_is_refused_before_a_child_starts() {
-    let tool = RunCodeTool::new(&super::super::CALLABLE);
+    let tool = RunCodeTool::new(arko_definitions());
     let workspace = std::env::temp_dir();
     let context = TaskContext::new(uuid::Uuid::new_v4(), "agent", "", &workspace);
     let call = |code: String| {

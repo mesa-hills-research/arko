@@ -266,12 +266,14 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
         serde_json::from_str(&text).map_err(|error| unreadable(error.to_string()))?;
     let mut configs = std::collections::HashMap::new();
     let mut optional_tools = std::collections::BTreeSet::new();
+    // (A run under `--tools code` needs those it reaches from code too.)
     let mut offered = |config: &arko_agents::AgentConfig| {
+        let tools = &config.tool_config;
         optional_tools.extend(
-            config
-                .tool_config
+            tools
                 .available_tool_names
                 .iter()
+                .chain(&tools.nested_only_tool_names)
                 .filter(|name| optional_tool(name))
                 .cloned(),
         );
@@ -341,39 +343,64 @@ pub(crate) fn unoffered(
 
 /// What a resumed session's saved runs aren't offered, as they started
 /// without it, meaning the tools Arko has now that their saved tool lists leave out,
-/// and skills. A saved conversation or worker keeps the configuration it was
-/// saved with, also when it hands over, and new ones take the session's now.
-/// `nested_known` is whether the session was made by an Arko whose
-/// `start_agent` takes `nested` ([`Settings::nested_start`]).
+/// those they reach only from code that Arko now offers directly, and skills.
+/// A saved conversation or worker keeps the configuration it was saved with
+/// until a handover gives it the session's, unless `/model` or `/new
+/// continue` gave it its own, and new ones take the session's now. Claude
+/// Code's compaction, in place of a handover, keeps it. `nested_known` is
+/// whether the session was made by an Arko whose `start_agent` takes
+/// `nested` ([`Settings::nested_start`]).
 pub(crate) fn unoffered_with(
     saved: &SavedSetup,
     fresh: &[(&str, &arko_agents::AgentConfig)],
     nested_known: bool,
 ) -> Option<String> {
     let mut missing: Vec<&str> = Vec::new();
+    // Those a saved run reaches only from code (`--tools code`) that the
+    // session offers now.
+    let mut from_code: Vec<&str> = Vec::new();
     let mut skills = false;
+    // Whether the saved runs that lack something hand over, and whether
+    // they compact.
+    let (mut hand_over, mut compact) = (false, false);
     for (agent, fresh) in fresh {
         let Some(saved) = saved.configs.get(*agent) else {
             continue;
         };
-        let offered = &saved.tool_config.available_tool_names;
-        for name in &fresh.tool_config.available_tool_names {
+        let mut lacks_any = false;
+        let saved_tools = &saved.tool_config;
+        let offered = &saved_tools.available_tool_names;
+        let has = |name: &str| {
+            offered.iter().any(|offered| offered == name) || saved_tools.is_nested_only(name)
+        };
+        let fresh_tools = &fresh.tool_config;
+        for name in fresh_tools
+            .available_tool_names
+            .iter()
+            .chain(&fresh_tools.nested_only_tool_names)
+        {
             // One saved while the agents edited with edit_file edits files
             // with it.
-            let edits_with_edit_file = name == APPLY_DIFF_TOOL_NAME
-                && offered.iter().any(|name| name == EDIT_FILE_TOOL_NAME);
+            let edits_with_edit_file = name == APPLY_DIFF_TOOL_NAME && has(EDIT_FILE_TOOL_NAME);
             // One saved with a tool for each MCP tool reaches the servers
             // through those.
             let reaches_servers = name == mcp::MCP_TOOL_NAME
                 && offered
                     .iter()
                     .any(|name| mcp::split_tool_name(name).is_some());
-            if !offered.contains(name)
-                && !missing.contains(&name.as_str())
-                && !edits_with_edit_file
-                && !reaches_servers
-            {
-                missing.push(name);
+            if edits_with_edit_file || reaches_servers {
+                continue;
+            }
+            let lacks = if !has(name) {
+                &mut missing
+            } else if !offered.contains(name) && fresh_tools.available_tool_names.contains(name) {
+                &mut from_code
+            } else {
+                continue;
+            };
+            lacks_any = true;
+            if !lacks.contains(&name.as_str()) {
+                lacks.push(name);
             }
         }
         // (The built-in skills are not the user's, so a session saved without
@@ -383,7 +410,15 @@ pub(crate) fn unoffered_with(
                 skills.workspace_source.is_some() || !skills.global_sources.is_empty()
             })
         };
-        skills |= folders(fresh) && !folders(saved);
+        let lacks_skills = folders(fresh) && !folders(saved);
+        skills |= lacks_skills;
+        if lacks_any || lacks_skills {
+            if agents::compacts(saved) {
+                compact = true;
+            } else {
+                hand_over = true;
+            }
+        }
     }
     let mut parts = Vec::new();
     if missing.contains(&crew::START_AGENT) {
@@ -407,6 +442,11 @@ pub(crate) fn unoffered_with(
         });
     if nesting && !missing.contains(&crew::START_AGENT) {
         parts.push("workers that start workers of their own (nested)".to_string());
+        if saved.configs.get(MAIN).is_some_and(agents::compacts) {
+            compact = true;
+        } else {
+            hand_over = true;
+        }
     }
     if missing
         .iter()
@@ -437,6 +477,28 @@ pub(crate) fn unoffered_with(
     }
     if missing.contains(&mcp::MCP_TOOL_NAME) {
         parts.push("MCP servers (mcp)".to_string());
+    }
+    if missing.contains(&crate::code_mode::RUN_CODE) {
+        parts.push("code mode (run_code)".to_string());
+    }
+    if !from_code.is_empty() {
+        let mut kinds = Vec::new();
+        if from_code
+            .iter()
+            .any(|name| agents::FILE_TOOL_NAMES.contains(name) || *name == EDIT_FILE_TOOL_NAME)
+        {
+            kinds.push("the file tools");
+        }
+        if from_code.contains(&shell::SHELL_TOOL_NAME) {
+            kinds.push("the shell");
+        }
+        if from_code
+            .iter()
+            .any(|name| index::TOOL_NAMES.contains(name))
+        {
+            kinds.push("the search index tools");
+        }
+        parts.push(format!("{} as direct calls", and_list(&kinds)));
     }
     let mut servers: Vec<&str> = Vec::new();
     for (server, _) in missing.iter().filter_map(|name| mcp::split_tool_name(name)) {
@@ -471,6 +533,7 @@ pub(crate) fn unoffered_with(
             || name == message::MESSAGE_USER
             || kept_notes::TOOL_NAMES.contains(&name)
             || skill_install::TOOL_NAMES.contains(&name)
+            || name == crate::code_mode::RUN_CODE
     };
     let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
@@ -479,8 +542,16 @@ pub(crate) fn unoffered_with(
     if parts.is_empty() {
         return None;
     }
+    // A handover gives a saved run the session's tools, and Claude Code's
+    // compaction keeps its own.
+    let handover = ", so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs).";
+    let saved_ones = match (hand_over, compact) {
+        (_, false) => handover.to_string(),
+        (false, true) => ". Claude Code compacts them instead of handing over, so they keep what they started with.".to_string(),
+        (true, true) => format!("{handover} Those that Claude Code compacts instead keep what they started with."),
+    };
     Some(format!(
-        "This session's saved conversations and workers started without {}, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start.",
+        "This session's saved conversations and workers started without {}{saved_ones} New conversations (/new) and new workers have them from the start.",
         and_list(&parts)
     ))
 }
@@ -6264,7 +6335,7 @@ pub(crate) mod tests {
         let lacks = unoffered_with(&saved(&now), &[(MAIN, &main)], false);
         assert_eq!(
             lacks.unwrap(),
-            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without workers that start workers of their own (nested). Claude Code compacts them instead of handing over, so they keep what they started with. New conversations (/new) and new workers have them from the start."
         );
         // A session made since has it.
         assert_eq!(unoffered_with(&saved(&now), &[(MAIN, &main)], true), None);
@@ -6798,6 +6869,97 @@ pub(crate) mod tests {
         );
     }
 
+    /// A session resumed with another `--tools` says what its saved runs
+    /// lack, `run_code` or the direct calls of the tools code calls, and a
+    /// gain is not news. A saved run that Claude Code compacts keeps its
+    /// tools, so the notice doesn't promise them at a handover.
+    #[test]
+    fn a_session_resumed_with_other_tools_says_what_its_saved_runs_lack() {
+        use crate::code_mode::Tools;
+        let opus = ModelSettings {
+            model: resolve_model("opus").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let cc_opus = ModelSettings {
+            model: providers::model_name(&resolve_model("cc:opus").unwrap()),
+            ..opus.clone()
+        };
+        type Configs = (arko_agents::AgentConfig, arko_agents::AgentConfig);
+        let setup = |model: &ModelSettings, tools| -> Configs {
+            let settings = AgentSettings {
+                tools,
+                index_tools: index::TOOL_NAMES,
+                indexes: &[],
+                ..AgentSettings::for_test(model, model)
+            };
+            (
+                agents::main_config(&settings).unwrap(),
+                agents::worker_config(&settings).unwrap(),
+            )
+        };
+        let saved = |(main, worker): Configs| SavedSetup {
+            name: WORKFLOW_NAME.into(),
+            optional_tools: Default::default(),
+            configs: [(MAIN.to_string(), main), (WORKER.to_string(), worker)].into(),
+        };
+        let said = |was: Configs, now: Configs| {
+            unoffered(&saved(was), &[(MAIN, &now.0), (WORKER, &now.1)])
+        };
+        let tail = ", so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start.";
+        for now in [Tools::Both, Tools::Code] {
+            assert_eq!(
+                said(setup(&opus, Tools::Classic), setup(&opus, now)).unwrap(),
+                format!(
+                    "This session's saved conversations and workers started without code mode (run_code){tail}"
+                ),
+                "{now:?}"
+            );
+        }
+        assert_eq!(
+            said(setup(&opus, Tools::Both), setup(&opus, Tools::Classic)),
+            None
+        );
+        assert_eq!(
+            said(setup(&opus, Tools::Both), setup(&opus, Tools::Code)),
+            None
+        );
+        for now in [Tools::Classic, Tools::Both] {
+            assert_eq!(
+                said(setup(&opus, Tools::Code), setup(&opus, now)).unwrap(),
+                format!(
+                    "This session's saved conversations and workers started without the file tools, the shell, and the search index tools as direct calls{tail}"
+                ),
+                "{now:?}"
+            );
+        }
+        assert_eq!(
+            said(
+                setup(&cc_opus, Tools::Classic),
+                setup(&cc_opus, Tools::Code)
+            )
+            .unwrap(),
+            "This session's saved conversations and workers started without code mode (run_code). Claude Code compacts them instead of handing over, so they keep what they started with. New conversations (/new) and new workers have them from the start."
+        );
+        // A main agent that compacts beside workers that hand over.
+        let mixed = |tools| -> Configs {
+            let settings = AgentSettings {
+                tools,
+                ..AgentSettings::for_test(&cc_opus, &opus)
+            };
+            (
+                agents::main_config(&settings).unwrap(),
+                agents::worker_config(&settings).unwrap(),
+            )
+        };
+        assert_eq!(
+            said(mixed(Tools::Classic), mixed(Tools::Both)).unwrap(),
+            "This session's saved conversations and workers started without code mode (run_code), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). Those that Claude Code compacts instead keep what they started with. New conversations (/new) and new workers have them from the start."
+        );
+    }
+
     /// What `harness`'s agents are built from, meaning its settings, without MCP
     /// servers, skills or indexes.
     fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
@@ -6948,7 +7110,7 @@ pub(crate) mod tests {
             worker_config,
             tools: Vec::new(),
             run_code: Arc::new(crate::code_mode::RunCodeTool::new(
-                &crate::code_mode::CALLABLE,
+                crate::code_mode::file_tool_definitions(),
             )),
             withheld: Vec::new(),
             root,

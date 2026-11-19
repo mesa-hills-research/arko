@@ -595,8 +595,9 @@ fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
 /// anywhere as far as the configuration goes. Whether they write outside
 /// the working directory follows outside access, which can change while
 /// the session runs, so a hook decides it (see `outside`), as the command
-/// guard does for commands.
-fn tool_config(tools: Vec<String>) -> AgentToolConfig {
+/// guard does for commands. Under `--tools code` the agent reaches those of
+/// `tools` that code calls only from code.
+fn tool_config(tools: Vec<String>, setting: crate::code_mode::Tools) -> AgentToolConfig {
     let anywhere = PerToolConfigOverride {
         out_of_workspace_path_policy: Some(PathSafetyPolicy::AutoApprove),
         ..PerToolConfigOverride::default()
@@ -605,8 +606,16 @@ fn tool_config(tools: Vec<String>) -> AgentToolConfig {
         .into_iter()
         .map(|name| (name.to_string(), anywhere.clone()))
         .collect();
+    let (nested_only, tools) = if setting.calls_only_from_code() {
+        tools
+            .into_iter()
+            .partition(|name| crate::code_mode::CALLABLE.contains(&name.as_str()))
+    } else {
+        (Vec::new(), tools)
+    };
     AgentToolConfig {
         available_tool_names: tools,
+        nested_only_tool_names: nested_only,
         default_auto_approve_tool_use: true,
         tool_specific_configs: overrides,
         read_file_line_ranges: true,
@@ -716,7 +725,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     {
         instructions.push_str(&rules);
     }
-    let mut tool_config = tool_config(tools);
+    let mut tool_config = tool_config(tools, settings.tools);
     tool_config.text_reply_ends_task = settings.text_replies;
     // It may ask with wait false when no answer could change its work.
     tool_config.async_questions = true;
@@ -810,11 +819,14 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "A subagent that carries out one task the lead agent hands it (an investigation, a change, a review), with a shell, a terminal and file tools, and reports back.".into(),
     )
     .instructions(instructions)
-    .tool_config(tool_config({
-        let mut tools = shared_tool_names(settings);
-        tools.extend(crew::WORKER_TOOL_NAMES.iter().map(|name| name.to_string()));
-        tools
-    }))
+    .tool_config(tool_config(
+        {
+            let mut tools = shared_tool_names(settings);
+            tools.extend(crew::WORKER_TOOL_NAMES.iter().map(|name| name.to_string()));
+            tools
+        },
+        settings.tools,
+    ))
     .environment_details_config(environment())
     .complete_task_summary_prompt_override(
         "Your report to the lead, the only thing it sees of your work: what you did and found, with the evidence (file paths and line numbers, the commands you ran and what they showed), every file you changed and the commits you made, and anything unfinished. Mark what you couldn't confirm, and say where you looked."
@@ -894,9 +906,28 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
             " Use `monitor_start` instead of polling, for anything you would otherwise check again and again: a server's or a build's output showing an error, a check that starts passing (`curl -sf localhost:3000/health`), free disk space or memory falling under a limit while big builds run, a file appearing, a CI run ending. Start one as soon as the risk or the wait begins, without being asked. Its alerts reach you as notes while you work. Your monitors stop when your run ends."
         }
     };
+    // Under `--tools code`, the tools code calls, in its order.
+    let from_code = if settings.tools.calls_only_from_code() {
+        let names: Vec<String> = crate::code_mode::CALLABLE
+            .iter()
+            .filter(|name| {
+                FILE_TOOL_NAMES.contains(name)
+                    || **name == SHELL_TOOL_NAME
+                    || settings.index_tools.contains(name)
+            })
+            .map(|name| format!("`{name}`"))
+            .collect();
+        format!(
+            "{} are reachable only from code. Call them with `run_code`, as its description shows, also for a single read, edit or command.\n\n",
+            crate::and_list(&names)
+        )
+    } else {
+        String::new()
+    };
     let mut text = format!(
         "\n# Tools\n\
          Paths and file names the user gives are relative to the working directory unless they say otherwise: look for them there, not across the disk.\n\n\
+         {from_code}\
          Use `shell` for what you would do in a terminal: {uses}. Use the terminal tools only when `shell` doesn't fit: for servers, watchers, long builds you want to keep an eye on, and programs that ask questions. Cancel the jobs you start once you no longer need them. Wait for a job with `terminal_control wait` and a long `wait_ms` rather than with `sleep`.{monitors}\n\n\
          Change files with `apply_diff` and `write_file` rather than with heredocs and scripts in the shell, which fail on long text. Put the changes you have for one file in one `apply_diff` call, a block for each. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
          A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access. The file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
@@ -2592,5 +2623,128 @@ mod tests {
         let at = instructions.find(said).expect("the paragraph");
         assert!(instructions.find("# The lead\n").unwrap() < at);
         assert!(at < instructions.find("# Tools\n").unwrap());
+    }
+
+    /// Under `--tools code` both agents are offered `run_code` and every
+    /// other tool they have, and reach the tools code calls only from code,
+    /// which their instructions say. The other settings reach none that way.
+    #[test]
+    fn under_code_the_agents_reach_the_tools_code_calls_only_from_code() {
+        use crate::code_mode::{CALLABLE, RUN_CODE, Tools};
+        let opus = model("opus", false);
+        let settings = |tools| AgentSettings {
+            tools,
+            index_tools: crate::index::TOOL_NAMES,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        let code = settings(Tools::Code);
+        let paragraph = "`read_file`, `list_files`, `index_search`, `index_status`, `shell`, `write_file`, and `apply_diff` are reachable only from code. Call them with `run_code`, as its description shows, also for a single read, edit or command.\n\nUse `shell` for";
+        for config in [main_config(&code).unwrap(), worker_config(&code).unwrap()] {
+            let tools = &config.tool_config;
+            assert!(config.validate().is_ok());
+            let mut nested_only = tools.nested_only_tool_names.clone();
+            nested_only.sort();
+            let mut expected: Vec<String> = CALLABLE
+                .iter()
+                .filter(|name| **name != EDIT_FILE_TOOL_NAME)
+                .map(|name| name.to_string())
+                .collect();
+            expected.sort();
+            assert_eq!(nested_only, expected);
+            for name in CALLABLE {
+                assert!(
+                    !tools.available_tool_names.iter().any(|tool| tool == name),
+                    "{name}"
+                );
+            }
+            for name in [RUN_CODE, "index_create", "index_manage", "terminal_start"] {
+                assert!(
+                    tools.available_tool_names.iter().any(|tool| tool == name),
+                    "{name}"
+                );
+            }
+            assert!(config.instructions.contains(paragraph), "{}", config.name);
+        }
+        // Without indexes the paragraph names no index tool.
+        let bare = AgentSettings {
+            tools: Tools::Code,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        assert!(main_config(&bare).unwrap().instructions.contains(
+            "`read_file`, `list_files`, `shell`, `write_file`, and `apply_diff` are reachable only from code."
+        ));
+        for tools in [Tools::Classic, Tools::Both] {
+            for config in [
+                main_config(&settings(tools)).unwrap(),
+                worker_config(&settings(tools)).unwrap(),
+            ] {
+                assert!(config.tool_config.nested_only_tool_names.is_empty());
+                assert!(!config.instructions.contains("reachable only from code"));
+                for name in [READ_FILE_TOOL_NAME, SHELL_TOOL_NAME, "index_search"] {
+                    assert!(
+                        config
+                            .tool_config
+                            .available_tool_names
+                            .iter()
+                            .any(|tool| tool == name),
+                        "{name}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// No tool code calls waits for the user's approval under any setting,
+    /// so a call from code is never refused for want of one (the gate
+    /// refuses a call that would wait). Every one runs without asking, and
+    /// those with paths may take any path, where outside access decides.
+    #[test]
+    fn no_tool_code_calls_needs_approval() {
+        use crate::code_mode::{CALLABLE, Tools};
+        let opus = model("opus", false);
+        let definitions = crate::code_mode::arko_definitions();
+        for tools in Tools::ALL {
+            let settings = AgentSettings {
+                tools,
+                index_tools: crate::index::TOOL_NAMES,
+                ..AgentSettings::for_test(&opus, &opus)
+            };
+            for config in [
+                main_config(&settings).unwrap(),
+                worker_config(&settings).unwrap(),
+            ] {
+                let tools = &config.tool_config;
+                // (Those of CALLABLE the agent has, offered or from code.)
+                let has = |name: &str| {
+                    tools.available_tool_names.iter().any(|tool| tool == name)
+                        || tools.is_nested_only(name)
+                };
+                for name in CALLABLE.iter().filter(|name| has(name)) {
+                    assert!(
+                        definitions
+                            .iter()
+                            .any(|definition| definition.name == *name),
+                        "{name} is judged"
+                    );
+                }
+                for definition in definitions.iter().filter(|definition| {
+                    CALLABLE.contains(&definition.name.as_str()) && has(&definition.name)
+                }) {
+                    assert!(tools.auto_approves(&definition.name), "{}", definition.name);
+                    if definition
+                        .parameters
+                        .iter()
+                        .any(|parameter| parameter.is_path)
+                    {
+                        assert_eq!(
+                            tools.path_safety_policy(&definition.name),
+                            PathSafetyPolicy::AutoApprove,
+                            "{}",
+                            definition.name
+                        );
+                    }
+                }
+            }
+        }
     }
 }

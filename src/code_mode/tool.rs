@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use arko_agents::{
-    TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType,
-    ToolTypeDetails,
+    AgentToolConfig, TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition,
+    ToolParameterType, ToolTypeDetails,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -14,22 +14,38 @@ use serde_json::Value;
 use super::{COMPUTE_SECONDS, HEAP_BYTES, MAX_CALLS, MAX_CODE_BYTES, MAX_RESULT_CHARS, RUN_CODE};
 use crate::shell::{DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS};
 
-/// `run_code`, which calls `callable`, the tools of [`super::CALLABLE`]
-/// the session has.
+/// `run_code`, which calls the tools of [`super::CALLABLE`] the session
+/// has.
 #[derive(Debug)]
 pub struct RunCodeTool {
-    callable: Vec<&'static str>,
+    /// Their definitions, in `CALLABLE`'s order.
+    callable: Vec<ToolDefinition>,
 }
 
 impl RunCodeTool {
-    pub fn new(callable: &[&'static str]) -> Self {
-        Self {
-            callable: callable
+    /// `run_code` for a session whose tools have `definitions`. It calls
+    /// those of [`super::CALLABLE`], and describes the ones an agent
+    /// reaches only from code.
+    pub fn new(definitions: impl IntoIterator<Item = ToolDefinition>) -> Self {
+        let order = |name: &str| {
+            super::CALLABLE
                 .iter()
-                .copied()
-                .filter(|name| super::CALLABLE.contains(name))
-                .collect(),
-        }
+                .position(|callable| *callable == name)
+        };
+        let mut callable: Vec<ToolDefinition> = definitions
+            .into_iter()
+            .filter(|definition| order(&definition.name).is_some())
+            .collect();
+        callable.sort_by_key(|definition| order(&definition.name));
+        callable.dedup_by(|a, b| a.name == b.name);
+        Self { callable }
+    }
+
+    /// The names of the tools it calls.
+    fn names(&self) -> impl Iterator<Item = &str> {
+        self.callable
+            .iter()
+            .map(|definition| definition.name.as_str())
     }
 
     /// The description, the only place that teaches the model the API.
@@ -37,12 +53,11 @@ impl RunCodeTool {
     fn description(&self) -> String {
         use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME};
         let mut names: Vec<String> = self
-            .callable
-            .iter()
-            .filter(|name| **name != EDIT_FILE_TOOL_NAME)
-            .map(|name| name.to_string())
+            .names()
+            .filter(|name| *name != EDIT_FILE_TOOL_NAME)
+            .map(String::from)
             .collect();
-        if self.callable.contains(&EDIT_FILE_TOOL_NAME) {
+        if self.names().any(|name| name == EDIT_FILE_TOOL_NAME) {
             match names.iter().position(|name| name == APPLY_DIFF_TOOL_NAME) {
                 Some(at) => {
                     names[at] = format!(
@@ -65,6 +80,73 @@ impl RunCodeTool {
             HEAP_BYTES / (1024 * 1024),
         )
     }
+
+    /// The description for an agent that reaches `declared` only from code
+    /// (`--tools code`), which declares each of them, since the model sees
+    /// them nowhere else. (Arko's agents reach all the tools it calls that
+    /// way or none.)
+    fn code_only_description(declared: &[ToolDefinition]) -> String {
+        let declarations: Vec<String> = declared.iter().map(declaration).collect();
+        format!(
+            "Runs JavaScript that calls your tools and returns only what the code returns. The tools declared below are reachable only from here, so use it for every read, edit, search and command, whether it takes one call or many.\n\n\
+             The code is the body of an async function. `await tools.read_file({{ path }})` calls a tool with the arguments declared for it, and gives its result as text. A call that fails or is refused throws an Error with the tool's message. `return` what you need (objects come back as JSON), and `console.log` adds lines above it. The result is cut at {} characters.\n\n\
+             The code has no files, network, imports or timers of its own, and TypeScript syntax is an error, so leave the declarations' types out of it. A run may take timeout_seconds, compute for {COMPUTE_SECONDS} seconds, hold {} MB and make {MAX_CALLS} tool calls.\n\n\
+             ```ts\n{}\n```",
+            thousands(MAX_RESULT_CHARS),
+            HEAP_BYTES / (1024 * 1024),
+            declarations.join("\n\n"),
+        )
+    }
+}
+
+/// `definition` as a TypeScript declaration of the function code calls,
+/// with its whole description and each parameter's, which is all the model
+/// learns of a tool it reaches only from code.
+fn declaration(definition: &ToolDefinition) -> String {
+    let mut text = doc_comment(&definition.description, "");
+    // A call with no required argument may leave out the object.
+    let optional = if definition
+        .parameters
+        .iter()
+        .any(|parameter| parameter.required)
+    {
+        ""
+    } else {
+        "?"
+    };
+    text.push_str(&format!("\n{}(args{optional}: {{\n", definition.name));
+    for parameter in &definition.parameters {
+        text.push_str(&doc_comment(&parameter.description, "  "));
+        text.push_str(&format!(
+            "\n  {}{}: {};\n",
+            parameter.name,
+            if parameter.required { "" } else { "?" },
+            match parameter.param_type {
+                ToolParameterType::String => "string",
+                ToolParameterType::Integer => "number",
+                ToolParameterType::Bool => "boolean",
+            }
+        ));
+    }
+    text.push_str("}): Promise<string>;");
+    text
+}
+
+/// `text` as a `/** … */` comment indented by `indent`, on one line when it
+/// fits on one. A `*/` in it is written `*\/`, so it can't end the comment.
+fn doc_comment(text: &str, indent: &str) -> String {
+    let text = text.replace("*/", "*\\/");
+    let lines: Vec<&str> = text.lines().collect();
+    if let [line] = lines.as_slice() {
+        return format!("{indent}/** {line} */");
+    }
+    let mut comment = format!("{indent}/**");
+    for line in lines {
+        let gap = if line.is_empty() { "" } else { " " };
+        comment.push_str(&format!("\n{indent} *{gap}{line}"));
+    }
+    comment.push_str(&format!("\n{indent} */"));
+    comment
 }
 
 fn parameter(name: &str, description: &str, required: bool) -> ToolParameterDefinition {
@@ -112,6 +194,26 @@ impl Tool for RunCodeTool {
             read_only: false,
             tool_type_details: ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
+        }
+    }
+
+    /// An agent that reaches the tools only from code is told them here, as
+    /// its configuration shows them, and so a run saved with one setting
+    /// keeps its description when the session takes another.
+    fn offered_definition(&self, tool_config: &AgentToolConfig) -> ToolDefinition {
+        let declared: Vec<ToolDefinition> = self
+            .callable
+            .iter()
+            .filter(|definition| tool_config.is_nested_only(&definition.name))
+            .map(|definition| tool_config.offered_tool_definition(definition.clone()))
+            .collect();
+        let definition = self.definition();
+        if declared.is_empty() {
+            return definition;
+        }
+        ToolDefinition {
+            description: Self::code_only_description(&declared),
+            ..definition
         }
     }
 
@@ -168,7 +270,7 @@ fn timeout_seconds(params: &HashMap<String, Value>) -> Result<u64, ToolError> {
 #[cfg(not(feature = "code-mode"))]
 async fn run(_: &RunCodeTool, _: &TaskContext<'_>, _: &str, _: u64) -> Result<String, ToolError> {
     Err(ToolError::ExecutionFailed(
-        "This build of Arko has no code mode, so run_code can't run. Call the tools directly."
+        "This build of Arko has no code mode, so run_code can't run. Call the tools directly where you have them. Where you reach them only from code (--tools code), tell the user that this needs an Arko built with code mode, or a conversation started with --tools classic or both."
             .into(),
     ))
 }
@@ -194,10 +296,9 @@ async fn run(
     let start = Start {
         code: code.to_string(),
         tools: tool
-            .callable
-            .iter()
+            .names()
             .filter(|name| nested.may_call(name))
-            .map(|name| name.to_string())
+            .map(String::from)
             .collect(),
         limits: Limits {
             compute_ms: super::COMPUTE_SECONDS * 1000,

@@ -1,0 +1,101 @@
+Runs JavaScript that calls your tools and returns only what the code returns. The tools declared below are reachable only from here, so use it for every read, edit, search and command, whether it takes one call or many.
+
+The code is the body of an async function. `await tools.read_file({ path })` calls a tool with the arguments declared for it, and gives its result as text. A call that fails or is refused throws an Error with the tool's message. `return` what you need (objects come back as JSON), and `console.log` adds lines above it. The result is cut at 30,000 characters.
+
+The code has no files, network, imports or timers of its own, and TypeScript syntax is an error, so leave the declarations' types out of it. A run may take timeout_seconds, compute for 30 seconds, hold 64 MB and make 500 tool calls.
+
+```ts
+/** Reads the content of a file from the workspace, prepending line numbers to each line (e.g., '1 | line content'). An image file (PNG, JPEG, GIF or WebP) is shown as an image. To read part of a file, give start_line and end_line (1-based, inclusive). For a large or generated file (data, logs, minified code), look at the parts you need with the terminal instead: `wc -l`, `grep -n`, `head`, `sed -n '100,200p'`. */
+read_file(args: {
+  /** The path to the file to read (relative to the current working directory, e.g. 'src/main.rs'). */
+  path: string;
+  /** Optional: the first line to read (1-based). Leave out start_line and end_line to read the whole file. */
+  start_line?: number;
+  /** Optional: the last line to read (inclusive); past the end of the file reads to its end. */
+  end_line?: number;
+}): Promise<string>;
+
+/** Lists the files and directories in a directory, at every depth, as a tree. What .gitignore files leave out is left out. */
+list_files(args: {
+  /** The directory to list (relative to the workspace root, e.g., 'src' or 'src/core'). Use '.' for the workspace root. */
+  directory: string;
+}): Promise<string>;
+
+/** Searches Arko's indexes of code and docs by meaning and by words (syntax-aware chunks, keyword BM25 plus Voyage embeddings). Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want ("where are failed requests retried", "code that validates config paths") and search with mode `semantic`. A name's definition takes `hybrid`. Every use of a name or an exact string (a function's callers, an error message) takes `lexical`. Results come back whole where rg gives one line, so one search often replaces several rounds of rg, sed and read_file. Use rg/grep for regexes, punctuation alone, text inside a longer name, and files no index covers. Semantic and hybrid return ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. Lexical lists every chunk that holds the query as written, in path order and grouped by file, each with its scope and the lines that hold the query. Its first line says how many there are in all ("100 of 340 results"), and exhaustive=true lists them all. A cut list's note ends with the cursor of its next page, and `after` lists the matches that follow a cursor, `limit` of them or all with exhaustive=true. A page ends after every result at its last place, so a search of several indexes that hold the same file can run over `limit` by up to one less than the number of indexes. Nothing is kept between calls, so a page begins after the cursor's place (a path, line and column) in the files as they are now. An edit above that place can move a match across it, and then the match is listed twice or not at all. Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all. */
+index_search(args: {
+  /** What to find, in words (a behaviour, a concept, a question) or identifiers. */
+  query: string;
+  /** An index name, or a directory or file inside an index (absolute or relative; e.g. ../other-repo). Default: the indexes covering path_prefix, else the current directory. */
+  index?: string;
+  /** Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words ("where is the session saved to disk"). `hybrid` for where a name is defined (`ARKO_HOME`), a name together with words about it ("Session::save error handling"), and words in the docs and Markdown files of a code index. `lexical` for every place that holds a name or an exact string as written (`search_blocking` for its callers, an error message), case-sensitive unless ignore_case=true. It finds names and words, so rg is for punctuation alone (`->`) and for text inside a longer name (`block` in `search_blocking`). An index without embeddings searches by words in semantic and hybrid mode too. */
+  mode: string;
+  /** Results, by default 100 in lexical mode and 10 in semantic and hybrid mode, where 50 is the most. */
+  limit?: number;
+  /** Lexical mode only. true lists every match, whatever the limit (all that follow the cursor, with `after`). */
+  exhaustive?: boolean;
+  /** Lexical mode only. A cursor from the end of a cut list's note, such as `src/a.rs:804:5`. Lists the matches that follow it, in the same order. */
+  after?: string;
+  /** Lexical mode only. true matches the query's ASCII letters in any case. */
+  ignore_case?: boolean;
+  /** Only results under this directory or file (absolute, or relative to the current directory; any indexed directory, also outside the current one). */
+  path_prefix?: string;
+  /** full (default in semantic and hybrid mode): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only. Lexical mode lists the lines that hold the query unless detail is given. */
+  detail?: string;
+  /** Only chunks in this language, such as python or rust. When none match, lexical search says so, and semantic and hybrid search list every language. Leave it out unless the project mixes languages and you want one of them. */
+  language?: string;
+}): Promise<string>;
+
+/** Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create. */
+index_status(args?: {
+  /** An index name, or a directory or file inside an index (default: all indexes). */
+  index?: string;
+}): Promise<string>;
+
+/** Runs a command in bash and returns its exit code and output (standard output and error together) once it finishes. Each call starts a new shell in the working directory, so a `cd` doesn't carry over to the next call: to run a command somewhere else, give the call that directory as `cwd`. Standard input is closed: a program that asks for input fails instead of waiting. A command still running after timeout_seconds is stopped. A command still running after 10 minutes moves to the background, where it goes on as a job: the result gives its job ID and output so far, and a terminal update tells you when it finishes. Output over 30000 characters keeps its start and end, and the result names a log file with all of it. */
+shell(args: {
+  /** The command. */
+  command: string;
+  /** The directory to run this command in, absolute or relative to the working directory (default: the working directory). It applies to this call only. */
+  cwd?: string;
+  /** How long the command may run, in seconds (default 1800, at most 3600). */
+  timeout_seconds?: number;
+}): Promise<string>;
+
+/** Creates a file, with any directories it needs, or replaces all of an existing one's content. To change part of a file, use `apply_diff`. */
+write_file(args: {
+  /** The path to the file to write (relative to the current working directory, e.g. 'src/main.rs'). */
+  path: string;
+  /** The file's whole content. */
+  content: string;
+}): Promise<string>;
+
+/**
+ * Changes an existing file with one or more SEARCH/REPLACE blocks. Each block's search lines must match whole lines of the file exactly, indentation included, and be found once unless `replace_all` is set. Copy them from `read_file`'s output without the line-number prefix (`12 | `). Every block applies, or none does, and the error says which block failed and why. An empty replace part deletes the lines. Use `write_file` to create a file or replace all of it.
+ *
+ * Example with two blocks:
+ * <<<<<<< SEARCH
+ *     let total = 0;
+ * =======
+ *     let mut total = 0;
+ * >>>>>>> REPLACE
+ * <<<<<<< SEARCH
+ * fn sum(items: &[i32]) -> i32 {
+ * =======
+ * fn sum(items: &[i64]) -> i64 {
+ * >>>>>>> REPLACE
+ */
+apply_diff(args: {
+  /** The path to the file to edit (relative to the current working directory, e.g. 'src/main.rs'). */
+  path: string;
+  /** One or more SEARCH/REPLACE blocks. */
+  diff: string;
+  /** Replace every occurrence of each block's search lines (default false). */
+  replace_all?: boolean;
+}): Promise<string>;
+```
+
+code (string, required): The body of an async function, in JavaScript.
+
+purpose (string, required): What the code is for, in a few words that finish "Ran code to …", such as "count TODO comments per crate".
+
+timeout_seconds (integer): How long the whole run may take, in seconds (default 300, at most 3600).

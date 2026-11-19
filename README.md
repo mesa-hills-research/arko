@@ -27,7 +27,8 @@ models, and on your Claude plan through an installed Claude Code.
   a skill or a worker profile, answered all at once
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - [Code mode](docs/code-mode.md) (`--tools both`), where the agent runs JavaScript that calls its
-  tools, in a process of its own with limits on its memory and time
+  tools, in a process of its own with limits on its memory and time, and `--tools code`, where it
+  reaches its file tools, shell and index searches only that way
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
 - [Dictation](docs/dictation.md) into the message box (`/dictate`, Ctrl+R), recognized on your

@@ -46,7 +46,8 @@ pub const RUNNER_ARGUMENT: &str = "code-runner";
 /// that outlive a run, workers, questions, messages, skills, notes and MCP
 /// servers stay direct calls. (A run calls only those its agent has, so
 /// sessions saved while the agents edited with `edit_file` call that, and
-/// new ones `apply_diff`.)
+/// new ones `apply_diff`.) Under [`Tools::Code`] the agents reach these
+/// only from code.
 pub const CALLABLE: [&str; 8] = [
     arko_agents::builtins::READ_FILE_TOOL_NAME,
     arko_agents::builtins::LIST_FILES_TOOL_NAME,
@@ -57,6 +58,53 @@ pub const CALLABLE: [&str; 8] = [
     arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
     arko_agents::builtins::EDIT_FILE_TOOL_NAME,
 ];
+
+/// The definitions of arko_agents' file tools of [`CALLABLE`], which the
+/// runtime registers itself, for [`RunCodeTool::new`] beside the session's
+/// own tools.
+pub fn file_tool_definitions() -> Vec<arko_agents::ToolDefinition> {
+    use arko_agents::Tool;
+    use arko_agents::builtins::{
+        ApplyDiffTool, EditFileTool, ListFilesTool, ReadFileTool, WriteFileTool,
+    };
+    vec![
+        ReadFileTool.definition(),
+        ListFilesTool.definition(),
+        WriteFileTool.definition(),
+        ApplyDiffTool.definition(),
+        EditFileTool.definition(),
+    ]
+}
+
+/// The definitions of the tools Arko gives `run_code` to call, for tests,
+/// with a bash shell whose commands move to the background after 10
+/// minutes, as in a session the user takes part in.
+#[cfg(test)]
+pub(crate) fn arko_definitions() -> Vec<arko_agents::ToolDefinition> {
+    use crate::shell::{Background, DEFAULT_BACKGROUND_AFTER, Shell, ShellKind, ShellTool};
+    use arko_agents::Tool;
+    let jobs_dir = tempfile::tempdir().unwrap();
+    let jobs = arko_agents::terminal::TerminalManager::new(
+        arko_agents::terminal::TerminalConfig::new(jobs_dir.path().to_path_buf()),
+    )
+    .unwrap();
+    let bash = Shell {
+        program: "bash".into(),
+        args: Vec::new(),
+        job_args: Vec::new(),
+        name: "bash",
+        kind: ShellKind::Posix,
+    };
+    let shell = ShellTool::new(
+        jobs.clone(),
+        bash,
+        Background::new(DEFAULT_BACKGROUND_AFTER, &jobs),
+    );
+    let mut definitions = file_tool_definitions();
+    definitions.push(shell.definition());
+    definitions.extend(crate::index::tool_definitions());
+    definitions
+}
 
 // The limits of a run, set before any code runs.
 
@@ -107,10 +155,13 @@ pub enum Tools {
     Classic,
     /// Their tools and `run_code`, which calls them from JavaScript.
     Both,
+    /// `run_code`, and their tools less those of [`CALLABLE`], which they
+    /// reach only from code.
+    Code,
 }
 
 impl Tools {
-    pub const ALL: [Tools; 2] = [Tools::Classic, Tools::Both];
+    pub const ALL: [Tools; 3] = [Tools::Classic, Tools::Both, Tools::Code];
 
     /// What a new session has unless it's told otherwise.
     pub const NEW_SESSION: Tools = Tools::Classic;
@@ -120,6 +171,7 @@ impl Tools {
         match self {
             Tools::Classic => "classic",
             Tools::Both => "both",
+            Tools::Code => "code",
         }
     }
 
@@ -135,7 +187,12 @@ impl Tools {
 
     /// The agents are offered `run_code`.
     pub fn offers_code(self) -> bool {
-        self == Tools::Both
+        matches!(self, Tools::Both | Tools::Code)
+    }
+
+    /// The agents reach the tools of [`CALLABLE`] only from code.
+    pub fn calls_only_from_code(self) -> bool {
+        self == Tools::Code
     }
 }
 
@@ -165,7 +222,11 @@ mod tests {
     fn the_setting_reads_its_names_in_any_case() {
         assert_eq!(Tools::parse(" Both "), Some(Tools::Both));
         assert_eq!(Tools::parse("classic"), Some(Tools::Classic));
-        assert_eq!(Tools::parse("code"), None);
+        assert_eq!(Tools::parse("CODE"), Some(Tools::Code));
+        assert_eq!(Tools::parse("direct"), None);
         assert_eq!(Tools::default(), Tools::Classic);
+        assert!(Tools::Code.offers_code() && Tools::Code.calls_only_from_code());
+        assert!(Tools::Both.offers_code() && !Tools::Both.calls_only_from_code());
+        assert!(!Tools::Classic.offers_code());
     }
 }

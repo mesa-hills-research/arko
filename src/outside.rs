@@ -220,12 +220,10 @@ pub const FILES_FIXED: &str = " In this session it reaches commands only. Its ag
 /// offers (`apply_diff`, or `edit_file` in sessions saved while the agents
 /// edited with it).
 pub fn files_follow(config: &AgentConfig) -> bool {
+    // (Reached only from code, a tool is the agent's as well.)
     let offered = |tool: &str| {
-        config
-            .tool_config
-            .available_tool_names
-            .iter()
-            .any(|name| name == tool)
+        let tools = &config.tool_config;
+        tools.available_tool_names.iter().any(|name| name == tool) || tools.is_nested_only(tool)
     };
     [
         WRITE_FILE_TOOL_NAME,

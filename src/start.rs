@@ -61,7 +61,7 @@ pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
 }
 
 /// The tools a new session's agents are offered, as the options say, else
-/// as ARKO_TOOLS does (classic or both), else [`Tools::NEW_SESSION`].
+/// as ARKO_TOOLS does (classic, both or code), else [`Tools::NEW_SESSION`].
 pub(crate) fn tools_for(options: &Options) -> Result<Tools, String> {
     if let Some(tools) = options.tools {
         return Ok(tools);
@@ -69,7 +69,7 @@ pub(crate) fn tools_for(options: &Options) -> Result<Tools, String> {
     match credentials::var(credentials::TOOLS) {
         None => Ok(Tools::NEW_SESSION),
         Some(value) => Tools::parse(&value)
-            .ok_or_else(|| format!("ARKO_TOOLS is `{value}`. Set it to classic or both")),
+            .ok_or_else(|| format!("ARKO_TOOLS is `{value}`. Set it to classic, both or code")),
     }
 }
 

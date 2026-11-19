@@ -922,13 +922,13 @@ impl Engine {
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
         }
-        // `run_code` calls the tools of the eight the session has.
-        let callable: Vec<&'static str> = crate::code_mode::CALLABLE
-            .into_iter()
-            .filter(|name| indexes.is_some() || !index::TOOL_NAMES.contains(name))
-            .collect();
-        let run_code: Arc<dyn arko_agents::Tool> =
-            Arc::new(crate::code_mode::RunCodeTool::new(&callable));
+        // `run_code` calls the tools of the eight the session has, and
+        // describes them to an agent that reaches them only from code.
+        let run_code: Arc<dyn arko_agents::Tool> = Arc::new(crate::code_mode::RunCodeTool::new(
+            crate::code_mode::file_tool_definitions()
+                .into_iter()
+                .chain(tools.iter().chain(&withheld).map(|tool| tool.definition())),
+        ));
         let (input_sender, input) = mpsc::unbounded_channel();
         let (requests_sender, requests) = mpsc::unbounded_channel();
         // Someone answers the agent's questions, and what they type while it

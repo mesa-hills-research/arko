@@ -9,8 +9,15 @@ arko --tools both
 ```
 
 `ARKO_TOOLS=both`, in the environment or a `.env` file, does the same for every new session.
-`classic`, without `run_code`, is the default. A resumed session takes `--tools` for the
-conversations and workers that start after.
+`classic`, without `run_code`, is the default.
+
+`--tools code` offers `run_code` in place of the tools code calls, so the agents reach the file
+tools, the shell and the index searches only from code. `run_code`'s description then declares
+each of them with its arguments. `index_create`, jobs, terminals, monitors, workers, questions,
+messages, notes, skills and MCP servers stay direct calls.
+
+A resumed session takes `--tools` for the conversations and workers that start after. A saved one
+keeps its tools for now, and the notice Arko shows as it resumes says when it gets the new ones.
 
 ## What the code does
 
@@ -34,7 +41,7 @@ servers stay direct calls.
 
 Each call passes the same checks as a call of the model's, meaning outside access, the command
 guard, the path and approval policies, and every hook. A call that would wait for your approval
-is refused at once with a note to call the tool directly. A failed or refused call throws an
+is refused at once. A failed or refused call throws an
 `Error` the code can catch, and the third refused call ends the run.
 
 ## Limits
