@@ -997,6 +997,7 @@ impl SubagentHook for StartHook {
     /// what it got and one that lost track of its workers sees what each is.
     /// A model billed per token says so.
     fn describe(&self, record: &SubagentRecord) -> Option<String> {
+        let openai_auth = self.openai_auth.get();
         let models = self.models.lock().unwrap();
         let setup = models.runs.get(&record.run_id)?;
         let model = &setup.llm_config.model;
@@ -1009,7 +1010,7 @@ impl SubagentHook for StartHook {
         if !narrowed.is_empty() {
             text.push_str(&format!(", with {}", narrowed.join(" and ")));
         }
-        if crate::providers::plan_of(model, self.openai_auth.get()).is_none() {
+        if crate::providers::plan_of(model, openai_auth).is_none() {
             text.push_str(&format!(
                 ", billed per token ({})",
                 billing::api_label(model)
@@ -1022,14 +1023,9 @@ impl SubagentHook for StartHook {
         // Once it has ended, what continuing it re-reads, so that the
         // starter weighs that before continuing it.
         let workflow = self.workflow.lock().unwrap().upgrade();
-        if let Some(cache) = workflow.and_then(|workflow| {
-            known(cache_of(
-                &self.models,
-                &workflow,
-                record,
-                self.openai_auth.get(),
-            ))
-        }) {
+        if let Some(cache) = workflow
+            .and_then(|workflow| known(cache_of(&self.models, &workflow, record, openai_auth)))
+        {
             text.push_str(&format!(", {}", cache.line(chrono::Utc::now())));
         }
         Some(text)

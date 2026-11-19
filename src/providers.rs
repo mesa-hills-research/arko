@@ -2199,20 +2199,36 @@ fn window_words(label: &str) -> String {
 /// the keys, the workers' setups, their handover sizes and their billing all
 /// share. `None` when the client doesn't reach them. A key added or removed
 /// while Arko runs changes it for all of them ([`crate::keys::Keys::apply`]).
+/// It is an atomic, so reading it under another lock takes no second one.
 #[derive(Debug, Clone, Default)]
-pub struct OpenAiWay(std::sync::Arc<std::sync::Mutex<Option<OpenAiAuth>>>);
+pub struct OpenAiWay(std::sync::Arc<std::sync::atomic::AtomicU8>);
 
 impl OpenAiWay {
     pub fn new(auth: Option<OpenAiAuth>) -> Self {
-        Self(std::sync::Arc::new(std::sync::Mutex::new(auth)))
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            Self::code(auth),
+        )))
     }
 
     pub fn get(&self) -> Option<OpenAiAuth> {
-        *crate::lock(&self.0)
+        match self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => Some(OpenAiAuth::ChatGpt),
+            2 => Some(OpenAiAuth::ApiKey),
+            _ => None,
+        }
     }
 
     pub(crate) fn set(&self, auth: Option<OpenAiAuth>) {
-        *crate::lock(&self.0) = auth;
+        self.0
+            .store(Self::code(auth), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn code(auth: Option<OpenAiAuth>) -> u8 {
+        match auth {
+            None => 0,
+            Some(OpenAiAuth::ChatGpt) => 1,
+            Some(OpenAiAuth::ApiKey) => 2,
+        }
     }
 }
 

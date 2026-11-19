@@ -223,8 +223,8 @@ impl Handover {
         let most = |threshold: HandoverThreshold| {
             let auth = openai_auth.clone();
             threshold.with_most(move |config| {
-                let auth = crate::lock(&auth).get();
-                run_most(config, auth)
+                let way = crate::lock(&auth).clone();
+                run_most(config, way.get())
             })
         };
         Self {
@@ -291,8 +291,8 @@ impl Handover {
     /// The largest size a worker on `model` hands over at, when its limit
     /// is known.
     pub fn worker_most(&self, model: &arko_ai::Model) -> Option<usize> {
-        let auth = crate::lock(&self.openai_auth).get();
-        agents::max_handover(model, auth)
+        let way = crate::lock(&self.openai_auth).clone();
+        agents::max_handover(model, way.get())
     }
 
     /// The size a worker on `model` whose configuration hands over at
