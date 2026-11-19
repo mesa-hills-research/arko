@@ -6210,6 +6210,36 @@ mod tests {
         assert_eq!(items(&feed).last().unwrap().text, "Use tabs.");
     }
 
+    /// A message of the user's that reaches the agent at once (an answer, a
+    /// note an answer made) comes after the notes typed before it, which
+    /// are read first. The agent's read of each, when it comes, does
+    /// nothing, and a note typed after it waits as before.
+    #[test]
+    fn a_message_that_reaches_the_agent_at_once_comes_after_the_notes_before_it() {
+        for delivery in [Delivery::Answer, Delivery::Note] {
+            let feed = Feed::new("main");
+            feed.note("Use tabs.", Source::Terminal, 1, Vec::new());
+            feed.note("And the docs.", Source::Web, 2, Vec::new());
+            feed.user("Spaces, after all.", Source::Terminal, delivery);
+            let shown = |feed: &Feed| -> Vec<(String, bool)> {
+                items(feed)
+                    .into_iter()
+                    .map(|item| (item.text, item.pending))
+                    .collect()
+            };
+            let sent: Vec<(String, bool)> = ["Use tabs.", "And the docs.", "Spaces, after all."]
+                .into_iter()
+                .map(|text| (text.to_string(), false))
+                .collect();
+            assert_eq!(shown(&feed), sent, "{delivery:?}");
+            feed.event(&event("main", read(&[1, 2])), None);
+            assert_eq!(shown(&feed), sent, "{delivery:?}");
+            assert!(feed.lock().early_reads.is_empty(), "{delivery:?}");
+            feed.note("One more.", Source::Terminal, 3, Vec::new());
+            assert!(items(&feed).last().unwrap().pending, "{delivery:?}");
+        }
+    }
+
     /// A call that fails or is refused says so on its line, and one still
     /// running when its turn ends is marked as interrupted.
     #[test]
