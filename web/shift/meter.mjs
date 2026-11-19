@@ -1838,6 +1838,113 @@ async function pixelCases(cdp, agent) {
         return back ? `closing: ${back}` : null;
       });
     }
+    // A follower opens a fold that takes the end off the screen, and goes
+    // through the other views and back. In a view where the end shows, the
+    // frame follows, and the way back still comes to the block they left.
+    const offTheEnd = async (run) => {
+      await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+      for (let at = 0; at < 24; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+      for (let at = 0; at < 3; at++) {
+        const { call } = await run.feed({ do: 'call', tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+        await run.feed({ do: 'result', call, tool: 'read_file', output: Array.from({ length: 6 }, (_, n) => `${n + 1}\t${run.some(3, 3)}`).join('\n') });
+      }
+      await run.feed({ do: 'end' });
+      await run.settle(null);
+      const fold = await run.evaluate(`(() => {
+        const log = document.getElementById('log').getBoundingClientRect();
+        const all = [...document.querySelectorAll('#rows summary')].filter((s) => { const r = s.getBoundingClientRect(); return r.height > 0 && r.top >= log.top && r.bottom <= log.bottom; });
+        const s = all[all.length - 1];
+        if (!s) return null;
+        const r = s.getBoundingClientRect();
+        return { x: r.left + 30, y: r.top + r.height / 2 };
+      })()`);
+      if (!fold) return 'no fold on the screen';
+      await run.click(fold.x, fold.y);
+      await run.settle(null);
+      const shot = await run.look();
+      if (shot.choice !== 'follow' || shot.end <= shot.bottom) return `the fold left the end on the screen (${shot.choice})`;
+      return shot;
+    };
+    // (Through the other views and back to `view`.)
+    const views = async (run, view) => {
+      const at = VIEWS.indexOf(view);
+      for (const other of [...VIEWS.slice(at + 1), ...VIEWS.slice(0, at)]) await run.pickView(other);
+      await run.pickView(view);
+      return run.look();
+    };
+    const sameLines = (before, after) => {
+      for (const [id, line] of before.ids) {
+        const now = after.ids.get(id);
+        if (!now) return `"${line.text}" didn't come back`;
+        if (Math.round(now.raw - line.raw) !== 0) return `"${line.text}" came back ${Math.round(now.raw - line.raw)} from its row`;
+      }
+      return null;
+    };
+    for (const view of ['full', 'quiet']) {
+      await play(ratio, `the views and back put every line back after a fold took a follower's end off the screen (${view})`, async (run) => {
+        const before = await offTheEnd(run);
+        if (typeof before === 'string') return before;
+        return sameLines(before, await views(run, view));
+      }, view);
+    }
+    // Choosing the end in another view, with a scroll down of less than a
+    // device pixel, lets go of the block the follower left.
+    await play(ratio, 'a scroll down of less than a device pixel at the end in another view follows on the way back', async (run) => {
+      const before = await offTheEnd(run);
+      if (typeof before === 'string') return before;
+      await run.pickView('quiet');
+      await run.pickView('messages');
+      const there = await run.look();
+      if (!follows(there)) return `the end didn't show in Messages (${there.choice}, following ${there.following})`;
+      await run.roll(0.4, 0);
+      await run.pickView('full');
+      const back = await run.look();
+      return follows(back) && Math.abs(back.end - back.bottom) <= 1 ? null : `back in Full: ${back.choice}, following ${back.following}, the end at ${back.end} against ${back.bottom}`;
+    });
+    // A reader goes through the views and back from the end of a long
+    // content they opened, closes it from there, which keeps its door in
+    // place, and goes through the views and back again. The way back comes
+    // to where it closed, not to the block they left the first time.
+    await play(ratio, 'a long door closed from its end between two trips through the views keeps the screen', async (run) => {
+      await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+      for (let at = 0; at < 4; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+      const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `cargo build -p ${run.words(1)}` } });
+      const output = Array.from({ length: 90 }, () => `${run.some(2, 4)} ok`).join('\n');
+      await run.feed({ do: 'result', call, tool: 'shell', output: `exit code 0, 41.0 s\n${output}` });
+      for (let at = 0; at < 16; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+      await run.feed({ do: 'end' });
+      await run.settle(null);
+      const door = `(() => {
+        const log = document.getElementById('log');
+        const box = log.getBoundingClientRect();
+        const door = document.querySelector('#rows button.door');
+        if (!door) return null;
+        const r = door.getBoundingClientRect();
+        return { x: r.left + 10, y: r.top + r.height / 2, top: r.top * devicePixelRatio, label: door.textContent, middle: box.top + log.clientHeight / 2, first: door.previousElementSibling.getBoundingClientRect().top - box.top };
+      })()`;
+      const shut = await run.evaluate(door);
+      if (!shut) return 'no door';
+      await run.roll((shut.y - shut.middle) * ratio, 0);
+      const at = await run.evaluate(door);
+      await run.click(at.x, at.y);
+      for (let wait = 0; wait < 200 && !(await run.evaluate(door)).label.startsWith('↑'); wait++) await sleep(10);
+      await run.settle(null);
+      const open = await run.evaluate(door);
+      if (!open.label.startsWith('↑')) return `the door didn't open ("${open.label}")`;
+      await run.roll((open.y - open.middle) * ratio, 400);
+      const end = await run.evaluate(door);
+      const before = await run.look();
+      if (before.choice !== 'read' || end.first > -300) return `not reading at the end of the content (${before.choice}, its first lines at ${end.first})`;
+      const first = sameLines(before, await views(run, 'full'));
+      if (first) return `the first trip: ${first}`;
+      await run.click(end.x, end.y);
+      await run.settle(null);
+      const closed = await run.look();
+      const again = await run.evaluate(door);
+      if (again.label.startsWith('↑') || Math.round(again.top - end.top) !== 0) return `closing: "${again.label}", the door moved ${Math.round(again.top - end.top)}`;
+      const second = sameLines(closed, await views(run, 'full'));
+      return second ? `the second trip: ${second}` : null;
+    });
     await play(ratio, 'the thumb dragged up reads, and to the bottom follows', async (run) => {
       await run.fill();
       await run.evaluate(`document.getElementById('log').scrollBy({ top: -40, behavior: 'instant' })`);

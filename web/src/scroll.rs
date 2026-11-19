@@ -371,7 +371,9 @@ struct State {
     coast: Option<Coast>,
     clicked: Option<Clicked>,
     baseline: Option<Baseline>,
-    /// The block the reader left for another view, until they scroll.
+    /// The block the reader left for another view, until they move. It
+    /// comes before following, so a follower whose fold took the end off the
+    /// screen comes back to it through a view where the end shows.
     kept: Option<(Anchor, f64)>,
     pending: Option<Pending>,
     left: Option<Left>,
@@ -1145,14 +1147,14 @@ impl State {
         let moved = (from - top) * geometry.ratio;
         let choice = chosen(self.choice, moved, delta > 0.0, geometry.shows(top));
         self.chose(choice);
-        self.kept = None;
         self.write(geometry, top)
     }
 
-    /// Sets the choice. When following starts, the rows to give back are
-    /// the lines shorter views hid while the reader read, so a view that
-    /// grows again brings them back with its bottom edge, and the blank it
-    /// hid comes back as blank.
+    /// Sets the choice, after a move of the reader's, which lets go of the
+    /// block they left for another view. When following starts, the rows to
+    /// give back are the lines shorter views hid while the reader read, so a
+    /// view that grows again brings them back with its bottom edge, and the
+    /// blank it hid comes back as blank.
     fn chose(&mut self, choice: Choice) {
         if choice == Choice::Follow && self.choice == Choice::Read {
             self.owed = self.hidden * window().device_pixel_ratio();
@@ -1161,11 +1163,14 @@ impl State {
             self.hidden = 0.0;
         }
         self.choice = choice;
+        self.kept = None;
     }
 
     /// `line`, and the door after it, keep their places at the next frame,
-    /// where the line shows.
+    /// where the line shows. It's an action of the reader's, which lets go
+    /// of the block they left for another view.
     fn keep(&mut self, line: Element, door: Option<&Element>) {
+        self.kept = None;
         let Some(geometry) = self.geometry() else {
             return;
         };
@@ -1201,7 +1206,6 @@ impl State {
         self.coast = Coast::after(&self.gesture, now);
         self.chose(Choice::Follow);
         self.owed = self.owed.max(self.shrunk * window().device_pixel_ratio());
-        self.kept = None;
         let Some(geometry) = self.geometry() else {
             self.pending = Some(Pending::End);
             return self.out_without();
@@ -1267,7 +1271,6 @@ fn on_scroll() {
         let down = moved < 0.0;
         let choice = chosen(state.choice, moved, down, geometry.shows(top));
         state.chose(choice);
-        state.kept = None;
         Some(state.write(&geometry, geometry.top))
     });
     if let Some(out) = out {
@@ -1337,12 +1340,13 @@ fn on_wheel(event: WheelEvent) {
         let whole = state.gesture.take(device, now);
         if whole == 0.0 {
             // (A scroll down of less than a device pixel moves nothing, and
-            // follows where the end shows.)
-            if !down || !geometry.shows(geometry.top) || state.choice == Choice::Follow {
+            // follows where the end shows, as a whole one does.)
+            if !down || !geometry.shows(geometry.top) {
                 return None;
             }
+            let reading = state.choice == Choice::Read;
             state.chose(Choice::Follow);
-            return Some(state.write(&geometry, geometry.top));
+            return reading.then(|| state.write(&geometry, geometry.top));
         }
         Some(state.scroll_by(&geometry, whole / geometry.ratio))
     });
@@ -1560,7 +1564,6 @@ fn to_start(now: f64) -> Option<Out> {
         state.coast = Coast::after(&state.gesture, now);
         let choice = chosen(state.choice, geometry.top * geometry.ratio, false, false);
         state.chose(choice);
-        state.kept = None;
         Some(state.write(&geometry, 0.0))
     })
 }
@@ -1625,13 +1628,15 @@ pub fn key(event: &KeyboardEvent, typing: bool, empty: bool) -> bool {
 
 /// Another view (Full, Quiet, Messages) is about to show. A follower
 /// follows at its end, with no blank. A reader keeps the block they left
-/// on its row, or the next one the view shows, until they scroll.
+/// on its row, or the next one the view shows, until they move, and so does
+/// a follower whose fold took the end off the screen, also through a view
+/// where the end shows.
 pub fn view_changing() {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.clicked = None;
         state.coast = Coast::after(&state.gesture, now());
-        if state.painted.follows {
+        if state.kept.is_none() && state.painted.follows {
             state.pending = Some(Pending::End);
             return;
         }
