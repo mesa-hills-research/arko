@@ -383,8 +383,10 @@ button.cache { padding: 0; border: 0; background: none; }
    collapses. The header and the composer stand where a row of their
    neighbour's kind would, em box to em box, so the first and the last row
    add the half-leading of their line, or none where their edge is drawn
-   (a bubble, a card, a report). */
-.rows { display: flow-root; }
+   (a bubble, a card, a report). What hangs past the rows' ends, unseen
+   (a button's touch target), is cut there, so the scroller's range ends
+   where the end does, and a scroll to the end leaves no blank under it. */
+.rows { display: flow-root; overflow-y: clip; }
 .row { overflow-wrap: anywhere; }
 #rows > .row { --lead: calc((1lh - 1em) / 2); margin: var(--above, 0px) 0 var(--below, 0px); }
 #rows > .row:not(.user, .thinking, .working) { display: flow-root; }
