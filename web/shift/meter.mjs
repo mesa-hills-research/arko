@@ -431,7 +431,7 @@ class Tally {
 const VIEWS = ['full', 'quiet', 'messages'];
 
 // The controls every run must work at least once.
-const COVERED = ['answer panel shown', 'cut line toggled by a click', 'cut line toggled by Enter', 'cut line toggled by Space'];
+const COVERED = ['answer panel shown', 'cut line toggled by a click', 'cut line toggled by Enter', 'cut line toggled by Space', "a settled question kept the panel's place"];
 
 class Meter {
   constructor() {
@@ -1514,8 +1514,26 @@ class Run {
         await this.settle();
       };
       await this.trip('answer panel', shown ? closes : opens, shown ? reopens : closes);
+      // (Every other ask with one question is settled elsewhere while the
+      // reader is in its answer field. Its word takes the panel's place and
+      // keeps its room until the reader closes it, so nothing moves, also
+      // well past the 5 s such a word once stood for.)
+      const typing = !two && this.word % 4 === 1;
+      if (typing) await opens();
+      const view = `document.getElementById('log').clientHeight`;
+      const before = await this.evaluate(view);
       await this.feed({ do: 'answered', id, text: this.words(two ? 40 : 2) });
-      await this.settle('question answered', { viewport: true });
+      await this.settle('question answered', { viewport: !typing });
+      if (typing) {
+        if ((await this.evaluate(`!!document.querySelector('section.answers.ended')`)) && (await this.evaluate(view)) === before) {
+          this.meter.work('a settled question kept the panel\'s place');
+        }
+        await sleep(6000);
+        await this.settle('question answered');
+        this.begin('answer panel closes', { viewport: true });
+        await this.evaluate(`document.querySelector('section.answers.ended .answers-head button')?.click()`);
+        await this.settle();
+      }
       if (two) {
         const row = await this.evaluate(`(() => {
           const line = [...document.querySelectorAll('#rows .record-outcome[aria-expanded]')].pop();

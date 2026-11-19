@@ -399,6 +399,7 @@ pub fn Composer() -> impl IntoView {
     });
 
     let send = move || {
+        ask.release();
         let Some(area) = input.get_untracked() else {
             return;
         };
@@ -592,7 +593,6 @@ pub fn Composer() -> impl IntoView {
             <div class="column">
                 <crate::questions::AnswerPanel />
                 <crate::questions::QuestionsChip />
-                {move || page.ask.note.get().map(|note| view! { <p class="note-line" role="status">{note}</p> })}
                 {move || page.error.get().map(|error| view! { <p class="error" role="alert">{error}</p> })}
                 <Show when=reporting>
                     <p class="note-line" role="status">{crate::words::REPORTING}</p>
@@ -672,7 +672,7 @@ pub fn Composer() -> impl IntoView {
                             aria-expanded=move || menu.with(|open| open.as_ref().is_some_and(|open| !open.entries.is_empty())).to_string()
                             aria-activedescendant=move || selected.get().map(|at| format!("slash-{at}"))
                             enterkeyhint=if enter_sends { "send" } else { "enter" }
-                            on:input=move |_| { continue_asked.set(None); resize(); refresh_menu(); }
+                            on:input=move |_| { continue_asked.set(None); ask.release(); resize(); refresh_menu(); }
                             on:focus=move |_| refresh_menu()
                             on:blur=move |_| { menu.set(None); CHOICES.with(|choices| choices.borrow_mut().clear()); }
                             on:keydown=keydown

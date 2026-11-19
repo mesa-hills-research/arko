@@ -1170,6 +1170,8 @@ a.chip-link { cursor: pointer; }
 }
 .answers-head { display: flex; flex: none; align-items: center; gap: 8px; }
 .answers-title { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+/* A word in the panel's place keeps its height (questions.rs). */
+.answers.ended .answers-title { color: var(--muted); font-weight: 400; }
 .answers-list { display: flex; flex: 1 1 auto; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .answers-question { display: flex; flex-direction: column; gap: 6px; }
 .answers-question.batch { padding-top: 16px; border-top: 1px solid var(--line); }

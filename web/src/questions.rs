@@ -48,8 +48,13 @@ pub struct Asking {
     pub focused: RwSignal<Option<String>>,
     /// The questions this page answered or dismissed, until they're settled.
     pub answering: RwSignal<Vec<String>>,
-    /// A word on the questions, above the message box for a moment.
+    /// A word on the questions in the panel's place, and the panel's height
+    /// it keeps, until the reader types, sends or closes it.
     pub note: RwSignal<Option<String>>,
+    pub room: RwSignal<Option<f64>>,
+    /// The panel's height as it's drawn, which a word in its place keeps
+    /// once its questions are gone.
+    pub drawn: RwSignal<Option<f64>>,
 }
 
 impl Asking {
@@ -65,15 +70,36 @@ impl Asking {
             focused: RwSignal::new(None),
             answering: RwSignal::new(Vec::new()),
             note: RwSignal::new(None),
+            room: RwSignal::new(None),
+            drawn: RwSignal::new(None),
         }
     }
 
     /// Shows the answer panel. Opened again, it's another opening, so what
-    /// became of an answer sent from the last one leaves it as it is.
+    /// became of an answer sent from the last one leaves it as it is. An
+    /// open of its own (a question that came) keeps the room a word held in
+    /// its place, and a reader's open releases it first ([`release`](Self::release)).
     pub fn open(&self) {
+        // (A panel that opens where a word stood keeps the word's room until
+        // the reader goes on.)
+        if self.note.get_untracked().is_some() {
+            self.note.set(None);
+        }
         if !self.panel.get_untracked() {
             self.opening.update(|opening| *opening += 1);
             self.panel.set(true);
+        }
+    }
+
+    /// The word in the panel's place goes, and the room it held, as the
+    /// reader goes on. Every reader action in the panel and the message box
+    /// calls it, and so does the panel closing with no word in its place.
+    pub fn release(&self) {
+        if self.note.get_untracked().is_some() {
+            self.note.set(None);
+        }
+        if self.room.get_untracked().is_some() {
+            self.room.set(None);
         }
     }
 
@@ -86,7 +112,8 @@ impl Asking {
         self.drafts.set(HashMap::new());
         self.focused.set(None);
         self.answering.set(Vec::new());
-        self.note.set(None);
+        self.release();
+        self.drawn.set(None);
     }
 }
 
@@ -260,13 +287,20 @@ pub fn follow() {
                 .update(|answering| answering.retain(|id| open.contains(id)));
         }
         if gone.is_some() && ask.panel.get_untracked() {
+            // Its word takes the panel's place and keeps its height, so
+            // nothing moves until the reader goes on.
             ask.focused.set(None);
+            ask.room.set(ask.drawn.get_untracked());
+            ask.note
+                .set(Some("That question is no longer open.".into()));
             ask.panel.set(false);
-            say("That question is no longer open.");
             crate::composer::focus();
             return;
         }
         if open.is_empty() {
+            if ask.note.with_untracked(Option::is_none) {
+                ask.release();
+            }
             ask.panel.set(false);
             return;
         }
@@ -324,6 +358,7 @@ fn open_on(card: Option<u64>, id: Option<&str>) {
         return;
     }
     page.sheet.set(None);
+    page.ask.release();
     page.ask.open();
     let target = id
         .and_then(|id| open.iter().find(|question| question.id == id))
@@ -352,19 +387,6 @@ fn question_of(target: Option<web_sys::EventTarget>) -> Option<String> {
         .get_attribute("data-question")
 }
 
-/// Says `words` above the message box for a few seconds.
-fn say(words: &str) {
-    let note = page().ask.note;
-    note.set(Some(words.to_string()));
-    let words = words.to_string();
-    spawn_local(async move {
-        crate::composer::gloo_wait(5000).await;
-        if note.get_untracked().as_deref() == Some(words.as_str()) {
-            note.set(None);
-        }
-    });
-}
-
 /// Closes the panel, the questions left as they are (×). The keyboard goes
 /// back to the message box if the panel had it.
 fn close_panel() {
@@ -374,6 +396,7 @@ fn close_panel() {
     let had = document().active_element().is_none_or(|active| {
         Some(&active) == body.as_ref() || active.closest(".answers").ok().flatten().is_some()
     });
+    page().ask.release();
     page().ask.panel.set(false);
     if had {
         crate::composer::focus();
@@ -391,6 +414,7 @@ fn answer_in_chat() {
             .map(|question| question.id)
             .collect(),
     );
+    ask.release();
     ask.panel.set(false);
     crate::composer::focus();
 }
@@ -398,6 +422,7 @@ fn answer_in_chat() {
 /// Sends what is filled in, and closes the panel.
 fn send() {
     let ask = page().ask;
+    ask.release();
     let questions = open_questions();
     let Some((body, ids)) = ask
         .drafts
@@ -426,6 +451,7 @@ fn not_now(ids: Vec<String>) {
         return;
     }
     let ask = page().ask;
+    ask.release();
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
     let sender = Sender::from_page();
@@ -492,9 +518,63 @@ pub fn AnswerPanel() -> impl IntoView {
             answer_in_chat();
         }
     };
+    // The panel's height as it's drawn, followed as it changes.
+    let panel = NodeRef::<leptos::html::Section>::new();
+    let observer = StoredValue::new_local(
+        None::<(
+            web_sys::ResizeObserver,
+            wasm_bindgen::closure::Closure<dyn FnMut()>,
+        )>,
+    );
+    Effect::new(move |_| {
+        let section = panel.get();
+        observer.update_value(|previous| {
+            if let Some((resize, _)) = previous.take() {
+                resize.disconnect();
+            }
+        });
+        let Some(section) = section else {
+            return;
+        };
+        let element: web_sys::Element = section.into();
+        let drawn = element.clone();
+        let callback = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+            if drawn.is_connected() {
+                ask.drawn
+                    .set(Some(drawn.get_bounding_client_rect().height()));
+            }
+        });
+        if let Ok(resize) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            resize.observe(&element);
+            observer.set_value(Some((resize, callback)));
+        }
+    });
+    on_cleanup(move || {
+        observer.with_value(|observer| {
+            if let Some((resize, _)) = observer {
+                resize.disconnect();
+            }
+        })
+    });
+    // In the panel's place, the word on a question the reader was answering
+    // that was settled elsewhere, as tall as the panel was.
+    let note = move || {
+        ask.note.get().map(|note| {
+            view! {
+                <section class="answers ended" role="status" style:height=move || ask.room.get().map(|room| format!("min({room}px, 60dvh)"))>
+                    <div class="answers-head">
+                        <p class="answers-title">{note}</p>
+                        <button type="button" class="btn ghost icon small" aria-label="Close" title="Close" on:click=move |_| ask.release()>
+                            <X size=16 />
+                        </button>
+                    </div>
+                </section>
+            }
+        })
+    };
     view! {
-        <Show when=move || ask.panel.get() && !open.with(Vec::is_empty)>
-            <section class="answers" aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys
+        <Show when=move || ask.panel.get() && !open.with(Vec::is_empty) fallback=note>
+            <section node_ref=panel class="answers" style:min-height=move || ask.room.get().map(|room| format!("min({room}px, 60dvh)")) aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys
                 on:focusin=move |event| ask.focused.set(question_of(event.target()))
                 on:focusout=move |event: web_sys::FocusEvent| {
                     if question_of(event.related_target()).is_none() {
@@ -668,7 +748,7 @@ pub fn QuestionsChip() -> impl IntoView {
     let page = page();
     let ask = page.ask;
     let waiting = Memo::new(move |_| {
-        if ask.panel.get() {
+        if ask.panel.get() || ask.note.with(Option::is_some) {
             return Vec::new();
         }
         ask.attached.with(|attached| {
