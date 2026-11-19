@@ -149,7 +149,7 @@ async fn a_new_session_edits_files_with_apply_diff() {
         calls,
         [
             ("edit notes.txt".to_string(), "2 edits".to_string()),
-            ("edit notes.txt (all)".to_string(), "2 replacements".to_string()),
+            ("edit notes.txt (all)".to_string(), "2 edits".to_string()),
         ]
     );
     let printed = lines.0.lock().unwrap().clone();

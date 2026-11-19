@@ -916,6 +916,8 @@ pub struct Settled {
     came: Option<Came>,
     /// The call's words once it ended, when the result decides them.
     done: Option<String>,
+    /// The places in its file an edit changed, as its result says.
+    edits: Option<usize>,
 }
 
 impl Outcome {
@@ -1047,6 +1049,12 @@ impl Settled {
         if let Some(done) = &settled.done {
             act.done.clone_from(done);
         }
+        if let Some(edits) = settled.edits {
+            act.edits = match edits {
+                0 | 1 => 0,
+                many => u32::try_from(many).unwrap_or(u32::MAX),
+            };
+        }
     }
 }
 
@@ -1105,11 +1113,7 @@ pub(crate) fn outcome_after(
     let mut outcome = brief(tool, output);
     // An apply_diff call's edits are its blocks, which applied together.
     if tool == APPLY_DIFF_TOOL_NAME && output.starts_with("Edited ") {
-        outcome.text = Some(plural(
-            crate::ui::diff_edits(parameters).max(1),
-            "edit",
-            "edits",
-        ));
+        outcome = edits_made(crate::ui::diff_edits(parameters).max(1));
     }
     outcome.job = job;
     if tool != SHELL_TOOL_NAME && outcome.output.is_none() && !output.trim().is_empty() {
@@ -1118,6 +1122,14 @@ pub(crate) fn outcome_after(
     if outcome.block.is_none() && tool != SHELL_TOOL_NAME {
         outcome.block = content(tool, parameters, output, receipt).map(Content::block);
     }
+    outcome
+}
+
+/// The outcome of an edit that changed `count` places in its file, each
+/// an edit, which its act counts too.
+fn edits_made(count: usize) -> Outcome {
+    let mut outcome = Outcome::ok(plural(count, "edit", "edits"));
+    outcome.settled.edits = Some(count);
     outcome
 }
 
@@ -1143,19 +1155,19 @@ fn brief(tool: &str, output: &str) -> Outcome {
         LIST_FILES_TOOL_NAME => Outcome::ok(plural(lines(), "entry", "entries")),
         WRITE_FILE_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME => Outcome::ok(""),
         // "Edited a.rs at lines 3-5: ..." or "Replaced 4 occurrences in
-        // a.rs, at lines ...", from edit_file and apply_diff alike. (An
-        // apply_diff call's edits are counted in `outcome_after`.)
+        // a.rs, at lines ...", from edit_file and apply_diff alike, where
+        // each place it changed is an edit. (An apply_diff call's edits are
+        // counted in `outcome_after`.)
         EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
             if output.starts_with("Edited ") || output.starts_with("Replaced ") =>
         {
-            match output.strip_prefix("Replaced ").and_then(|rest| {
-                rest.split_whitespace()
-                    .next()
+            edits_made(
+                output
+                    .strip_prefix("Replaced ")
+                    .and_then(|rest| rest.split_whitespace().next())
                     .and_then(|count| count.parse::<usize>().ok())
-            }) {
-                Some(count) => Outcome::ok(plural(count, "replacement", "replacements")),
-                None => Outcome::ok("1 edit"),
-            }
+                    .unwrap_or(1),
+            )
         }
         EDIT_FILE_TOOL_NAME => Outcome::ok(cut(
             output.lines().next().unwrap_or_default(),
@@ -2480,14 +2492,14 @@ mod tests {
                 EDIT_FILE_TOOL_NAME,
                 "Replaced 4 occurrences in a.rs, at lines 1, 2 and 4."
             ),
-            (CallStatus::Ok, "4 replacements".into())
+            (CallStatus::Ok, "4 edits".into())
         );
         assert_eq!(
             told(
                 EDIT_FILE_TOOL_NAME,
                 "Replaced 1 occurrence in a.rs, at line 5."
             ),
-            (CallStatus::Ok, "1 replacement".into())
+            (CallStatus::Ok, "1 edit".into())
         );
         // How a call shows, in the feed and the full screen.
         let item = call(
@@ -2600,6 +2612,73 @@ mod tests {
                 Outcome::error(APPLY_DIFF_TOOL_NAME, said).text.as_deref(),
                 Some(line)
             );
+        }
+    }
+
+    /// An edit is one place in its file that changed, so a call that
+    /// changed every match of a block counts each place, on its Full line,
+    /// in its Quiet row, and in a Quiet row that merges it with other edits.
+    #[test]
+    fn every_place_an_edit_changed_is_an_edit() {
+        let number = |text: &str| {
+            text.split_whitespace()
+                .find_map(|word| word.parse::<usize>().ok())
+        };
+        let diff = "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n";
+        let all = params(&[
+            ("path", "src/app.rs".into()),
+            ("diff", diff.into()),
+            ("old_string", "x".into()),
+            ("new_string", "y".into()),
+            ("replace_all", true.into()),
+        ]);
+        let two = params(&[
+            ("path", "src/app.rs".into()),
+            ("diff", diff.repeat(2).into()),
+        ]);
+        for tool in [APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME] {
+            let ended = |parameters: &Parameters, output: &str| {
+                let mut item = call(tool, parameters).unwrap();
+                let outcome = outcome_after(tool, parameters, output, None);
+                item.settle(outcome.status, outcome.text, &outcome.settled, 2);
+                item
+            };
+            let replaced = ended(
+                &all,
+                "Replaced 5 occurrences in src/app.rs, at lines 1, 3, 5, 7 and 9.",
+            );
+            let line = replaced.outcome.clone().unwrap();
+            assert_eq!(number(&line), Some(5), "{tool}: {line}");
+            let once = ended(&all, "Replaced 1 occurrence in src/app.rs, at line 4.");
+            assert_eq!(number(once.outcome.as_deref().unwrap()), Some(1));
+            // The Quiet rows, of the call alone and merged with others.
+            let said = |items: &[&Item]| {
+                let steps: Vec<quiet::Step> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(at, item)| {
+                        quiet::Step::Call(quiet::Call {
+                            id: at as u64 + 1,
+                            act: item.act.as_ref(),
+                            status: item.status,
+                            outcome: item.outcome.as_deref(),
+                            turn: Some(1),
+                            ..quiet::Call::default()
+                        })
+                    })
+                    .collect();
+                match quiet::rows(&steps).as_slice() {
+                    [quiet::Piece::Row(row)] => row.words.text.clone(),
+                    pieces => panic!("{pieces:?}"),
+                }
+            };
+            assert_eq!(number(&said(&[&replaced])), Some(5), "{tool}");
+            assert_eq!(number(&said(&[&replaced, &once])), Some(6), "{tool}");
+            if tool == APPLY_DIFF_TOOL_NAME {
+                let blocks = ended(&two, "Edited src/app.rs at lines 1 and 3:\n1 | y\n3 | y");
+                assert_eq!(number(blocks.outcome.as_deref().unwrap()), Some(2));
+                assert_eq!(number(&said(&[&replaced, &blocks])), Some(7), "{tool}");
+            }
         }
     }
 

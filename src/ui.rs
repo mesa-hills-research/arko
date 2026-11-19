@@ -1675,11 +1675,12 @@ fn file_call(
         // (`edit_file` in sessions saved while the agents edited with it.)
         EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
             let mut notes = Vec::new();
-            if flag(parameters, "replace_all") {
+            let all = flag(parameters, "replace_all");
+            if all {
                 notes.push("all".to_string());
             }
             let edits = diff_edits(parameters);
-            if counted && edits > 1 {
+            if counted && edits > 1 && !all {
                 notes.push(plural(edits, "edit", "edits"));
             }
             (
@@ -2091,14 +2092,15 @@ mod tests {
         );
         // A call of several blocks says how many edits it makes, since the
         // line shows no outcome. A block's marker in another's text, with
-        // its backslash, isn't one.
+        // its backslash, isn't one. A replace_all call's edits are the places
+        // it finds, which the call doesn't know yet.
         let blocks = "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n";
         let escaped = "<<<<<<< SEARCH\nx\n=======\n\\<<<<<<< SEARCH\n>>>>>>> REPLACE\n";
         for (diff, all, shown) in [
             (blocks.to_string(), false, "● edit b.rs"),
             (escaped.to_string(), false, "● edit b.rs"),
             (blocks.repeat(3), false, "● edit b.rs (3 edits)"),
-            (blocks.repeat(2), true, "● edit b.rs (all, 2 edits)"),
+            (blocks.repeat(2), true, "● edit b.rs (all)"),
         ] {
             let mut pairs = vec![("path", "b.rs".into()), ("diff", diff.into())];
             if all {

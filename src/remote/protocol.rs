@@ -253,8 +253,9 @@ pub struct Act {
     /// A search's query.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub query: String,
-    /// For an edit of several changes at once, how many (an `apply_diff`
-    /// call's blocks). Zero for one.
+    /// For an edit that changed several places in its file, how many, each
+    /// an edit (an `apply_diff` call's blocks, or every place a
+    /// `replace_all` changed). Zero for one.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub edits: u32,
     /// The words of a call of another kind, which never merges, while it

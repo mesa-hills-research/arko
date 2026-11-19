@@ -1331,16 +1331,19 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             )
         },
         Fixture {
-            outcome: "3 replacements",
+            outcome: "3 edits",
             content: Some((Diff, "-\tlet a = 1;\n+\tlet b = 1;")),
             ..fixture(
                 "an edit of every match",
                 "edit_file",
                 r#"{"path": "src/a.rs", "old_string": "let a = 1;", "new_string": "let b = 1;", "replace_all": true}"#,
                 "Replaced 3 occurrences in src/a.rs, at lines 3, 7 and 12.",
-                act(ActKind::Edit, "src/a.rs"),
+                Act {
+                    edits: 3,
+                    ..act(ActKind::Edit, "src/a.rs")
+                },
                 "edit src/a.rs (all)",
-                "Made 1 edit to a.rs",
+                "Made 3 edits to a.rs",
             )
         },
         Fixture {
