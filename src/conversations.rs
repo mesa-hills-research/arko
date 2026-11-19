@@ -454,7 +454,7 @@ impl Harness {
         self.conversation = Conversation::New;
         self.handover.switch(None, None);
         self.handover
-            .configure_for(&self.main_config, self.settings.openai_auth);
+            .configure_for(&self.main_config, &self.providers.openai_auth);
         self.take_window(&self.main_config);
         {
             // Nothing of the new conversation is cached yet.
@@ -599,7 +599,7 @@ impl Harness {
             |result| result.info().agent_config.clone(),
         );
         self.handover
-            .configure_for(&config, self.settings.openai_auth);
+            .configure_for(&config, &self.providers.openai_auth);
         self.take_window(&config);
         lock(&self.stats).context_tokens = input;
         // Its prompt cache, as the session's record has it.

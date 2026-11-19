@@ -18,7 +18,7 @@ use arko_ai::{LLMClient, Model, Provider};
 
 use crate::credentials::{self, Key, KeySource, KeyState};
 use crate::index;
-use crate::providers::{self, OpenAiAuth};
+use crate::providers::{self, OpenAiAuth, OpenAiWay};
 use crate::remote::{self, Level, Source};
 
 /// A key's value, which is never shown. `Debug` writes `Secret(…)`.
@@ -93,14 +93,15 @@ pub struct Keys {
     /// ([`use_codex_auth`](Self::use_codex_auth)).
     pub(crate) codex_auth: std::sync::OnceLock<std::path::PathBuf>,
     state: Mutex<State>,
+    /// How the client reaches OpenAI models, as keys are added and removed,
+    /// which the session's setup shares (`None` when it doesn't reach them).
+    openai: OpenAiWay,
     /// The key and options of the OpenRouter client last installed (tests).
     #[cfg(test)]
     installed: Mutex<Option<(String, arko_ai::OpenRouterOptions)>>,
 }
 
 struct State {
-    /// How the client reaches OpenAI models, and `None` when it doesn't.
-    openai: Option<OpenAiAuth>,
     /// The providers whose key was removed with no other to take its place.
     withdrawn: Vec<Provider>,
     /// The OpenRouter key added or replaced while Arko runs, which the client
@@ -178,11 +179,12 @@ fn share(root: &std::path::Path, key: &'static Key, value: Option<&str>) {
 
 impl Keys {
     /// The keys of a session whose model client is `client` (which reaches
-    /// OpenAI models the way `openai` says) and search indexes `indexes`.
-    /// `feed` gets a notice of each change.
+    /// OpenAI models the way `openai` says, a way the session's setup may
+    /// share) and search indexes `indexes`. `feed` gets a notice of each
+    /// change.
     pub fn new(
         client: Arc<LLMClient>,
-        openai: Option<OpenAiAuth>,
+        openai: impl Into<OpenAiWay>,
         indexes: Option<Arc<index::Indexes>>,
         feed: Option<remote::Feed>,
     ) -> Arc<Self> {
@@ -196,8 +198,8 @@ impl Keys {
             context: crate::context::handle(),
             local: std::sync::OnceLock::new(),
             codex_auth: std::sync::OnceLock::new(),
+            openai: openai.into(),
             state: Mutex::new(State {
-                openai,
                 withdrawn: Vec::new(),
                 openrouter: None,
             }),
@@ -330,10 +332,7 @@ impl Keys {
 
     /// How the session reaches OpenAI models, when it does.
     pub fn openai_auth(&self) -> Option<OpenAiAuth> {
-        let state = self.state();
-        state
-            .openai
-            .filter(|_| !state.withdrawn.contains(&Provider::OpenAI))
+        self.openai.get()
     }
 
     /// What `model` needs that this session doesn't have, which is Claude
@@ -519,7 +518,7 @@ impl Keys {
             })
             .flatten();
         let mut state = self.state();
-        if provider == Provider::OpenAI && state.openai == Some(OpenAiAuth::ChatGpt) {
+        if provider == Provider::OpenAI && self.openai.get() == Some(OpenAiAuth::ChatGpt) {
             return match value {
                 Some(_) => "This session reaches OpenAI models with your ChatGPT login. A new session started with --openai-auth api-key uses the key.",
                 None => "This session reaches OpenAI models with your ChatGPT login.",
@@ -529,6 +528,9 @@ impl Keys {
         let Some(value) = value else {
             if provider == Provider::OpenRouter {
                 state.openrouter = None;
+            }
+            if provider == Provider::OpenAI {
+                self.openai.set(None);
             }
             if self.client.has_provider(&provider) && !state.withdrawn.contains(&provider) {
                 state.withdrawn.push(provider);
@@ -545,7 +547,7 @@ impl Keys {
                     arko_ai::providers::openai::OpenAIClient::new(value),
                     arko_ai::providers::openai::OpenAIClient::with_base_url,
                 ));
-                state.openai = Some(OpenAiAuth::ApiKey);
+                self.openai.set(Some(OpenAiAuth::ApiKey));
             }
             Provider::Google => self.client.set_google_client(self.local_url(
                 arko_ai::providers::google::GoogleClient::new(value),

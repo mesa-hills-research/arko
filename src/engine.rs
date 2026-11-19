@@ -708,14 +708,16 @@ impl Engine {
         {
             let _ = crate::openrouter::checked(&root, &routing, None).await;
         }
-        // A session whose own models aren't OpenAI's still reaches OpenAI
-        // models, for workers, the way its client does, and their handover
-        // sizes, caps and plans go by that way.
-        let openai_way = keys::openai_way(&client).await;
-        if !settings.has_openai_model() {
-            settings.openai_auth = openai_way;
+        // The session goes by the way its client reaches OpenAI models, one
+        // value its keys change as they are added and removed. A session whose
+        // own models aren't OpenAI's takes it too, for the workers it starts
+        // on one, and their handover sizes, caps and billing go by it.
+        let reached = keys::openai_way(&client).await;
+        if reached.is_some() || !settings.has_openai_model() {
+            settings.openai_auth = reached;
         }
-        let provider_setup = providers::Setup::new(settings.openai_auth);
+        let openai_way = providers::OpenAiWay::new(reached);
+        let provider_setup = providers::Setup::new(openai_way.clone());
         {
             // Settings the agents can't be built with leave no session behind.
             let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
@@ -868,7 +870,7 @@ impl Engine {
         }
         let keys = keys::Keys::new(
             client.clone(),
-            openai_way,
+            openai_way.clone(),
             indexes.clone(),
             Some(feed.clone()),
         );
@@ -1008,7 +1010,7 @@ impl Engine {
                 output: output.clone(),
                 max_running: settings.max_workers,
                 cache_1h: settings.worker.cache_1h,
-                openai_auth: settings.openai_auth,
+                openai_auth: openai_way.clone(),
                 cache_lifetime: client
                     .prompt_cache_lifetime(
                         &worker_config.llm_config.model,
@@ -3500,6 +3502,201 @@ mod tests {
             "{refused}"
         );
         assert!(seam.feed.worker_summaries().is_empty());
+        quit(seam, running.ended).await;
+    }
+
+    /// An OpenAI API key added while a session on no OpenAI model runs is how
+    /// its workers reach OpenAI models from then on. worker_options gives Sol
+    /// the API's price and long cache, and worker billing on plans only
+    /// refuses a worker on it.
+    #[tokio::test]
+    async fn an_openai_key_added_while_the_session_runs_is_how_its_workers_reach_openai() {
+        use crate::agents::WORKER;
+        if std::env::var_os(credentials::OPENAI_KEY).is_some() {
+            return; // (Set in this process, so it comes first.)
+        }
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = ModelServer::start(Arc::new({
+            let bodies = bodies.clone();
+            move |index, body: String| {
+                let count = {
+                    let mut bodies = bodies.lock().unwrap();
+                    bodies.push(body);
+                    bodies.len()
+                };
+                Box::pin(async move {
+                    let id = format!("a{index}");
+                    match count {
+                        1 => crate::mock_model::gemini_tool_call(
+                            &id,
+                            crew::WORKER_OPTIONS,
+                            serde_json::json!({}),
+                        ),
+                        2 => crate::mock_model::gemini_tool_call(
+                            &id,
+                            crew::START_AGENT,
+                            serde_json::json!({"agent": WORKER, "task": "Review it.", "model": "sol"}),
+                        ),
+                        _ => crate::mock_model::gemini_reply(&id, "Noted."),
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                session: SessionChoice::New,
+                workspace: Some(project.clone()),
+                model: Some("gemini".into()),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                worker_billing: Some(crate::billing::WorkerBilling::Plans),
+                client: Some(GivenClient(Arc::new(server.gemini_client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        seam.keys.use_local(server.url());
+        let key: &'static credentials::Key = credentials::KEYS
+            .into_iter()
+            .find(|key| key.name == credentials::OPENAI_KEY)
+            .unwrap();
+        let added = seam.keys.add(
+            key,
+            keys::Secret::new("sk-proj-0123456789abcdef0123456789abcdef"),
+        );
+        assert!(matches!(added, keys::Outcome::Done { .. }), "{added:?}");
+        seam.input
+            .send(Input::Message(app_message("Review the files.")))
+            .unwrap();
+        answered(&seam, &bodies, 3).await;
+        let (listed, refused) = {
+            let bodies = bodies.lock().unwrap();
+            (bodies[1].clone(), bodies[2].clone())
+        };
+        let sol = listed.split("\\n- sol · ").nth(1).unwrap();
+        let sol = sol.split("\\n").next().unwrap();
+        assert!(sol.contains(" · API, $"), "{sol}");
+        assert!(sol.contains(" · cache short ("), "{sol}");
+        assert!(
+            refused.contains("(/worker-billing plans), and GPT-6.2 Sol is billed per token."),
+            "{refused}"
+        );
+        assert!(seam.feed.worker_summaries().is_empty());
+        quit(seam, running.ended).await;
+    }
+
+    /// A session saved before the way to OpenAI could be chosen reached its
+    /// OpenAI models over the ChatGPT login, and goes on that way. A worker
+    /// on Sol starts under worker billing on plans only and hands over at
+    /// the login's size, and the session keeps the way.
+    #[tokio::test]
+    async fn a_session_saved_before_the_way_was_chosen_goes_by_the_chatgpt_login() {
+        use crate::agents::WORKER;
+        let server = ModelServer::start(Arc::new(|index, body: String| {
+            let outputs = serde_json::from_str::<serde_json::Value>(&body).unwrap()["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "function_call_output")
+                .count();
+            Box::pin(async move {
+                let id = format!("a{index}");
+                if body.contains("You are agent run r1,") {
+                    complete(&id, "Reviewed.")
+                } else if outputs == 0 {
+                    tool_call(
+                        &id,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Review it.", "model": "sol"}),
+                    )
+                } else {
+                    reply(&id, "Started.")
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(&project).unwrap();
+        let luna = ModelSettings {
+            model: resolve_model("luna").unwrap().id,
+            effort: Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let session = Session::create(&root).unwrap();
+        let legacy = Settings {
+            text_replies: true,
+            worker_billing: crate::billing::WorkerBilling::Plans,
+            ..Settings::for_test(&project, &luna)
+        };
+        assert_eq!(legacy.openai_auth, None);
+        session.save_settings(&legacy).unwrap();
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(session.id.clone()),
+                client: Some(GivenClient(Arc::new(server.chatgpt_client()))),
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        seam.input
+            .send(Input::Message(app_message("Review the files.")))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let workers = seam.feed.worker_summaries();
+                if workers.len() == 1
+                    && workers[0].state == remote::WorkerState::Finished
+                    && !seam.feed.activity().working
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the worker finished");
+        let setups: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(seam.session.dir.join("worker-models.json")).unwrap(),
+        )
+        .unwrap();
+        let setups: Vec<_> = setups.as_object().unwrap().values().collect();
+        assert_eq!(setups.len(), 1);
+        assert_eq!(setups[0]["llm_config"]["model_id"], "gpt-6.2-sol");
+        assert_eq!(setups[0]["handover"]["at_input_tokens"], 428_000);
+        let reading = seam.meter.read();
+        let r1 = reading
+            .agents
+            .iter()
+            .find(|agent| agent.id == "r1")
+            .unwrap();
+        assert_eq!(r1.handover_at, Some(428_000));
+        assert_eq!(
+            Session::open(&root, &session.id)
+                .unwrap()
+                .load_settings()
+                .unwrap()
+                .openai_auth,
+            Some(OpenAiAuth::ChatGpt)
+        );
         quit(seam, running.ended).await;
     }
 

@@ -170,7 +170,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
 fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage() {
     let temp = tempfile::tempdir().unwrap();
     let mut basis = basis(temp.path(), ModelChoice::Agent);
-    basis.providers = providers::Setup::new(None);
+    basis.providers = providers::Setup::new(Some(providers::OpenAiAuth::ChatGpt));
     let everything = |_: &Model| None;
     let plans = BTreeMap::from([(
         "Claude plan".to_string(),
@@ -195,7 +195,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     assert!(text.contains(
         "\n- cc:opus · efforts low to max · Claude plan 5 h 62%, 7 d 31%, shared with the user's own use · hands over at 950k, Claude Code compacts · cache short (5m) or long (1h, when you choose none on a Claude plan)"
     ), "{text}");
-    // Without an API key, OpenAI models keep the ChatGPT login's cache.
+    // On the ChatGPT login, OpenAI models keep its cache.
     let sol = text
         .lines()
         .find(|line| line.starts_with("- sol ·"))
@@ -363,7 +363,7 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         output: Arc::new(Output::new(None, true)),
         max_running: 4,
         cache_1h: false,
-        openai_auth: None,
+        openai_auth: Default::default(),
         cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
         feed: Some(feed.clone()),
         refuse: None,

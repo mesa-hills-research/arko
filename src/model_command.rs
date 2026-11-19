@@ -232,7 +232,7 @@ impl Harness {
     /// billing, as with Plans only, a model billed per token.
     fn plans_allow(&self, model: &Model) -> Result<(), String> {
         if self.settings.worker_billing != crate::billing::WorkerBilling::Plans
-            || providers::plan_of(model, self.settings.openai_auth).is_some()
+            || providers::plan_of(model, self.providers.openai_auth.get()).is_some()
         {
             return Ok(());
         }
@@ -595,7 +595,7 @@ impl Harness {
             });
         }
         let setup = providers::Setup {
-            openai_auth: settings.openai_auth,
+            openai_auth: self.providers.openai_auth.clone(),
             claude_code: self.providers.claude_code.clone(),
         };
         let (_, worker_config) = self.agent_configs(&settings, &setup)?;
@@ -604,7 +604,6 @@ impl Harness {
         // before it recorded them.
         let started = crew.keep_started_models()?;
         crew.set_new_workers(new_workers(
-            &settings,
             &worker_config,
             self.workers_basis(&settings, &setup),
         ));
@@ -689,7 +688,7 @@ impl Harness {
     /// default keep them.
     pub(crate) fn rebuild_agents(&mut self, settings: Settings) -> Result<(), String> {
         let setup = providers::Setup {
-            openai_auth: settings.openai_auth,
+            openai_auth: self.providers.openai_auth.clone(),
             claude_code: self.providers.claude_code.clone(),
         };
         let (main_config, worker_config) = self.agent_configs(&settings, &setup)?;
@@ -714,7 +713,6 @@ impl Harness {
     pub(crate) fn start_new_workers(&self) {
         if let Some(crew) = &self.crew {
             crew.set_new_workers(new_workers(
-                &self.settings,
                 &self.worker_config,
                 self.workers_basis(&self.settings, &self.providers),
             ));
@@ -874,15 +872,13 @@ fn switched(
     }
 }
 
-/// What new workers start on, from their configuration (`worker_config`,
-/// built from `settings`).
+/// What new workers start on, from their configuration (`worker_config`).
 fn new_workers(
-    settings: &Settings,
     worker_config: &arko_agents::AgentConfig,
     basis: std::sync::Arc<crate::chooser::Basis>,
 ) -> NewWorkers {
     let chatgpt = worker_config.llm_config.model.provider == Provider::OpenAI
-        && settings.openai_auth != Some(OpenAiAuth::ApiKey);
+        && basis.providers.openai_auth.get() == Some(OpenAiAuth::ChatGpt);
     NewWorkers {
         basis,
         model: WorkerSetup::of(worker_config),

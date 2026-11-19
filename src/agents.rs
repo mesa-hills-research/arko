@@ -1128,7 +1128,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     } else if let Ok(model) = resolve_model(&settings.worker.model)
         && settings
             .worker
-            .takes_long_cache(settings.providers.openai_auth)
+            .takes_long_cache(settings.providers.openai_auth.get())
     {
         let choice = providers::CacheChoice::of(&model);
         format!(
@@ -1143,7 +1143,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
             },
             uncached_continue_words()
         )
-    } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
+    } else if openai && settings.providers.openai_auth.get() == Some(OpenAiAuth::ChatGpt) {
         format!(
             "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). {}\n",
             uncached_continue_words()
@@ -1501,7 +1501,8 @@ mod tests {
         assert!(claude_code.contains("`cache` to `long`") && claude_code.contains("`short`"));
         assert!(claude_code.contains("Without `cache`, Claude Code uses an hour"));
         let sol = model("sol", false);
-        assert!(instructions(&sol, None).contains("ChatGPT's cache, which no setting changes"));
+        let on_chatgpt = instructions(&sol, Some(OpenAiAuth::ChatGpt));
+        assert!(on_chatgpt.contains("ChatGPT's cache, which no setting changes"));
         let on_key = instructions(&sol, Some(OpenAiAuth::ApiKey));
         assert!(
             !on_key.contains("ChatGPT's cache") && on_key.contains("or 12 hours with a long cache"),
@@ -2613,8 +2614,10 @@ mod tests {
                 .any(|name| name == crate::message::MESSAGE_USER)
         );
         assert!(config.instructions.contains("`message_user`"));
+        let chatgpt = providers::Setup::new(Some(OpenAiAuth::ChatGpt));
         let session = |worker| AgentSettings {
             worker_models: ModelChoice::Session,
+            providers: &chatgpt,
             ..AgentSettings::for_test(&opus, worker)
         };
         let config = main_config(&session(&opus)).unwrap();

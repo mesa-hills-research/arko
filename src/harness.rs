@@ -1203,7 +1203,7 @@ impl Harness {
                 |result| result.info().agent_config.clone(),
             );
             self.handover
-                .configure_for(&current, self.settings.openai_auth);
+                .configure_for(&current, &self.providers.openai_auth);
             // What the main agent's model accepts, and (resumed) how much
             // of it the conversation takes, before its next request says.
             self.take_window(&current);
@@ -7019,8 +7019,19 @@ pub(crate) mod tests {
         };
         let workspace = temp.join("work");
         std::fs::create_dir_all(&workspace).unwrap();
-        let settings = Settings::for_test(&workspace, &luna);
-        let setup = providers::Setup::new(None);
+        // The session reaches OpenAI models by API key when the client
+        // reaches them. (A ChatGPT login's client counts as a key's here, and
+        // a test of the login's plan sets the way.)
+        let openai = providers::OpenAiWay::new(
+            client
+                .has_provider(&arko_ai::Provider::OpenAI)
+                .then_some(providers::OpenAiAuth::ApiKey),
+        );
+        let settings = Settings {
+            openai_auth: openai.get(),
+            ..Settings::for_test(&workspace, &luna)
+        };
+        let setup = providers::Setup::new(openai.clone());
         let agent_settings = AgentSettings::for_session(&settings, &setup);
         let main_config = agents::main_config(&agent_settings).unwrap();
         let worker_config = agents::worker_config(&agent_settings).unwrap();
@@ -7030,16 +7041,7 @@ pub(crate) mod tests {
         let output = Arc::new(Output::new(None, true));
         let stats = Arc::new(Mutex::new(Stats::default()));
         let feed = remote::Feed::new(MAIN);
-        // (A ChatGPT login's client counts as a key's here, because no test
-        // depends on the difference.)
-        let keys = keys::Keys::new(
-            client.clone(),
-            client
-                .has_provider(&arko_ai::Provider::OpenAI)
-                .then_some(providers::OpenAiAuth::ApiKey),
-            None,
-            Some(feed.clone()),
-        );
+        let keys = keys::Keys::new(client.clone(), openai.clone(), None, Some(feed.clone()));
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let asker = Arc::new(Asker {
             feed: Some(feed.clone()),
@@ -7056,7 +7058,7 @@ pub(crate) mod tests {
             output: output.clone(),
             max_running,
             cache_1h: false,
-            openai_auth: None,
+            openai_auth: openai.clone(),
             cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(
                 300,
             )),
@@ -7126,7 +7128,7 @@ pub(crate) mod tests {
             shows_page_links: false,
             details,
             settings,
-            providers: providers::Setup::new(None),
+            providers: setup.clone(),
             kept: crate::kept_notes::KeptNotes::new(&session.dir),
             session,
             client,

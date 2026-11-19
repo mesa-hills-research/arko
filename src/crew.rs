@@ -91,8 +91,8 @@ pub struct Setup {
     pub max_running: u32,
     /// The long prompt cache for workers on the session's worker model.
     pub cache_1h: bool,
-    /// How the session reaches OpenAI models.
-    pub openai_auth: Option<crate::providers::OpenAiAuth>,
+    /// How the session reaches OpenAI models, as it changes.
+    pub openai_auth: crate::providers::OpenAiWay,
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
@@ -736,7 +736,7 @@ fn pay_for(
         basis.billing,
         basis.api_budget,
         model,
-        basis.providers.openai_auth,
+        basis.providers.openai_auth.get(),
         family.depth > 1,
         spending.allowed.has(model),
         || {
@@ -927,7 +927,7 @@ struct StartHook {
     spending: Arc<Spending>,
     /// How the session reaches OpenAI models, which says whether one is
     /// billed per token.
-    openai_auth: Option<crate::providers::OpenAiAuth>,
+    openai_auth: crate::providers::OpenAiWay,
     /// The session's MCP servers, once it has them (see [`Crew::set_mcp_hub`]).
     hub: HubSlot,
 }
@@ -1009,7 +1009,7 @@ impl SubagentHook for StartHook {
         if !narrowed.is_empty() {
             text.push_str(&format!(", with {}", narrowed.join(" and ")));
         }
-        if crate::providers::plan_of(model, self.openai_auth).is_none() {
+        if crate::providers::plan_of(model, self.openai_auth.get()).is_none() {
             text.push_str(&format!(
                 ", billed per token ({})",
                 billing::api_label(model)
@@ -1022,9 +1022,14 @@ impl SubagentHook for StartHook {
         // Once it has ended, what continuing it re-reads, so that the
         // starter weighs that before continuing it.
         let workflow = self.workflow.lock().unwrap().upgrade();
-        if let Some(cache) = workflow
-            .and_then(|workflow| known(cache_of(&self.models, &workflow, record, self.openai_auth)))
-        {
+        if let Some(cache) = workflow.and_then(|workflow| {
+            known(cache_of(
+                &self.models,
+                &workflow,
+                record,
+                self.openai_auth.get(),
+            ))
+        }) {
             text.push_str(&format!(", {}", cache.line(chrono::Utc::now())));
         }
         Some(text)
@@ -1295,7 +1300,7 @@ impl Crew {
                 refuse,
                 default_long,
                 spending: self.spending.clone(),
-                openai_auth: self.setup.openai_auth,
+                openai_auth: self.setup.openai_auth.clone(),
                 hub: self.hub.clone(),
             }))
             // Asked as each worker starts, because a run keeps its first message.
@@ -1558,7 +1563,7 @@ impl Crew {
                     &self.models,
                     workflow,
                     run,
-                    self.setup.openai_auth,
+                    self.setup.openai_auth.get(),
                 ));
                 feed.worker_restored_with_cache(
                     &run.handle,
@@ -1717,7 +1722,7 @@ impl Crew {
                 &self.models,
                 workflow.as_deref()?,
                 record,
-                self.setup.openai_auth,
+                self.setup.openai_auth.get(),
             ))
         });
         if ended {
@@ -1891,7 +1896,12 @@ impl Crew {
             .subagents()
             .into_iter()
             .find(|run| run.handle.eq_ignore_ascii_case(handle.trim()))?;
-        cache_of(&self.models, &workflow, &record, self.setup.openai_auth)
+        cache_of(
+            &self.models,
+            &workflow,
+            &record,
+            self.setup.openai_auth.get(),
+        )
     }
 
     /// Has worker `handle`'s prompt cache last `lifetime` after its run's
@@ -1918,7 +1928,7 @@ impl Crew {
                 &self.models,
                 &workflow,
                 &record,
-                self.setup.openai_auth,
+                self.setup.openai_auth.get(),
             ));
             feed.worker_cache(handle, cache.as_ref());
         }
@@ -1995,8 +2005,8 @@ impl Crew {
                         // models, for every worker on one.)
                         let model = &started.llm_config.model;
                         let chatgpt = model.provider == arko_ai::Provider::OpenAI
-                            && new.basis.providers.openai_auth
-                                != Some(crate::providers::OpenAiAuth::ApiKey);
+                            && new.basis.providers.openai_auth.get()
+                                == Some(crate::providers::OpenAiAuth::ChatGpt);
                         arko_ai::prompt_cache::prompt_cache_lifetime(
                             model,
                             &started.llm_config.generation_config,
@@ -2020,7 +2030,8 @@ impl Crew {
                     let mut generation = config.llm_config.generation_config.clone();
                     generation.long_prompt_cache = Some(long);
                     let chatgpt = model.provider == arko_ai::Provider::OpenAI
-                        && self.setup.openai_auth != Some(crate::providers::OpenAiAuth::ApiKey);
+                        && self.setup.openai_auth.get()
+                            == Some(crate::providers::OpenAiAuth::ChatGpt);
                     lifetime =
                         arko_ai::prompt_cache::prompt_cache_lifetime(model, &generation, chatgpt);
                 }
@@ -2209,7 +2220,7 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 2,
             cache_1h: true,
-            openai_auth: Some(crate::providers::OpenAiAuth::ApiKey),
+            openai_auth: Some(crate::providers::OpenAiAuth::ApiKey).into(),
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(3600)),
             feed: None,
             refuse: None,
@@ -2321,8 +2332,8 @@ mod tests {
     }
 
     /// A crew over `session_dir` whose workers run `worker` unless told
-    /// otherwise, attached as if its workflow were open. Profiles are in
-    /// `root`.
+    /// otherwise, attached as if its workflow were open, reaching OpenAI
+    /// models over the ChatGPT login. Profiles are in `root`.
     fn crew_for(
         session_dir: &Path,
         root: &Path,
@@ -2334,7 +2345,7 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 4,
             cache_1h: false,
-            openai_auth: None,
+            openai_auth: Some(crate::providers::OpenAiAuth::ChatGpt).into(),
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
             feed: None,
             refuse: None,
@@ -2350,7 +2361,9 @@ mod tests {
             basis: Arc::new(chooser::Basis {
                 roots: crate::profiles::Roots::new(root).session(session_dir),
                 worker: worker.clone(),
-                providers: crate::providers::Setup::new(None),
+                providers: crate::providers::Setup::new(Some(
+                    crate::providers::OpenAiAuth::ChatGpt,
+                )),
                 thinking_text: true,
                 cc_compact: true,
                 handover_at: 200_000,
@@ -3454,7 +3467,7 @@ mod tests {
             output: Arc::new(Output::new(None, true)),
             max_running: 4,
             cache_1h: false,
-            openai_auth: None,
+            openai_auth: Some(crate::providers::OpenAiAuth::ChatGpt).into(),
             cache_lifetime: PromptCacheLifetime::Known(Duration::from_secs(300)),
             feed: Some(feed.clone()),
             refuse: None,
@@ -3475,7 +3488,9 @@ mod tests {
             basis: Arc::new(chooser::Basis {
                 roots: crate::profiles::Roots::new(root).session(session_dir),
                 worker,
-                providers: crate::providers::Setup::new(None),
+                providers: crate::providers::Setup::new(Some(
+                    crate::providers::OpenAiAuth::ChatGpt,
+                )),
                 thinking_text: true,
                 cc_compact: true,
                 handover_at: 200_000,

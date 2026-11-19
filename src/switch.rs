@@ -438,7 +438,7 @@ impl Harness {
         };
         let (settings, workers_follow) = self.main_switched(&resolved, effort);
         let setup = providers::Setup {
-            openai_auth: settings.openai_auth,
+            openai_auth: self.providers.openai_auth.clone(),
             claude_code: self.providers.claude_code.clone(),
         };
         let (main_config, worker_config) = self.agent_configs(&settings, &setup)?;
@@ -472,7 +472,7 @@ impl Harness {
         }
         // The next conversation's handover size, compaction and window.
         self.handover
-            .configure_for(&self.main_config, self.settings.openai_auth);
+            .configure_for(&self.main_config, &self.providers.openai_auth);
         self.save_session();
         if model_changed
             && !self.one_shot

@@ -18,7 +18,10 @@ fn gate_of(
     allowed: bool,
     spent: f64,
 ) -> Gate {
-    let auth = key.then_some(OpenAiAuth::ApiKey);
+    let auth = Some(match key {
+        true => OpenAiAuth::ApiKey,
+        false => OpenAiAuth::ChatGpt,
+    });
     gate(
         billing,
         budget,
@@ -76,6 +79,18 @@ fn each_setting_refuses_asks_or_starts_by_how_the_model_is_billed() {
         // Allowed for the session, it starts without asking.
         assert_eq!(gate_of(Ask, None, name, key, false, true, 0.0), Gate::Go);
     }
+    // An OpenAI model the session doesn't reach is no plan's.
+    let unknown = gate(
+        Plans,
+        None,
+        &model("sol"),
+        None,
+        false,
+        false,
+        || 0.0,
+        Vec::new,
+    );
+    assert!(matches!(unknown, Gate::Refuse(_)), "{unknown:?}");
     // No plan model to use says what the user can do.
     let none = gate(
         Plans,

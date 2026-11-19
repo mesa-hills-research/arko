@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::agents::{self, MAIN};
-use crate::providers::OpenAiAuth;
+use crate::providers::{OpenAiAuth, OpenAiWay};
 use crate::remote::{self, Level};
 use crate::ui::Output;
 
@@ -148,7 +148,7 @@ pub struct Handover {
     workers: HandoverThreshold,
     /// How the session reaches OpenAI models, which decides what their
     /// models leave room for (on the ChatGPT login, less).
-    openai_auth: Arc<Mutex<Option<OpenAiAuth>>>,
+    openai_auth: Arc<Mutex<OpenAiWay>>,
     /// The size the main agent's configuration hands over at.
     configured: AtomicUsize,
     /// The largest size the user can set, meaning what the main agent's model
@@ -218,12 +218,12 @@ impl Handover {
         output: Arc<Output>,
         feed: remote::Feed,
     ) -> Self {
-        let openai_auth = Arc::new(Mutex::new(None));
+        let openai_auth = Arc::new(Mutex::new(OpenAiWay::default()));
         // Each run goes by at most what its model leaves room for.
         let most = |threshold: HandoverThreshold| {
             let auth = openai_auth.clone();
             threshold.with_most(move |config| {
-                let auth = *crate::lock(&auth);
+                let auth = crate::lock(&auth).get();
                 run_most(config, auth)
             })
         };
@@ -291,7 +291,7 @@ impl Handover {
     /// The largest size a worker on `model` hands over at, when its limit
     /// is known.
     pub fn worker_most(&self, model: &arko_ai::Model) -> Option<usize> {
-        let auth = *crate::lock(&self.openai_auth);
+        let auth = crate::lock(&self.openai_auth).get();
         agents::max_handover(model, auth)
     }
 
@@ -408,14 +408,14 @@ impl Handover {
     /// reaches OpenAI models by `openai_auth`, meaning its handover size, the most
     /// the user can set, and whether it compacts in Claude Code go by it
     /// from now on (the conversation the session opens in, one it goes back
-    /// to, a new one).
-    pub fn configure_for(&self, main: &arko_agents::AgentConfig, openai_auth: Option<OpenAiAuth>) {
-        *crate::lock(&self.openai_auth) = openai_auth;
+    /// to, a new one). The workers' sizes go by the way as it changes.
+    pub fn configure_for(&self, main: &arko_agents::AgentConfig, openai_auth: &OpenAiWay) {
+        *crate::lock(&self.openai_auth) = openai_auth.clone();
         self.configure(
             main.handover
                 .as_ref()
                 .and_then(|handover| handover.at_input_tokens),
-            agents::max_handover(&main.llm_config.model, openai_auth),
+            agents::max_handover(&main.llm_config.model, openai_auth.get()),
         );
         self.compacts
             .store(agents::compacts(main), Ordering::SeqCst);

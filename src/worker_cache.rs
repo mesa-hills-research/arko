@@ -166,7 +166,7 @@ pub(crate) fn of(
 ) -> Option<WorkerCache> {
     let model = &llm.model;
     let generation = &llm.generation_config;
-    let chatgpt = model.provider == Provider::OpenAI && openai_auth != Some(OpenAiAuth::ApiKey);
+    let chatgpt = model.provider == Provider::OpenAI && openai_auth == Some(OpenAiAuth::ChatGpt);
     let configured =
         || match arko_ai::prompt_cache::prompt_cache_lifetime(model, generation, chatgpt) {
             PromptCacheLifetime::Known(lifetime) => Some(lifetime),

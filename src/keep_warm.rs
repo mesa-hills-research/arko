@@ -975,8 +975,8 @@ impl crate::Harness {
     pub(crate) fn refresh_route(&self) -> Option<Route> {
         let settings = self.conversation_settings();
         let model = crate::providers::resolve_model(&settings.model).ok()?;
-        let chatgpt = self.settings.openai_auth.or_else(|| self.openai_auth())
-            == Some(crate::providers::OpenAiAuth::ChatGpt);
+        let chatgpt =
+            self.providers.openai_auth.get() == Some(crate::providers::OpenAiAuth::ChatGpt);
         let plan = match model.provider {
             arko_ai::Provider::ClaudeCode => true,
             arko_ai::Provider::OpenAI => chatgpt,

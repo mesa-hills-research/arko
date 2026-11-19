@@ -194,6 +194,11 @@ async fn message_agent_asks_before_continuing_a_large_worker_whose_cache_expired
     let server = serve(seen.clone(), held.clone(), release.clone()).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    // On the ChatGPT login, whose plan pays for continuing.
+    harness
+        .providers
+        .openai_auth
+        .set(Some(crate::providers::OpenAiAuth::ChatGpt));
     turn(&mut harness, &mut inputs, "Start r1.").await;
     turn(&mut harness, &mut inputs, "Start r2.").await;
     assert!(got(&seen, "r1", "The big task.") && got(&seen, "r2", "The small task."));
@@ -294,6 +299,11 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
     let server = serve(seen.clone(), notify.clone(), notify).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    // On the ChatGPT login, whose plan pays for continuing.
+    harness
+        .providers
+        .openai_auth
+        .set(Some(crate::providers::OpenAiAuth::ChatGpt));
     turn(&mut harness, &mut inputs, "Start r1.").await;
     expire(&harness, &["r1"]).await;
     let summary = harness.feed.worker_summary("r1").unwrap();
@@ -650,7 +660,7 @@ fn reopened(
         output: harness.output.clone(),
         max_running: NO_LIMIT,
         cache_1h: false,
-        openai_auth: None,
+        openai_auth: Default::default(),
         cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
         feed: Some(feed.clone()),
         refuse: None,

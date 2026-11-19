@@ -1700,11 +1700,12 @@ pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
 /// The plan that pays for `model`'s calls when the session reaches OpenAI
 /// models by `openai_auth`, as `/cost` names it, meaning the Claude plan for `cc:`
 /// models, the ChatGPT plan for OpenAI models on the ChatGPT login. `None`
-/// for a model billed per token (an API key, Gemini, OpenRouter).
+/// for a model billed per token (an API key, Gemini, OpenRouter), and for an
+/// OpenAI model the session doesn't reach.
 pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'static str> {
     match model.provider {
         Provider::ClaudeCode => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
-        Provider::OpenAI if openai_auth != Some(OpenAiAuth::ApiKey) => {
+        Provider::OpenAI if openai_auth == Some(OpenAiAuth::ChatGpt) => {
             Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
         }
         _ => None,
@@ -2194,20 +2195,48 @@ fn window_words(label: &str) -> String {
     }
 }
 
+/// How the session's model client reaches OpenAI models now, one value that
+/// the keys, the workers' setups, their handover sizes and their billing all
+/// share. `None` when the client doesn't reach them. A key added or removed
+/// while Arko runs changes it for all of them ([`crate::keys::Keys::apply`]).
+#[derive(Debug, Clone, Default)]
+pub struct OpenAiWay(std::sync::Arc<std::sync::Mutex<Option<OpenAiAuth>>>);
+
+impl OpenAiWay {
+    pub fn new(auth: Option<OpenAiAuth>) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(auth)))
+    }
+
+    pub fn get(&self) -> Option<OpenAiAuth> {
+        *crate::lock(&self.0)
+    }
+
+    pub(crate) fn set(&self, auth: Option<OpenAiAuth>) {
+        *crate::lock(&self.0) = auth;
+    }
+}
+
+impl From<Option<OpenAiAuth>> for OpenAiWay {
+    fn from(auth: Option<OpenAiAuth>) -> Self {
+        Self::new(auth)
+    }
+}
+
 /// What the agents' configurations take from the session's providers
 /// besides their models.
 #[derive(Debug, Clone)]
 pub struct Setup {
-    /// How the session reaches OpenAI models.
-    pub openai_auth: Option<OpenAiAuth>,
+    /// How the session reaches OpenAI models, as it changes.
+    pub openai_auth: OpenAiWay,
     /// How Claude Code runs, for the agents on `cc:` models.
     pub claude_code: arko_agents::ClaudeCodeSettings,
 }
 
 impl Setup {
-    pub fn new(openai_auth: Option<OpenAiAuth>) -> Self {
+    /// With `openai_auth`, a way of its own, or the session's (shared).
+    pub fn new(openai_auth: impl Into<OpenAiWay>) -> Self {
         Self {
-            openai_auth,
+            openai_auth: openai_auth.into(),
             claude_code: claude_code::settings(),
         }
     }
@@ -2656,13 +2685,19 @@ mod tests {
         );
     }
 
+    /// A session on `main` and `worker`, reaching OpenAI models over the
+    /// ChatGPT login when one of them is one.
     fn settings(main: ModelSettings, worker: ModelSettings) -> Settings {
-        Settings {
+        let mut settings = Settings {
             handover_at: main.handover_at.unwrap_or(200_000),
             worker,
             max_workers: 4,
             ..Settings::for_test(std::path::Path::new("/work"), &main)
+        };
+        if settings.has_openai_model() {
+            settings.openai_auth = Some(OpenAiAuth::ChatGpt);
         }
+        settings
     }
 
     const CATALOG: &str = r#"{"data": [

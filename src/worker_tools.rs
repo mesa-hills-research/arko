@@ -268,7 +268,7 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
             )
             .ok()?;
             if basis.billing == WorkerBilling::Plans
-                && providers::plan_of(&model, basis.providers.openai_auth).is_none()
+                && providers::plan_of(&model, basis.providers.openai_auth.get()).is_none()
             {
                 return Some("billed per token".to_string());
             }
@@ -347,12 +347,12 @@ fn model_line(
         alias.to_string()
     };
     let chatgpt = model.provider == Provider::OpenAI
-        && basis.providers.openai_auth != Some(providers::OpenAiAuth::ApiKey);
+        && basis.providers.openai_auth.get() == Some(providers::OpenAiAuth::ChatGpt);
     let plan = |key: &str| {
         let usage = plans.get(key).cloned().unwrap_or_else(|| key.to_string());
         format!("{usage}, shared with the user's own use")
     };
-    let cost = match providers::plan_of(model, basis.providers.openai_auth) {
+    let cost = match providers::plan_of(model, basis.providers.openai_auth.get()) {
         Some(name) => plan(name),
         None => crate::billing::api_label(model),
     };
@@ -371,7 +371,7 @@ fn model_line(
     );
     if model.provider == Provider::ClaudeCode {
         line.push_str(" · cache short (5m) or long (1h, when you choose none on a Claude plan)");
-    } else if providers::takes_long_cache(model, basis.providers.openai_auth) {
+    } else if providers::takes_long_cache(model, basis.providers.openai_auth.get()) {
         let choice = providers::CacheChoice::of(model);
         line.push_str(&format!(
             " · cache short ({}) or long ({}, {} the input price to write)",
@@ -395,7 +395,7 @@ fn models_text(
                 .ok()
                 .and_then(|model| needs(&model))
         },
-        basis.providers.openai_auth,
+        basis.providers.openai_auth.get(),
         &[basis.worker.model.as_str()],
         &[],
     );
@@ -585,7 +585,7 @@ impl Tool for SaveWorkerProfile {
                     .as_deref()
                     .unwrap_or(basis.worker.model.as_str()),
             )
-            && providers::plan_of(&model, basis.providers.openai_auth).is_none()
+            && providers::plan_of(&model, basis.providers.openai_auth.get()).is_none()
         {
             return Err(refused(format!(
                 "The user lets workers run only on their plans (/worker-billing plans), and {} is billed per token, so a worker couldn't start with this profile. Give it a model on the user's plans, which worker_options lists.",

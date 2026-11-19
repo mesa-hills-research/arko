@@ -87,6 +87,11 @@
   such a worker is billed per token as `/worker-billing` says, where it counted as on a plan.
 - `worker_options` gives the size a worker started now hands over at, with the workers' size set
   with `/handover-at` up to what each model leaves room for. It gave each model's own size.
+- An OpenAI API key added with `/keys` while Arko runs, in a session that didn't reach OpenAI, is
+  how its workers reach OpenAI models from then on, for their sizes, caches and billing. A worker
+  on one counted as on the ChatGPT plan, so `/worker-billing plans` let it start billed per token.
+- A session saved before the way to OpenAI could be chosen goes on over the ChatGPT login it used,
+  and its workers go by that login. A Sol worker in one handed over at 200k.
 
 ## 0.23.1 (2026-11-18)
 

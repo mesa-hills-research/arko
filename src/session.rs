@@ -105,11 +105,11 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_shell: Option<WindowsShell>,
     /// How the session reaches OpenAI models, meaning the ChatGPT login or an
-    /// API key. A session whose main agent and workers aren't on OpenAI
-    /// models takes the way its client reaches them each time it opens, for
-    /// the workers it starts on one. `None` when it doesn't reach them, and
-    /// in sessions saved before it could be chosen, which used the ChatGPT
-    /// login.
+    /// API key, and `None` when it doesn't reach them. A session takes the
+    /// way its client reaches them each time it opens, also one whose main
+    /// agent and workers aren't on OpenAI models, for the workers it starts on
+    /// one. A session saved before it could be chosen loads with the ChatGPT
+    /// login, which it used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_auth: Option<OpenAiAuth>,
     /// The workers' model was chosen on its own (`--worker-model`, `/model
@@ -309,13 +309,11 @@ impl Settings {
     /// the session reaches it when that isn't in its name (OpenAI models).
     pub fn describe(&self, model: &ModelSettings) -> String {
         let mut text = model.describe();
-        if crate::providers::resolve_model(&model.model)
-            .is_ok_and(|resolved| resolved.provider == arko_ai::Provider::OpenAI)
+        if let Some(auth) = self.openai_auth
+            && crate::providers::resolve_model(&model.model)
+                .is_ok_and(|resolved| resolved.provider == arko_ai::Provider::OpenAI)
         {
-            text.push_str(&format!(
-                " via {}",
-                self.openai_auth.unwrap_or(OpenAiAuth::ChatGpt).describe()
-            ));
+            text.push_str(&format!(" via {}", auth.describe()));
         }
         text
     }
@@ -482,6 +480,11 @@ impl Session {
             .map_err(|error| format!("could not read {} ({error})", path.display()))?;
         // (A depth edited by hand to one the settings can't show.)
         settings.worker_depth = settings.worker_depth.clamp(1, MAX_WORKER_DEPTH);
+        // A session saved before the way to OpenAI could be chosen reached its
+        // OpenAI models over the ChatGPT login.
+        if settings.openai_auth.is_none() && settings.has_openai_model() {
+            settings.openai_auth = Some(OpenAiAuth::ChatGpt);
+        }
         Ok(settings)
     }
 
@@ -1282,9 +1285,13 @@ mod tests {
             loaded.describe(&loaded.worker),
             "claude-opus-5-5 (xhigh effort)"
         );
+        // Saved before it was chosen, it loads with the ChatGPT login it used.
         settings.openai_auth = None;
+        session.save_settings(&settings).unwrap();
+        let loaded = session.load_settings().unwrap();
+        assert_eq!(loaded.openai_auth, Some(OpenAiAuth::ChatGpt));
         assert_eq!(
-            settings.describe(&settings.main),
+            loaded.describe(&loaded.main),
             "gpt-6.1-sol (xhigh effort) via ChatGPT login"
         );
     }

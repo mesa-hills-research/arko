@@ -303,7 +303,8 @@ fn choose_at(
         model: model_name,
         effort,
         fast,
-        cache_1h: long_cache && providers::takes_long_cache(&model, basis.providers.openai_auth),
+        cache_1h: long_cache
+            && providers::takes_long_cache(&model, basis.providers.openai_auth.get()),
         handover_at: handover_for(basis, &model),
     };
     // Fast mode is checked as the settings are built, so a model without it
@@ -385,7 +386,10 @@ pub(crate) fn handover_for(basis: &Basis, model: &Model) -> Option<usize> {
         .is_ok_and(|session| providers::model_name(&session) == name);
     match same_model {
         true => basis.worker.handover_at,
-        false => Some(agents::default_handover(model, basis.providers.openai_auth)),
+        false => Some(agents::default_handover(
+            model,
+            basis.providers.openai_auth.get(),
+        )),
     }
 }
 
@@ -421,7 +425,7 @@ pub fn named_profiles(roots: &profiles::Roots) -> Vec<agents::ProfileName> {
 /// `start_agent` takes them), for a refusal of one billed per token.
 /// `refuse` says why a model can't start (Claude Code isn't signed in).
 pub(crate) fn plan_models(basis: &Basis, refuse: Option<&Refuse>) -> Vec<String> {
-    let auth = basis.providers.openai_auth;
+    let auth = basis.providers.openai_auth.get();
     let unusable = |sample: &str| {
         let model = providers::resolve_model(sample).ok()?;
         refuse.and_then(|refuse| crate::blocking(|| refuse(&model)))
