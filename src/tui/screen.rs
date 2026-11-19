@@ -2921,12 +2921,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
         };
         let edits = at(&rows, "▸ Read app.rs and made 2 edits");
-        // (A failed row shows one ✗ at its right.)
+        // (A failed row shows one ✗ at its right, a column in from the
+        // last.)
         let test = &rows[edits + 1];
         assert!(
             test.starts_with("▸ Ran cargo test (1 failed, 3 passed) ")
                 && test.ends_with('✗')
-                && test.chars().count() == 70,
+                && test.chars().count() == 69,
             "{rows:#?}"
         );
         assert_eq!(rows[edits + 2], "▸ Messaged r3", "{rows:#?}");

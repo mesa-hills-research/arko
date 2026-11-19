@@ -45,12 +45,13 @@ style 10 0 80 fg=idx:253 bg=idx:233
 text 11 "▸ Read parser.rs and made 1 edit"
 style 11 0 2 fg=idx:247 bg=idx:233
 style 11 2 80 fg=idx:253 bg=idx:233
-text 12 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                             ✗"
+text 12 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                            ✗"
 style 12 0 2 fg=idx:247 bg=idx:233
 style 12 2 29 fg=idx:253 bg=idx:233
 style 12 29 50 fg=idx:247 bg=idx:233
-style 12 50 79 fg=idx:253 bg=idx:233
-style 12 79 80 fg=idx:203 bg=idx:233
+style 12 50 78 fg=idx:253 bg=idx:233
+style 12 78 79 fg=idx:203 bg=idx:233
+style 12 79 80 fg=idx:253 bg=idx:233
 text 13 "! retrying in 2 s"
 style 13 0 17 fg=idx:220 bg=idx:233
 style 13 17 80 fg=idx:253 bg=idx:233

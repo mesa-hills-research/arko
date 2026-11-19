@@ -4238,11 +4238,15 @@ fn quiet_tail(words: &quiet::Words, clock: Option<&str>) -> String {
     rendered(tail)
 }
 
+/// The columns a failed row's ✗ takes at its right, two from its words,
+/// itself, and a blank one after it. (A terminal draws a glyph wider than
+/// its cell into the next one, and the last column has none.)
+const CROSS: usize = 4;
+
 /// The columns a Quiet row's words have on its line at `width`, past its
-/// marker, what follows them and its ✗, which stands in the last column, two
-/// from its words.
+/// marker, what follows them and its ✗ ([`CROSS`]).
 fn quiet_room(words: &quiet::Words, width: usize, clock: Option<&str>) -> usize {
-    let cross = if words.failed { 3 } else { 0 };
+    let cross = if words.failed { CROSS } else { 0 };
     width
         .saturating_sub(MARGIN + cross + text_width(&quiet_tail(words, clock)))
         .max(WORDS_MIN)
@@ -4279,7 +4283,7 @@ fn quiet_line(
     if !tail.is_empty() {
         spans.push(Span::styled(tail, theme.dim()));
     }
-    let cross = if words.failed { 3 } else { 0 };
+    let cross = if words.failed { CROSS } else { 0 };
     let room = width.saturating_sub(MARGIN + cross).max(1);
     let mut line =
         Wrapped::line(fit_spans(spans, room)).decorated(marker(fold_symbol(fold), theme.dim()));
@@ -4313,13 +4317,14 @@ fn fit_spans(spans: Vec<Span<'static>>, room: usize) -> Vec<Span<'static>> {
     line
 }
 
-/// The ✗ of a row that failed, in the last column of its first line.
+/// The ✗ of a row that failed, at the right of its first line, a column
+/// in from the last ([`CROSS`]).
 fn cross_at_right(lines: &mut [Wrapped], theme: &Theme, width: usize) {
     if let Some(first) = lines.first_mut() {
         let used = spans_width(&first.spans);
         let cross = glyphs::render("✗").into_owned();
         let cross_width = text_width(&cross);
-        let gap = width.saturating_sub(used + cross_width).max(1);
+        let gap = width.saturating_sub(used + cross_width + 1).max(1);
         // (Not the row's words, so a copy leaves it out.)
         first.spans.push(Span::raw(" ".repeat(gap)));
         first.spans.push(Span::styled(cross, theme.error()));
@@ -4622,8 +4627,7 @@ fn status_lines(
 ) -> Vec<Wrapped> {
     let words = row.words(item.outcome.as_deref());
     let who = format!("{} ", item.agent);
-    // (A failed row's ✗ stands in its last column, two from its words.)
-    let cross = if words.failed { 3 } else { 0 };
+    let cross = if words.failed { CROSS } else { 0 };
     let room = width.saturating_sub(MARGIN + cross).max(1);
     let mut spans = vec![Span::styled(
         who.clone(),
@@ -4670,8 +4674,7 @@ fn going_lines(
     look: Look,
 ) -> Vec<Wrapped> {
     let failed = item.status == Some(CallStatus::Failed);
-    // (A failed row's ✗ stands in its last column, two from its words.)
-    let cross = if failed { 3 } else { 0 };
+    let cross = if failed { CROSS } else { 0 };
     let room = width.saturating_sub(MARGIN + cross).max(1);
     let spans = worker_spans(face, theme, room);
     let fold = look.folds.then_some(look.open);
@@ -8511,7 +8514,7 @@ mod tests {
             let closed = rows(&mut t, &quiet, 220, 40);
             if fixture.failed {
                 assert!(closed[0].ends_with('✗'), "{name}: {closed:?}");
-                assert_eq!(closed[0].chars().count(), 220, "{name}");
+                assert_eq!(closed[0].chars().count(), 219, "{name}");
             }
             t.toggle(1, 0, &quiet, &theme);
             let open = rows(&mut t, &quiet, 220, 40);

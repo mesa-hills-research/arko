@@ -64,7 +64,7 @@
 ▸ Ran git worktree add ../fixture-check -b fixture-check
 · r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
-▸ Ran cargo-locked test cache -- --excat                                                           ✗
+▸ Ran cargo-locked test cache -- --excat                                                          ✗
 ⣷ I misspelled the exact-test option.
 
 ## 31 Final thought streams with no following call
@@ -84,7 +84,7 @@
 ▸ Ran git worktree add ../fixture-check -b fixture-check
 · r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
-▸ Ran cargo-locked test cache -- --excat                                                           ✗
+▸ Ran cargo-locked test cache -- --excat                                                          ✗
   I misspelled the exact-test option. I should use the full test path instead of changing the test.
 ▸ Ran cargo-locked test cache_tests::expires_at_the_deadline -- --exact (1 passed)
 ⣷ The focused check passes. The worker agrees with the fixture, and the background run has finished…
@@ -106,7 +106,7 @@
 ▸ Ran git worktree add ../fixture-check -b fixture-check
 · r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
-▸ Ran cargo-locked test cache -- --excat                                                           ✗
+▸ Ran cargo-locked test cache -- --excat                                                          ✗
   I misspelled the exact-test option. I should use the full test path instead of changing the test.
 ▸ Ran cargo-locked test cache_tests::expires_at_the_deadline -- --exact (1 passed)
   The focused check passes. The worker agrees with the fixture, and the background run has finished…

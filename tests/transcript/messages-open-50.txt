@@ -38,7 +38,7 @@
 │ The fixture and assertion both use the deadline
 │ 10.
 
-▸ Ran cargo-locked test cache -- --excat         ✗
+▸ Ran cargo-locked test cache -- --excat        ✗
   I misspelled the exact-test option. I should use
   the full test path instead of changing the test.
 

@@ -74,12 +74,13 @@ style 15 0 120 fg=#000000 bg=#f9f9f9
 text 16 "▸ Read parser.rs and made 1 edit"
 style 16 0 2 fg=#696969 bg=#f9f9f9
 style 16 2 120 fg=#000000 bg=#f9f9f9
-text 17 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                                                                     ✗"
+text 17 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                                                                    ✗"
 style 17 0 2 fg=#696969 bg=#f9f9f9
 style 17 2 29 fg=#000000 bg=#f9f9f9
 style 17 29 50 fg=#696969 bg=#f9f9f9
-style 17 50 119 fg=#000000 bg=#f9f9f9
-style 17 119 120 fg=#d21f07 bg=#f9f9f9
+style 17 50 118 fg=#000000 bg=#f9f9f9
+style 17 118 119 fg=#d21f07 bg=#f9f9f9
+style 17 119 120 fg=#000000 bg=#f9f9f9
 text 18 "! retrying in 2 s"
 style 18 0 17 fg=#826e00 bg=#f9f9f9
 style 18 17 120 fg=#000000 bg=#f9f9f9

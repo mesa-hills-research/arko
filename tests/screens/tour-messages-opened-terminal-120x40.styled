@@ -37,10 +37,10 @@ style 14 14 25 fg=red
 style 14 25 35 dim
 text 15 "▸ Read parser.rs and made 1 edit"
 style 15 0 2 dim
-text 16 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                                                                     ✗"
+text 16 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                                                                    ✗"
 style 16 0 2 dim
 style 16 29 50 dim
-style 16 119 120 fg=red
+style 16 118 119 fg=red
 text 17 "! retrying in 2 s"
 style 17 0 17 fg=yellow
 text 18 ""

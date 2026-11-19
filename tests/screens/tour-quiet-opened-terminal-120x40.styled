@@ -60,10 +60,10 @@ text 19 "│ ▸ edit src/parser.rs · ✓"
 style 19 0 25 dim
 style 19 25 26 fg=green
 text 20 ""
-text 21 "▾ Ran cargo test --lib parser (1 failed, 3 passed)                                                                     ✗"
+text 21 "▾ Ran cargo test --lib parser (1 failed, 3 passed)                                                                    ✗"
 style 21 0 2 dim
 style 21 29 50 dim
-style 21 119 120 fg=red
+style 21 118 119 fg=red
 text 22 "│ running 4 tests"
 style 22 0 2 dim
 text 23 "│ test parser::tests::reads ... ok"

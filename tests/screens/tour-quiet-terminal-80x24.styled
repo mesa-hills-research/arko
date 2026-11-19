@@ -22,10 +22,10 @@ text 9 "  I'll read the failing test and the parser first."
 text 10 ""
 text 11 "▸ Read parser.rs and made 1 edit"
 style 11 0 2 dim
-text 12 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                             ✗"
+text 12 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                            ✗"
 style 12 0 2 dim
 style 12 29 50 dim
-style 12 79 80 fg=red
+style 12 78 79 fg=red
 text 13 "! retrying in 2 s"
 style 13 0 17 fg=yellow
 text 14 ""

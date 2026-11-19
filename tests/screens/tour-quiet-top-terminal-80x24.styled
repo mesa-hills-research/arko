@@ -36,10 +36,10 @@ text 14 "  I'll read the failing test and the parser first."
 text 15 ""
 text 16 "▸ Read parser.rs and made 1 edit"
 style 16 0 2 dim
-text 17 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                             ✗"
+text 17 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                            ✗"
 style 17 0 2 dim
 style 17 29 50 dim
-style 17 79 80 fg=red
+style 17 78 79 fg=red
 text 18 "! retrying in 2 s                                                        ↓ end"
 style 18 0 17 fg=yellow
 style 18 72 79 reverse
