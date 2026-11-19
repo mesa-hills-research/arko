@@ -26,23 +26,27 @@ style 7 116 118 dim
 text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 style 8 2 118 dim
 text 9 ""
-text 10 "? Arko asked 3 questions"
+text 10 "? ┌ Arko asked 3 questions ──────────────────────────────────────────────────────────────────────────────────────────┐"
 style 10 0 2 fg=cyan
-style 10 2 24 dim
-text 11 ""
-text 12 "? Arko asked a question"
-style 12 0 2 fg=cyan
-style 12 2 23 dim
-text 13 ""
-text 14 ""
-text 15 ""
-text 16 ""
-text 17 ""
+style 10 3 27 dim
+text 11 "  │    1. Tabs or spaces?                                                                                            │"
+text 12 "  │       Needs your answer                                                                                          │"
+style 12 10 27 dim
+text 13 "  │    2. Which checks?                                                                                              │"
+text 14 "  │       Needs your answer                                                                                          │"
+style 14 10 27 dim
+text 15 "  │    3. How should I update the configuration?                                                                     │"
+text 16 "  │       Needs your answer                                                                                          │"
+style 16 10 27 dim
+text 17 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 text 18 ""
-text 19 ""
-text 20 ""
-text 21 ""
-text 22 ""
+text 19 "? ┌ Arko asked a question ───────────────────────────────────────────────────────────────────────────────────────────┐"
+style 19 0 2 fg=cyan
+style 19 3 26 dim
+text 20 "  │   Anything else I should know?                                                                                   │"
+text 21 "  │   Needs your answer                                                                                              │"
+style 21 6 23 dim
+text 22 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 text 23 ""
 text 24 ""
 text 25 ""

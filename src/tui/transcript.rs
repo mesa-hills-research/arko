@@ -110,6 +110,9 @@ struct Entry {
     /// inside a Quiet row's rail or not, once asked ([`Transcript::cuts`]),
     /// so its text is read for it only when it changes.
     cuts: std::cell::Cell<Option<(usize, bool, bool, bool)>>,
+    /// The questions of a question card whose cut line a click showed
+    /// whole, by id.
+    whole: Vec<String>,
 }
 
 impl Entry {
@@ -122,6 +125,7 @@ impl Entry {
             changed: Instant::now(),
             revision: next_revision(),
             cuts: std::cell::Cell::new(None),
+            whole: Vec::new(),
         }
     }
 
@@ -151,6 +155,8 @@ struct Cached {
     status: Option<quiet::WorkerRow>,
     /// It was drawn as the row of a worker it set going.
     worker: Option<WorkerFace>,
+    /// The questions it shows whole.
+    whole: Vec<String>,
     lines: Vec<Wrapped>,
     /// The lines' marks ([`body_marks`]), once something asked for them.
     marks: Option<Vec<u64>>,
@@ -342,6 +348,22 @@ pub struct Fold {
     pub line: usize,
 }
 
+/// A question card's question that a click found ([`Transcript::question_at`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionHit {
+    /// The card.
+    pub item: u64,
+    /// The question's id.
+    pub id: String,
+    /// It waits for its answer.
+    pub open: bool,
+    /// Its line is cut, or would be but shows whole.
+    pub cut: bool,
+    /// Its first line in its card's block, and the area's row it's on.
+    line: usize,
+    row: i64,
+}
+
 /// What a view shows in order, before it's laid out in blocks.
 #[derive(Clone)]
 enum Placed {
@@ -446,6 +468,8 @@ struct Face {
     clock: Option<String>,
     /// For a call that is a worker's row, how the worker stands.
     worker: Option<WorkerFace>,
+    /// The questions of a question card shown whole.
+    whole: Vec<String>,
 }
 
 /// What a worker's row says ([`Going`]), the call's lines being drawn
@@ -1602,6 +1626,7 @@ impl Transcript {
                         status,
                         clock,
                         worker,
+                        whole: entry.whole.clone(),
                     };
                     // A call opens to what it holds, a content is what it
                     // opened to, and a thinking or a worker's row is open
@@ -1755,6 +1780,7 @@ impl Transcript {
                 && c.folds == face.folds
                 && c.status == face.status
                 && c.worker == face.worker
+                && c.whole == face.whole
         });
         // A code run's code shows the calls the code made after it, which
         // change with the run's call (and touch this entry).
@@ -1776,6 +1802,7 @@ impl Transcript {
                 status: face.status,
                 worker: face.worker.as_ref(),
                 calls: calls.as_ref(),
+                whole: &face.whole,
             };
             Cached {
                 width,
@@ -1786,6 +1813,7 @@ impl Transcript {
                 folds: face.folds,
                 status: face.status,
                 worker: face.worker.clone(),
+                whole: face.whole.clone(),
                 marks: None,
             }
         })
@@ -3332,6 +3360,63 @@ impl Transcript {
         Some(fold)
     }
 
+    /// The question of a question card drawn on the screen's row `y` (at
+    /// `x`), or `None` off its questions, on its edges.
+    pub fn question_at(
+        &mut self,
+        x: u16,
+        y: u16,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> Option<QuestionHit> {
+        let row = self.drawn.row_at(x, y)?;
+        let width = self.drawn.area.width as usize;
+        let blocks = self.blocks(filter, theme, width);
+        let block = blocks.iter().find(|block| block.key == row.key)?;
+        let Shown::Entry(index) = block.shown else {
+            return None;
+        };
+        let entry = &self.entries[index];
+        let questions = entry
+            .item
+            .questions
+            .as_ref()
+            .filter(|_| entry.item.kind == Kind::Question)?;
+        let card = record(&entry.item.text, questions, &entry.whole, theme, width);
+        let gap = usize::from(block.gap);
+        let at = (*card.owners.get(row.line.checked_sub(gap)?)?)?;
+        let first = card.owners.iter().position(|owner| *owner == Some(at))? + gap;
+        let question = &questions[at];
+        Some(QuestionHit {
+            item: entry.item.id,
+            id: question.id.clone(),
+            open: question.state.is_open(),
+            cut: card.cuts[at],
+            row: i64::from(y) - i64::from(self.drawn.area.y) - (row.line - first) as i64,
+            line: first,
+        })
+    }
+
+    /// Shows the line of the question `hit` whole, or cut again, its card's
+    /// rows above it held where they are, so it grows or shrinks below.
+    pub fn toggle_whole(&mut self, hit: &QuestionHit) {
+        let Some(entry) = self.find_mut(hit.item) else {
+            return;
+        };
+        match entry.whole.iter().position(|id| *id == hit.id) {
+            Some(at) => {
+                entry.whole.remove(at);
+            }
+            None => entry.whole.push(hit.id.clone()),
+        }
+        entry.touch();
+        self.acted.pin = Some(Pin {
+            key: hit.item,
+            line: hit.line,
+            row: hit.row,
+        });
+    }
+
     /// Whether the item `id` shows as a block of its own in `filter`'s view,
     /// not inside a Quiet row.
     fn shown_alone(&mut self, id: u64, filter: &Filter, theme: &Theme) -> bool {
@@ -4404,6 +4489,8 @@ struct Look<'a> {
     /// It is a code run's code, and these are the calls the code made,
     /// which follow it.
     calls: Option<&'a Calls>,
+    /// The questions of a question card shown whole, by id.
+    whole: &'a [String],
 }
 
 /// What a code run's calls did, after its code in its open Quiet row, one
@@ -5537,9 +5624,8 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             wrap::prefixed(lines, mark("✉", theme.dim()), blank())
         }
         Kind::Question => {
-            // One quiet line while its questions are open (the answer panel
-            // has them), then the record of what became of each, boxed as
-            // the panel is.
+            // Its questions, boxed as the panel is, each with the line that
+            // holds its answer.
             let Some(questions) = &item.questions else {
                 // Asked before questions had ids, or no longer kept.
                 let mut lines = vec![Wrapped::line(vec![Span::styled(
@@ -5549,15 +5635,7 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                 lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
                 return wrap::prefixed(lines, mark("?", theme.accent()), blank());
             };
-            if questions.iter().any(|question| !question.state.is_open()) {
-                return record_lines(&item.text, questions, theme, width);
-            }
-            let lines: Vec<Wrapped> =
-                wrap::wrap(&[Span::styled(rendered(&item.text), theme.dim())], inner, 0)
-                    .into_iter()
-                    .map(Wrapped::line)
-                    .collect();
-            wrap::prefixed(lines, mark("?", theme.accent()), blank())
+            record(&item.text, questions, look.whole, theme, width).lines
         }
         Kind::Call => {
             // A call that has something to show opens to it, the whole of
@@ -5774,24 +5852,46 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
     lines
 }
 
-/// The record of a question card whose questions settled, boxed as the
-/// answer panel is, with `heading` in its top border, then each settled
-/// question, numbered as the panel numbered it, with what became of it
-/// under it. A copy takes the questions and outcomes, not the box.
-fn record_lines(
+/// What a question card holds open for an answer, on the line its answer
+/// takes once given.
+pub(super) const HELD: &str = "Needs your answer";
+
+/// A question card's lines ([`record`]), and for each line the question
+/// it belongs to, by its place in the card (none for the box's edges).
+struct Record {
+    lines: Vec<Wrapped>,
+    owners: Vec<Option<usize>>,
+    /// Whether each question's last line is cut, or would be but shows
+    /// whole, so a click on it shows it whole or cut again.
+    cuts: Vec<bool>,
+}
+
+/// A question card, boxed as the answer panel is, with `heading` in its top
+/// edge and the row's "?" beside it, in the accent while a question is
+/// open. Each question follows, numbered as the panel numbers it, with a
+/// line under it that holds its answer. The line says [`HELD`] while the
+/// question is open, then the answer, or what else became of it. It's cut
+/// to fit, unless its question is among `whole` (by id), so a question
+/// settling never changes the card's height. A copy takes the questions and
+/// their lines whole, not the box.
+fn record(
     heading: &str,
     questions: &[crate::questions::AgentQuestion],
+    whole: &[String],
     theme: &Theme,
     width: usize,
-) -> Vec<Wrapped> {
+) -> Record {
+    use crate::questions::QuestionState;
     let set = theme.borders();
-    // Settled questions need nothing more from the user, so the box is
-    // drawn as quietly as an overlay's, not in the open panel's accent.
+    // The box needs nothing from the user, so it's drawn as quietly as an
+    // overlay's, not in the open panel's accent. The "?" says when a
+    // question waits.
     let border = Style::new().fg(if theme.is_terminal() {
         termelon::style::Color::Reset
     } else {
         theme.border
     });
+    let asking = questions.iter().any(|question| question.state.is_open());
     // As wide as the transcript, with the same margin on the right as on
     // the left.
     let outer = width.saturating_sub(2 * MARGIN).max(24);
@@ -5835,14 +5935,23 @@ fn record_lines(
             ..line
         }
     };
-    let mut lines = vec![edge(set.top_left, set.top_right, Some(heading))];
-    for question in questions {
-        let Some(outcome) = outcome(&question.state) else {
-            continue;
-        };
+    let mut top = edge(set.top_left, set.top_right, Some(heading));
+    let mark = if asking { theme.accent() } else { theme.dim() };
+    top.spans[0] = marker("?", mark);
+    let mut lines = vec![top];
+    let mut owners = vec![None];
+    let mut cuts = Vec::new();
+    // The numbers keep two digits' room, or the widest number's, aligned on
+    // their last digit, so the questions' words share a column past them.
+    let digits = questions
+        .iter()
+        .filter_map(|question| question.number)
+        .max()
+        .map_or(0, |last| last.to_string().len().max(2));
+    for (at, question) in questions.iter().enumerate() {
         let number = question
             .number
-            .map(|number| format!("{number}. "))
+            .map(|number| format!("{number:>digits$}. "))
             .unwrap_or_default();
         let indent = 2 + text_width(&number);
         let room = inner.saturating_sub(indent).max(4);
@@ -5858,14 +5967,43 @@ fn record_lines(
             } else {
                 lines.push(side(line, indent));
             }
+            owners.push(Some(at));
         }
-        let outcome = [Span::styled(rendered(&outcome), theme.dim())];
-        for line in wrap::wrap_lines(&outcome, room, 0) {
+        // The user's answer in their text's colour, Arko's words dim.
+        let (said, style) = match outcome(&question.state) {
+            None => (HELD.to_string(), theme.dim()),
+            Some(said) if matches!(question.state, QuestionState::Answered { .. }) => {
+                (said, theme.text())
+            }
+            Some(said) => (said, theme.dim()),
+        };
+        // On one line, its own line breaks spaces. Shown whole, it keeps
+        // them, and a copy of its one line takes it whole.
+        let said = said.trim().to_string();
+        let line = rendered(said.split_whitespace().collect::<Vec<_>>().join(" "));
+        let cut = text_width(&line) > room || said.contains('\n');
+        let held = if cut && whole.contains(&question.id) {
+            plain(&said, style, room)
+        } else {
+            let mut held = Wrapped::line(vec![Span::styled(cut_words(&line, room), style)]);
+            if cut {
+                held.whole = Some(said);
+            }
+            vec![held]
+        };
+        for line in held {
             lines.push(side(line, indent));
+            owners.push(Some(at));
         }
+        cuts.push(cut);
     }
     lines.push(edge(set.bottom_left, set.bottom_right, None));
-    lines
+    owners.push(None);
+    Record {
+        lines,
+        owners,
+        cuts,
+    }
 }
 
 /// `text` in `width` columns, cut at its end with an ellipsis.
@@ -6212,56 +6350,152 @@ mod tests {
         assert!(quiet_cut(&live, width - 6));
     }
 
-    /// A question card is one quiet line while its questions are open (the
-    /// answer panel has them). Once one settles, it is their record, boxed
-    /// as the panel is, with each question settled, numbered as the panel
-    /// numbered it, and what became of it.
+    /// The rows of a drawn transcript down to its last that isn't blank.
+    fn drawn_rows(transcript: &mut Transcript, width: u16) -> Vec<String> {
+        let mut drawn = rows(transcript, &full(), width, 30);
+        while drawn.last().is_some_and(String::is_empty) {
+            drawn.pop();
+        }
+        drawn
+    }
+
+    /// A question card boxes its questions from the start, each with a line
+    /// that holds its answer. As each settles, its answer, or what else
+    /// became of it, takes that line, so the card keeps its height and every
+    /// other row. The "?" beside its top edge stays.
     #[test]
-    fn a_question_card_is_a_line_until_its_questions_settle() {
+    fn a_question_card_holds_a_line_for_each_answer() {
         use crate::questions::QuestionState;
         let mut t = Transcript::new();
         let mut card = item(1, Kind::Question, "Arko asked 2 questions");
         let mut questions = crate::tui::app::tests::asking().questions;
-        questions[1].question = "Push now?".into();
         card.questions = Some(questions.clone());
         t.apply(Update::Item(card.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 1), ["? Arko asked 2 questions"]);
-        questions[0].state = QuestionState::Answered {
+        let open = drawn_rows(&mut t, 40);
+        assert!(open[0].starts_with('?'), "{open:#?}");
+        let held: Vec<usize> = (0..open.len())
+            .filter(|at| open[*at].contains(HELD))
+            .collect();
+        assert_eq!(held.len(), 2, "{open:#?}");
+        let mut settle = |at: usize, state: QuestionState, says: &str| {
+            questions[at].state = state;
+            card.questions = Some(questions.clone());
+            t.apply(Update::Change(card.clone()));
+            let now = drawn_rows(&mut t, 40);
+            assert_eq!(now.len(), open.len(), "{now:#?}");
+            assert!(now[held[at]].contains(says), "{now:#?}");
+            for row in (0..open.len()).filter(|row| !held.contains(row)) {
+                assert_eq!(now[row], open[row]);
+            }
+            now
+        };
+        let answered = QuestionState::Answered {
             answer: "Spaces".into(),
         };
-        card.questions = Some(questions.clone());
-        t.apply(Update::Change(card.clone()));
-        let top = format!("  ┌ Arko asked 2 questions {}┐", "─".repeat(10));
-        let bottom = format!("  └{}┘", "─".repeat(34));
-        let boxed = |text: &str| format!("  │ {text:<32} │");
-        // (What is said has a blank row under it at the end.)
-        assert_eq!(
-            rows(&mut t, &full(), 40, 5),
-            [
-                top.clone(),
-                boxed("  1. Tabs or spaces?"),
-                boxed("     Spaces"),
-                bottom.clone(),
-                String::new(),
-            ]
-        );
-        questions[1].state = QuestionState::Closed {
+        let both = settle(0, answered, "Spaces");
+        let closed = QuestionState::Closed {
             why: Some("Found it".into()),
         };
+        settle(1, closed, "Found it");
+        assert_eq!(both[held[1]], open[held[1]]);
+    }
+
+    /// The numbers of a card's questions keep two digits' room, aligned on
+    /// their last digit, so the words of its questions and the lines under
+    /// them share a column, 10 among them.
+    #[test]
+    fn a_cards_questions_share_a_column_past_their_numbers() {
+        let mut card = item(1, Kind::Question, "Arko asked 10 questions");
+        let template = crate::tui::app::tests::asking().questions.remove(1);
+        let questions: Vec<_> = (1..=10)
+            .map(|number| {
+                let mut question = template.clone();
+                question.id = format!("q{number}");
+                question.question = format!("Question w{number}?");
+                question.number = Some(number);
+                question
+            })
+            .collect();
         card.questions = Some(questions);
-        t.apply(Update::Change(card));
-        assert_eq!(
-            rows(&mut t, &full(), 40, 7),
-            [
-                top,
-                boxed("  1. Tabs or spaces?"),
-                boxed("     Spaces"),
-                boxed("  2. Push now?"),
-                boxed("     Arko closed it. Found it"),
-                bottom,
-                String::new(),
-            ]
+        let mut t = Transcript::new();
+        t.apply(Update::Item(card));
+        let drawn = drawn_rows(&mut t, 60);
+        let columns: HashSet<usize> = drawn
+            .iter()
+            .filter_map(|row| {
+                let at = row.find("Question w").or_else(|| row.find(HELD))?;
+                Some(row[..at].chars().count())
+            })
+            .collect();
+        assert_eq!(columns.len(), 1, "{drawn:#?}");
+        let dots: HashSet<usize> = drawn
+            .iter()
+            .filter_map(|row| Some(row[..row.find(". Question w")?].chars().count()))
+            .collect();
+        assert_eq!(dots.len(), 1, "{drawn:#?}");
+    }
+
+    /// A long answer is cut on its line where a word ends, so it doesn't
+    /// change the card's height, and a copy takes it whole. A click on it
+    /// shows it whole below its line, which keeps every row above it, and
+    /// another cuts it again, while another question of the card is open.
+    /// A click on the open question is for the panel, and on the card's
+    /// edges for nothing of its own.
+    #[test]
+    fn a_long_answer_is_cut_to_its_line_and_a_click_shows_it_whole() {
+        use crate::questions::QuestionState;
+        let answered = |answer: &str| {
+            let mut card = item(1, Kind::Question, "Arko asked 2 questions");
+            let mut questions = crate::tui::app::tests::asking().questions;
+            questions[0].state = QuestionState::Answered {
+                answer: answer.into(),
+            };
+            card.questions = Some(questions);
+            let mut t = Transcript::new();
+            t.apply(Update::Item(card.clone()));
+            (t, card)
+        };
+        let answer = "Spaces, four wide, and keep the tabs in the Makefile and in vendor";
+        let (mut short, _) = answered("Spaces");
+        let (mut t, card) = answered(answer);
+        let theme = Theme::terminal();
+        let cut = drawn_rows(&mut t, 40);
+        assert_eq!(cut.len(), drawn_rows(&mut short, 40).len(), "{cut:#?}");
+        let line = cut
+            .iter()
+            .position(|row| row.contains("Spaces, four"))
+            .unwrap();
+        assert!(cut[line].contains(&*glyphs::render("…")), "{cut:#?}");
+        let drawn = record(
+            &card.text,
+            card.questions.as_ref().unwrap(),
+            &[],
+            &theme,
+            40,
         );
+        assert_eq!(drawn.lines[line].whole.as_deref(), Some(answer));
+        assert_eq!(drawn.cuts, [true, false]);
+        let hit = t.question_at(10, line as u16, &full(), &theme).unwrap();
+        assert_eq!((hit.id.as_str(), hit.open, hit.cut), ("q1", false, true));
+        let open = cut.iter().position(|row| row.contains(HELD)).unwrap();
+        let other = t.question_at(10, open as u16, &full(), &theme).unwrap();
+        assert_eq!((other.id.as_str(), other.open), ("q2", true));
+        assert_eq!(t.question_at(10, 0, &full(), &theme), None);
+        t.toggle_whole(&hit);
+        let whole = drawn_rows(&mut t, 40);
+        assert!(whole.len() > cut.len(), "{whole:#?}");
+        assert_eq!(whole[..line], cut[..line]);
+        // (Its words, without the box's sides.)
+        let words: Vec<&str> = whole[line..]
+            .iter()
+            .flat_map(|row| row.split_whitespace())
+            .filter(|word| !word.chars().all(|c| ('\u{2500}'..='\u{257f}').contains(&c)))
+            .collect();
+        assert!(words.join(" ").contains(answer), "{whole:#?}");
+        let hit = t.question_at(10, line as u16 + 1, &full(), &theme).unwrap();
+        assert_eq!(hit.id, "q1");
+        t.toggle_whole(&hit);
+        assert_eq!(drawn_rows(&mut t, 40), cut);
     }
 
     /// A message a worker got shows in its own view with whose it is, and

@@ -273,6 +273,23 @@ impl App {
         true
     }
 
+    /// The panel opens on the open question `id` (its card `item` was
+    /// clicked on it), else on the card's first open question. False when
+    /// the card has none open.
+    pub(super) fn open_question(&mut self, item: u64, id: &str) -> bool {
+        match self
+            .open_questions()
+            .iter()
+            .position(|question| question.id == id)
+        {
+            Some(at) => {
+                self.open_panel_at(at);
+                true
+            }
+            None => self.open_card(item),
+        }
+    }
+
     fn open_panel_at(&mut self, focus: usize) {
         self.panel.open = true;
         self.tray.focused = false;
@@ -724,7 +741,8 @@ fn list_rows(
         cursor: None,
     };
     let pointer = glyphs::render("▸ ").into_owned();
-    let digits = options.len().to_string().len();
+    // (Numbers keep two digits' room, aligned on their last digit.)
+    let digits = options.len().to_string().len().max(2);
     for (at, opt) in options.iter().copied().enumerate() {
         let here = row == Some(at);
         let on = is_on(draft, opt);
@@ -1063,7 +1081,8 @@ fn review_lines(
 ) -> (Vec<Line<'static>>, (usize, usize)) {
     let theme = &app.theme;
     let pointer = glyphs::render("▸ ").into_owned();
-    let digits = questions.len().to_string().len();
+    // (Numbers keep two digits' room, aligned on their last digit.)
+    let digits = questions.len().to_string().len().max(2);
     let lead = 2 + digits + 2;
     let column = ((width.saturating_sub(lead)) * 2 / 5).clamp(10, 40);
     let answer_width = width.saturating_sub(lead + column + 2).max(8);

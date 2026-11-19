@@ -308,6 +308,16 @@ pub fn follow() {
 /// the first question, and gives it the keyboard (Alt+Q, a chip, a card's
 /// line).
 pub fn open_panel(card: Option<u64>) {
+    open_on(card, None);
+}
+
+/// Opens the panel on the open question `id` (its card `card` was clicked
+/// on it), else on the card's first open question.
+fn open_question(card: u64, id: &str) {
+    open_on(Some(card), Some(id));
+}
+
+fn open_on(card: Option<u64>, id: Option<&str>) {
     let page = page();
     let open = open_questions();
     if open.is_empty() {
@@ -315,8 +325,9 @@ pub fn open_panel(card: Option<u64>) {
     }
     page.sheet.set(None);
     page.ask.open();
-    let target = card
-        .and_then(|card| open.iter().find(|question| question.item == card))
+    let target = id
+        .and_then(|id| open.iter().find(|question| question.id == id))
+        .or_else(|| card.and_then(|card| open.iter().find(|question| question.item == card)))
         .or(open.first())
         .map(|question| question.id.clone());
     let frame = wasm_bindgen::closure::Closure::once_into_js(move || {
@@ -541,6 +552,15 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                 .with(|drafts| drafts.get(&id).cloned().unwrap_or_default())
         }
     };
+    // The numbers keep two digits' room, or the widest number's.
+    let digits = move || {
+        open.with(|open| {
+            open.iter()
+                .filter_map(|question| question.number)
+                .max()
+                .map_or(2, |last| last.to_string().len().max(2))
+        })
+    };
     let words = text(&question);
     let placeholder = if question.choices.is_empty() {
         "Answer"
@@ -606,7 +626,9 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
     view! {
         <div class="answers-question" class:batch=batch id=format!("question-{id}") data-question=id.clone() role="group" aria-label=words.clone()>
             <div class="answers-ask">
-                {question.number.map(|number| view! { <span class="answers-number">{format!("{number}.")}</span> })}
+                {question.number.map(|number| view! {
+                    <span class="answers-number" style:min-width=move || format!("{}ch", digits() + 1)>{format!("{number}.")}</span>
+                })}
                 <div class="answers-words">
                     // "Choose any" follows the question on its line.
                     <span>
@@ -694,41 +716,77 @@ pub fn Replying() -> impl IntoView {
     }
 }
 
-/// A question card in the transcript. One quiet line where the agent asked
-/// ("Arko asked 2 questions") opens the panel on the card while any of its
-/// questions is open. Once any is settled, their record opens under the
-/// line, boxed as the panel is, with each settled question and what became
-/// of it (the open ones are in the panel), so the line keeps its place. A
-/// card without its questions (asked before they had ids) shows its text.
+/// What a question card holds open for an answer, on the line its answer
+/// takes once given.
+pub const HELD: &str = "Needs your answer";
+
+/// The font of the line under a question in its card (`.record-outcome` in
+/// app.css), which it's cut to fit in.
+const HELD_FONT: &str = "14px var(--sans)";
+
+/// A question card in the transcript, its line ("Arko asked 2 questions")
+/// and its questions boxed as the panel is. Each question has a line under
+/// it that holds its answer, [`HELD`] while it's open, then the answer or
+/// what else became of it ([`outcome`]), cut to fit, so a question settling
+/// never changes the card's height. While a question is open, the card
+/// opens the panel on the question clicked, or on its first open one, and
+/// its line is the keyboard's way there. A settled question's cut line is
+/// a button that shows it whole, or cut again. A card without its
+/// questions (asked before they had ids) shows its text.
 pub fn card_view(id: u64, cell: RowCell) -> AnyView {
     let data = cell.data;
-    // (A card comes first with its line, and its questions follow.)
     let legacy = Memo::new(move |_| data.with(|item| item.questions.is_none()));
-    let recorded = Memo::new(move |_| {
+    let ids = Memo::new(move |_| {
         data.with(|item| {
             item.questions
                 .iter()
                 .flatten()
-                .any(|question| question.state != "open")
+                .map(|question| question.id.clone())
+                .collect::<Vec<_>>()
         })
     });
-    let open = move || {
+    let asking = Memo::new(move |_| {
         data.with(|item| {
             item.questions
                 .iter()
                 .flatten()
                 .any(|question| question.state == "open")
         })
-    };
-    let settled = move || {
-        data.with(|item| {
-            item.questions
-                .iter()
-                .flatten()
-                .filter(|question| question.state != "open")
-                .cloned()
-                .collect::<Vec<_>>()
-        })
+    });
+    // The settled questions whose line shows whole, by id.
+    let whole = RwSignal::new(Vec::<String>::new());
+    // A click on an open question opens the panel on it, and one on a
+    // settled question's cut line shows it whole or cut again. Anywhere
+    // else, the panel opens on the card while a question is open.
+    let clicked = move |event: web_sys::MouseEvent| {
+        let at = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest("li[data-question]").ok().flatten());
+        let question = at.as_ref().and_then(|at| at.get_attribute("data-question"));
+        let state = question.as_ref().and_then(|question| {
+            data.with_untracked(|item| {
+                item.questions
+                    .iter()
+                    .flatten()
+                    .find(|known| known.id == *question)
+                    .map(|known| known.state.clone())
+            })
+        });
+        let cut = at
+            .as_ref()
+            .and_then(|at| {
+                at.query_selector(".record-outcome[aria-expanded]")
+                    .ok()
+                    .flatten()
+            })
+            .is_some();
+        match (question, state.as_deref()) {
+            (Some(question), Some("open")) => open_question(id, &question),
+            (Some(question), Some(_)) if cut => flip(whole, &question),
+            _ if asking.get_untracked() => open_panel(Some(id)),
+            _ => {}
+        }
     };
     (move || {
         if legacy.get() {
@@ -738,39 +796,168 @@ pub fn card_view(id: u64, cell: RowCell) -> AnyView {
             }
             .into_any();
         }
-        let line = view! {
-            <button type="button" class="asked" disabled=move || !open() title=move || if open() { "Answer (Alt+Q)" } else { "" }
+        view! {
+            <button type="button" class="asked" disabled=move || !asking.get() title=move || if asking.get() { "Answer (Alt+Q)" } else { "" }
                 on:click=move |_| open_panel(Some(id))>
                 <MessageCircleQuestionMark size=16 />
                 <span>{move || data.with(|item| item.text.clone())}</span>
             </button>
-        };
-        if !recorded.get() {
-            return line.into_any();
-        }
-        view! {
-            {line}
-            <div class="record-box">
+            <div class="record-box" on:click=clicked>
                 <ol class="record">
-                    {move || settled().into_iter().map(|question| {
-                        let outcome = outcome(&question).unwrap_or_default();
-                        let answered = question.state == "answered";
-                        view! {
-                            <li>
-                                <span class="record-number">{question.number.map(|number| format!("{number}."))}</span>
-                                <div>
-                                    <div>{text(&question)}</div>
-                                    <div class="record-outcome" class:answer=answered>{outcome}</div>
-                                </div>
-                            </li>
-                        }
-                    }).collect_view()}
+                    <For each=move || ids.get() key=|id| id.clone() let:question>
+                        <RecordQuestion data=data id=question whole=whole />
+                    </For>
                 </ol>
             </div>
         }
         .into_any()
     })
     .into_any()
+}
+
+/// `text` in `room` pixels of `font` ([`cut_to`]).
+fn cut_line(font: &'static str, text: &str, room: f64) -> String {
+    let units = |px: f64| (px * 100.0).round().max(0.0) as usize;
+    cut_to(text, units(room), |text| {
+        units(crate::fit::text_width(font, text))
+    })
+}
+
+/// `text` in `room`, as `width` measures text, cut where a word ends
+/// ([`quiet::cut_at_word`](crate::quiet::cut_at_word)) with an ellipsis
+/// after it, or whole where it fits.
+fn cut_to(text: &str, room: usize, width: impl Fn(&str) -> usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    if width(text) <= room {
+        return text.to_string();
+    }
+    // (A line holds a few hundred clusters at most, so those after them
+    // never show.)
+    let clusters: Vec<(&str, usize)> = text
+        .graphemes(true)
+        .take(1000)
+        .map(|cluster| (cluster, width(cluster)))
+        .collect();
+    // (A word longer than a row's line keeps is cut inside.)
+    let long = crate::quiet::WORDS_KEEP * width("0");
+    let mut left = room.saturating_sub(width("…"));
+    loop {
+        let kept = crate::quiet::cut_at_word(&clusters, left, long);
+        let shown: String = clusters[..kept].iter().map(|(c, _)| *c).collect::<String>() + "…";
+        let over = width(&shown).saturating_sub(room);
+        if over == 0 || kept == 0 {
+            return shown;
+        }
+        left = left.saturating_sub(over.max(1));
+    }
+}
+
+/// Shows the line of the question `id` whole, or cut again.
+fn flip(whole: RwSignal<Vec<String>>, id: &str) {
+    whole.update(|whole| match whole.iter().position(|known| known == id) {
+        Some(at) => {
+            whole.remove(at);
+        }
+        None => whole.push(id.to_string()),
+    });
+}
+
+/// One question of a card ([`card_view`]), its number when its card has
+/// several, its words, and the line that holds its answer, cut to fit
+/// unless it's among `whole`.
+#[component]
+fn RecordQuestion(
+    data: RwSignal<crate::protocol::ItemData>,
+    id: String,
+    whole: RwSignal<Vec<String>>,
+) -> impl IntoView {
+    let question = Memo::new({
+        let id = id.clone();
+        move |_| {
+            data.with(|item| {
+                item.questions
+                    .iter()
+                    .flatten()
+                    .find(|question| question.id == id)
+                    .cloned()
+            })
+        }
+    });
+    let number = move || question.with(|question| question.as_ref().and_then(|q| q.number));
+    // The numbers keep two digits' room, or the widest number's, so the
+    // questions' words share a column past them.
+    let digits = Memo::new(move |_| {
+        data.with(|item| {
+            item.questions
+                .iter()
+                .flatten()
+                .filter_map(|question| question.number)
+                .max()
+                .map_or(2, |last| last.to_string().len().max(2))
+        })
+    });
+    let words = move || question.with(|question| question.as_ref().map(text).unwrap_or_default());
+    // What its line says, and whether that's the user's answer.
+    let said = Memo::new(move |_| {
+        question.with(|question| match question {
+            None => (String::new(), false),
+            Some(question) => match outcome(question) {
+                None => (HELD.to_string(), false),
+                Some(said) => (said, question.state == "answered"),
+            },
+        })
+    });
+    let open = Memo::new(move |_| {
+        question.with(|question| question.as_ref().is_some_and(|q| q.state == "open"))
+    });
+    let shows_whole = Memo::new({
+        let id = id.clone();
+        move |_| !open.get() && whole.with(|whole| whole.contains(&id))
+    });
+    let line = NodeRef::<leptos::html::Span>::new();
+    let room = crate::fit::watch(line, move || said.track());
+    // On one line, cut where a word ends, as a row's line is. Its own line
+    // breaks are spaces there.
+    let one = Memo::new(move |_| {
+        said.with(|(said, _)| said.split_whitespace().collect::<Vec<_>>().join(" "))
+    });
+    let shown = Memo::new(move |_| match room.get() {
+        Some(room) => one.with(|one| cut_line(HELD_FONT, one, room.now)),
+        None => one.get(),
+    });
+    let cut = Memo::new(move |_| {
+        shown.with(|shown| one.with(|one| shown != one)) || said.with(|said| said.0.contains('\n'))
+    });
+    // (Only a settled line that's cut, or shows whole, is a button.)
+    let button = Memo::new(move |_| !open.get() && (cut.get() || shows_whole.get()));
+    // Enter and Space click it, as a button's do, so the transcript keeps
+    // its line in place as it shows whole or cut, as for a click.
+    let keys = move |event: web_sys::KeyboardEvent| {
+        if button.get_untracked() && matches!(event.key().as_str(), "Enter" | " ") {
+            event.prevent_default();
+            if let Some(line) = line.get_untracked() {
+                line.click();
+            }
+        }
+    };
+    view! {
+        <li data-question=id.clone() class:open=move || open.get()>
+            {move || number().map(|number| view! {
+                <span class="record-number" style:min-width=move || format!("{}ch", digits.get() + 1)>{format!("{number}.")}</span>
+            })}
+            <div class="record-text">
+                <div>{words}</div>
+                <span node_ref=line class="record-outcome fitted" class:answer=move || said.with(|said| said.1) class:whole=move || shows_whole.get()
+                    role=move || button.get().then_some("button")
+                    tabindex=move || button.get().then_some("0")
+                    aria-expanded=move || button.get().then(|| shows_whole.get().to_string())
+                    title=move || (button.get() && !shows_whole.get()).then(|| said.with(|said| said.0.clone()))
+                    on:keydown=keys>
+                    {move || if shows_whole.get() { said.with(|said| said.0.clone()) } else { shown.get() }}
+                </span>
+            </div>
+        </li>
+    }
 }
 
 #[cfg(test)]
@@ -823,6 +1010,18 @@ mod tests {
             assert!(!answered(ask, &q1, Posted::Kept, None));
             assert!(ask.answering.get_untracked().is_empty());
         });
+    }
+
+    /// A question's line is cut where a word ends, with an ellipsis, to fit
+    /// its room, and shows whole where it fits.
+    #[test]
+    fn a_line_is_cut_where_a_word_ends() {
+        let width = |text: &str| text.chars().count();
+        assert_eq!(cut_to("Spaces", 10, width), "Spaces");
+        let answer = "Spaces, four wide, and tabs in the Makefile";
+        let cut = cut_to(answer, 24, width);
+        assert_eq!(cut, "Spaces, four wide, and…");
+        assert!(width(&cut) <= 24);
     }
 
     #[test]

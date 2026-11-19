@@ -27,52 +27,50 @@ style 3 2 78 fg=#303030 bg=#131313
 style 3 78 80 fg=#dedede bg=#131313
 text 4 ""
 style 4 0 80 fg=#dedede bg=#131313
-text 5 "  ┌ Arko asked 3 questions ──────────────────────────────────────────────────┐"
-style 5 0 2 fg=#dedede bg=#131313
+text 5 "? ┌ Arko asked 3 questions ──────────────────────────────────────────────────┐"
+style 5 0 2 fg=#9d9d9d bg=#131313
 style 5 2 3 fg=#303030 bg=#131313
 style 5 3 27 fg=#9d9d9d bg=#131313
 style 5 27 78 fg=#303030 bg=#131313
 style 5 78 80 fg=#dedede bg=#131313
-text 6 "  │   1. Tabs or spaces?                                                     │"
+text 6 "  │    1. Tabs or spaces?                                                    │"
 style 6 0 2 fg=#dedede bg=#131313
 style 6 2 4 fg=#303030 bg=#131313
 style 6 4 76 fg=#dedede bg=#131313
 style 6 76 78 fg=#303030 bg=#131313
 style 6 78 80 fg=#dedede bg=#131313
-text 7 "  │      Spaces                                                              │"
+text 7 "  │       Spaces                                                             │"
 style 7 0 2 fg=#dedede bg=#131313
 style 7 2 4 fg=#303030 bg=#131313
-style 7 4 9 fg=#dedede bg=#131313
-style 7 9 15 fg=#9d9d9d bg=#131313
-style 7 15 76 fg=#dedede bg=#131313
+style 7 4 76 fg=#dedede bg=#131313
 style 7 76 78 fg=#303030 bg=#131313
 style 7 78 80 fg=#dedede bg=#131313
-text 8 "  │   2. Which checks?                                                       │"
+text 8 "  │    2. Which checks?                                                      │"
 style 8 0 2 fg=#dedede bg=#131313
 style 8 2 4 fg=#303030 bg=#131313
 style 8 4 76 fg=#dedede bg=#131313
 style 8 76 78 fg=#303030 bg=#131313
 style 8 78 80 fg=#dedede bg=#131313
-text 9 "  │      Answered in your message                                            │"
+text 9 "  │       Answered in your message                                           │"
 style 9 0 2 fg=#dedede bg=#131313
 style 9 2 4 fg=#303030 bg=#131313
-style 9 4 9 fg=#dedede bg=#131313
-style 9 9 33 fg=#9d9d9d bg=#131313
-style 9 33 76 fg=#dedede bg=#131313
+style 9 4 10 fg=#dedede bg=#131313
+style 9 10 34 fg=#9d9d9d bg=#131313
+style 9 34 76 fg=#dedede bg=#131313
 style 9 76 78 fg=#303030 bg=#131313
 style 9 78 80 fg=#dedede bg=#131313
-text 10 "  │   3. How should I update the configuration?                              │"
+text 10 "  │    3. How should I update the configuration?                             │"
 style 10 0 2 fg=#dedede bg=#131313
 style 10 2 4 fg=#303030 bg=#131313
 style 10 4 76 fg=#dedede bg=#131313
 style 10 76 78 fg=#303030 bg=#131313
 style 10 78 80 fg=#dedede bg=#131313
-text 11 "  │      Arko closed it. The user said to leave it                           │"
+text 11 "  │       Arko closed it. The user said to leave it                          │"
 style 11 0 2 fg=#dedede bg=#131313
 style 11 2 4 fg=#303030 bg=#131313
-style 11 4 9 fg=#dedede bg=#131313
-style 11 9 50 fg=#9d9d9d bg=#131313
-style 11 50 76 fg=#dedede bg=#131313
+style 11 4 10 fg=#dedede bg=#131313
+style 11 10 51 fg=#9d9d9d bg=#131313
+style 11 51 76 fg=#dedede bg=#131313
 style 11 76 78 fg=#303030 bg=#131313
 style 11 78 80 fg=#dedede bg=#131313
 text 12 "  └──────────────────────────────────────────────────────────────────────────┘"
@@ -81,8 +79,8 @@ style 12 2 78 fg=#303030 bg=#131313
 style 12 78 80 fg=#dedede bg=#131313
 text 13 ""
 style 13 0 80 fg=#dedede bg=#131313
-text 14 "  ┌ Arko asked a question ───────────────────────────────────────────────────┐"
-style 14 0 2 fg=#dedede bg=#131313
+text 14 "? ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+style 14 0 2 fg=#9d9d9d bg=#131313
 style 14 2 3 fg=#303030 bg=#131313
 style 14 3 26 fg=#9d9d9d bg=#131313
 style 14 26 78 fg=#303030 bg=#131313

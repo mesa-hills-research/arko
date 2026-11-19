@@ -284,16 +284,27 @@ fn act(session: &mut Session, request: &Value) -> Value {
             });
             json!({})
         }
+        // (With `also`, more questions of the same ask, each an `id` and a
+        // `text`.)
         "ask" => {
-            let asked = crate::questions::AskedQuestion {
+            let asked = |request: &Value| crate::questions::AskedQuestion {
                 id: text(request, "id"),
                 question: arko_agents::questions::Question {
                     question: text(request, "text"),
                     ..Default::default()
                 },
             };
-            let item = feed.ask_questions(&[asked], request["waits"].as_bool() == Some(true));
+            let mut all = vec![asked(request)];
+            all.extend(request["also"].as_array().into_iter().flatten().map(asked));
+            let item = feed.ask_questions(&all, request["waits"].as_bool() == Some(true));
             json!({ "item": item })
+        }
+        "dismissed" => {
+            feed.set_question_state(
+                &text(request, "id"),
+                crate::questions::QuestionState::Dismissed,
+            );
+            json!({})
         }
         "answered" => {
             feed.set_question_state(

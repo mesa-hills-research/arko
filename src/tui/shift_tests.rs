@@ -85,10 +85,12 @@ enum Step {
     DoorCloses,
     TurnEnds,
     WorkerStarts,
+    Asks,
+    Settles,
 }
 
 impl Step {
-    const ALL: [Step; 26] = [
+    const ALL: [Step; 28] = [
         Step::Asked,
         Step::WorkingCall,
         Step::WorkingThought,
@@ -115,6 +117,8 @@ impl Step {
         Step::DoorCloses,
         Step::TurnEnds,
         Step::WorkerStarts,
+        Step::Asks,
+        Step::Settles,
     ];
 
     fn name(self) -> &'static str {
@@ -145,6 +149,8 @@ impl Step {
             Step::DoorCloses => "\"N more lines\" closes",
             Step::TurnEnds => "turn ends",
             Step::WorkerStarts => "worker start → its ID",
+            Step::Asks => "questions come",
+            Step::Settles => "a question settles",
         }
     }
 }
@@ -452,7 +458,8 @@ fn past_marker(row: &str) -> &str {
 
 /// Each line of `rows`, by what tells it from every other row there, which
 /// is its first word that no other row has, else its text when no other row
-/// has that. Blank rows and rows that share all they have are left out.
+/// has that. Blank rows, rows that share all they have, and a box's edge
+/// alone (which another box's edge looks like) are left out.
 fn lines(rows: &[String]) -> HashMap<String, usize> {
     let mut seen: HashMap<&str, usize> = HashMap::new();
     let mut texts: HashMap<&str, usize> = HashMap::new();
@@ -469,7 +476,8 @@ fn lines(rows: &[String]) -> HashMap<String, usize> {
     let mut out = HashMap::new();
     for (y, (row, words)) in rows.iter().zip(&all).enumerate() {
         let text = past_marker(row);
-        if text.is_empty() {
+        let edge = |c: char| c.is_whitespace() || ('\u{2500}'..='\u{257f}').contains(&c);
+        if text.chars().all(edge) {
             continue;
         }
         let id = match words.iter().find(|word| seen[*word] == 1) {
@@ -729,6 +737,9 @@ struct Run<'m> {
     run_doors: Rng,
     /// Whether its turns make code runs.
     code_runs: bool,
+    /// Numbers for the questions the agent asks, so the rest of the session
+    /// makes the choices it would make without them.
+    asks: Rng,
     id: u64,
     at: i64,
     word: u64,
@@ -809,6 +820,7 @@ impl<'m> Run<'m> {
             runs: Rng(seed.wrapping_mul(0xA24B_AED4_963E_E407) | 1),
             run_doors: Rng(seed.wrapping_mul(0x9FB2_1C65_1E98_DF25) | 1),
             code_runs: true,
+            asks: Rng(seed.wrapping_mul(0xC2B2_AE3D_27D4_EB4F) | 1),
             id: 0,
             at: chrono::Utc::now().timestamp_millis(),
             word: 0,
@@ -1839,6 +1851,51 @@ impl<'m> Run<'m> {
         }
     }
 
+    /// The agent asks two questions, in a card that holds a line for each
+    /// answer. The first is answered at length, so its line is cut, and the
+    /// reader shows it whole and cut again while the second is open. Then
+    /// the second is dismissed. The card keeps its height as each settles,
+    /// so no line moves.
+    fn ask(&mut self) {
+        use crate::questions::{AgentQuestion, QuestionState};
+        // (Its heading has a word of its own, as every line does.)
+        let heading = format!("{} asked 2 questions", self.words(1));
+        let mut card = self.item(Kind::Question, &heading);
+        let mut questions: Vec<AgentQuestion> = (1..=2)
+            .map(|number| AgentQuestion {
+                id: format!("q{}-{number}", card.id),
+                question: format!("{}?", self.words(4)),
+                choices: Vec::new(),
+                multiple: false,
+                default: None,
+                state: QuestionState::Open,
+                waits: false,
+                item: card.id,
+                number: Some(number),
+            })
+            .collect();
+        card.questions = Some(questions.clone());
+        self.add(card.clone());
+        self.frame(Step::Asks);
+        let answer = self.words(40);
+        let first = answer.split(' ').next().unwrap_or_default().to_string();
+        questions[0].state = QuestionState::Answered { answer };
+        card.questions = Some(questions.clone());
+        self.update(Update::Change(card.clone()));
+        self.frame(Step::Settles);
+        for step in [Step::FoldOpens, Step::FoldCloses] {
+            let rows = self.last.as_ref().map(|last| last.rows.clone());
+            let Some((y, _)) = rows.and_then(|rows| place_of(&rows, &first)) else {
+                break;
+            };
+            self.press(y, step);
+        }
+        questions[1].state = QuestionState::Dismissed;
+        card.questions = Some(questions);
+        self.update(Update::Change(card));
+        self.frame(Step::Settles);
+    }
+
     fn turn(&mut self) {
         self.scroll_up();
         self.turn += 1;
@@ -1873,6 +1930,9 @@ impl<'m> Run<'m> {
                 self.think();
             }
             self.reply();
+            if self.asks.chance(30) {
+                self.ask();
+            }
         }
         self.read_waiting();
         let ended = self.words(1);

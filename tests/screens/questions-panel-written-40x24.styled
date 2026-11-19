@@ -1,28 +1,35 @@
 size 40 24
-cursor 24 16 visible default
-text 0 "  │            server                │"
+cursor 25 16 visible default
+text 0 "  └──────────────────────────────────┘"
 style 0 0 2 fg=#dedede bg=#131313
-style 0 2 4 fg=#303030 bg=#131313
-style 0 4 15 fg=#9d9d9d bg=#131313
-style 0 15 36 fg=#dedede bg=#131313
-style 0 36 38 fg=#303030 bg=#131313
+style 0 2 38 fg=#303030 bg=#131313
 style 0 38 40 fg=#dedede bg=#131313
-text 1 "  └──────────────────────────────────┘"
-style 1 0 2 fg=#dedede bg=#131313
-style 1 2 38 fg=#303030 bg=#131313
-style 1 38 40 fg=#dedede bg=#131313
-text 2 ""
-style 2 0 40 fg=#dedede bg=#131313
-text 3 "? Arko asked 3 questions"
-style 3 0 2 fg=#419cff bg=#131313
-style 3 2 24 fg=#9d9d9d bg=#131313
-style 3 24 40 fg=#dedede bg=#131313
-text 4 ""
-style 4 0 40 fg=#dedede bg=#131313
-text 5 "? Arko asked a question"
-style 5 0 2 fg=#419cff bg=#131313
-style 5 2 23 fg=#9d9d9d bg=#131313
-style 5 23 40 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 40 fg=#dedede bg=#131313
+text 2 "? ┌ Arko asked a question ───────────┐"
+style 2 0 2 fg=#419cff bg=#131313
+style 2 2 3 fg=#303030 bg=#131313
+style 2 3 26 fg=#9d9d9d bg=#131313
+style 2 26 38 fg=#303030 bg=#131313
+style 2 38 40 fg=#dedede bg=#131313
+text 3 "  │   Anything else I should know?   │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 36 fg=#dedede bg=#131313
+style 3 36 38 fg=#303030 bg=#131313
+style 3 38 40 fg=#dedede bg=#131313
+text 4 "  │   Needs your answer              │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 6 fg=#dedede bg=#131313
+style 4 6 23 fg=#9d9d9d bg=#131313
+style 4 23 36 fg=#dedede bg=#131313
+style 4 36 38 fg=#303030 bg=#131313
+style 4 38 40 fg=#dedede bg=#131313
+text 5 "  └──────────────────────────────────┘"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 38 fg=#303030 bg=#131313
+style 5 38 40 fg=#dedede bg=#131313
 text 6 ""
 style 6 0 40 fg=#dedede bg=#131313
 text 7 "┌ Question 4 of 4 ─────────────────────┐"
@@ -39,37 +46,37 @@ text 9 "│                                      │"
 style 9 0 1 fg=#419cff bg=#131313
 style 9 1 39 fg=#dedede bg=#131313
 style 9 39 40 fg=#419cff bg=#131313
-text 10 "│   1 You decide (Spaces)              │"
+text 10 "│    1 You decide (Spaces)             │"
 style 10 0 1 fg=#419cff bg=#131313
 style 10 1 4 fg=#dedede bg=#131313
-style 10 4 6 fg=#9d9d9d bg=#131313
-style 10 6 16 fg=#dedede bg=#131313
-style 10 16 25 fg=#9d9d9d bg=#131313
-style 10 25 39 fg=#dedede bg=#131313
+style 10 4 7 fg=#9d9d9d bg=#131313
+style 10 7 17 fg=#dedede bg=#131313
+style 10 17 26 fg=#9d9d9d bg=#131313
+style 10 26 39 fg=#dedede bg=#131313
 style 10 39 40 fg=#419cff bg=#131313
-text 11 "│   › Keep the branch local until the  │"
+text 11 "│    › Keep the branch local until     │"
 style 11 0 1 fg=#419cff bg=#131313
 style 11 1 4 fg=#dedede bg=#131313
-style 11 4 6 fg=#419cff bg=#131313
-style 11 6 39 fg=#dedede bg=#131313
+style 11 4 7 fg=#419cff bg=#131313
+style 11 7 39 fg=#dedede bg=#131313
 style 11 39 40 fg=#419cff bg=#131313
-text 12 "│     tests pass on Linux and          │"
+text 12 "│      the tests pass on Linux and     │"
 style 12 0 1 fg=#419cff bg=#131313
 style 12 1 39 fg=#dedede bg=#131313
 style 12 39 40 fg=#419cff bg=#131313
-text 13 "│     Windows. Preserve the            │"
+text 13 "│      Windows. Preserve the           │"
 style 13 0 1 fg=#419cff bg=#131313
 style 13 1 39 fg=#dedede bg=#131313
 style 13 39 40 fg=#419cff bg=#131313
-text 14 "│     configuration comments and show  │"
+text 14 "│      configuration comments and      │"
 style 14 0 1 fg=#419cff bg=#131313
 style 14 1 39 fg=#dedede bg=#131313
 style 14 39 40 fg=#419cff bg=#131313
-text 15 "│     the migration diff before        │"
+text 15 "│      show the migration diff before  │"
 style 15 0 1 fg=#419cff bg=#131313
 style 15 1 39 fg=#dedede bg=#131313
 style 15 39 40 fg=#419cff bg=#131313
-text 16 "│     writing any files.               │"
+text 16 "│      writing any files.              │"
 style 16 0 1 fg=#419cff bg=#131313
 style 16 1 39 fg=#dedede bg=#131313
 style 16 39 40 fg=#419cff bg=#131313

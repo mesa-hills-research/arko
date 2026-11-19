@@ -3126,10 +3126,11 @@ mod tests {
         assert_eq!(app.editor.text(), "x");
     }
 
-    /// A question card is one quiet line while its questions are open, and
-    /// a click on it opens the answer panel on them.
+    /// A question card shows its questions from the start, and a click on
+    /// it opens the answer panel, on the question clicked, else on the
+    /// card's first open one.
     #[test]
-    fn a_click_on_an_open_cards_line_opens_the_panel() {
+    fn a_click_on_an_open_card_opens_the_panel_on_the_question_clicked() {
         use crate::remote::{Item, Kind, Update};
         use termelon::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
         let mut app = app();
@@ -3142,20 +3143,21 @@ mod tests {
             questions,
             ..Default::default()
         });
-        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!app.panel.open);
-        let rows = screen(&mut app, 60, 24);
-        let y = rows
-            .iter()
-            .position(|row| row.contains("Arko asked 2 questions"))
-            .unwrap_or_else(|| panic!("{rows:#?}"));
-        assert!(!rows.iter().any(|row| row.contains("Which branch?")));
-        let x = rows[y].find("Arko").unwrap() as u16;
         let left = MouseButton::Left;
-        mouse(&mut app, MouseEventKind::Down(left), x, y as u16);
-        mouse(&mut app, MouseEventKind::Up(left), x, y as u16);
-        assert!(app.panel.open);
-        assert_eq!(app.focus_index(), 0);
+        for (words, focus) in [("Which branch?", 1), ("Arko asked 2 questions", 0)] {
+            app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(!app.panel.open);
+            let rows = screen(&mut app, 60, 24);
+            let y = rows
+                .iter()
+                .position(|row| row.contains(words))
+                .unwrap_or_else(|| panic!("{rows:#?}"));
+            let x = rows[y][..rows[y].find(words).unwrap()].chars().count() as u16;
+            mouse(&mut app, MouseEventKind::Down(left), x, y as u16);
+            mouse(&mut app, MouseEventKind::Up(left), x, y as u16);
+            assert!(app.panel.open, "{words}");
+            assert_eq!(app.focus_index(), focus, "{words}");
+        }
     }
 
     /// With the symbols of the classic Windows console's fonts (`basic`) and
@@ -3855,10 +3857,10 @@ mod tests {
             .position(|row| row.contains("┌ Arko asked 2 questions ─"))
             .unwrap_or_else(|| panic!("{rows:#?}"));
         for (row, text) in [
-            (1, "│   1. Tabs or spaces?"),
-            (2, "│      Spaces"),
-            (3, "│   2. Which branch?"),
-            (4, "│      Dismissed"),
+            (1, "│    1. Tabs or spaces?"),
+            (2, "│       Spaces"),
+            (3, "│    2. Which branch?"),
+            (4, "│       Dismissed"),
             (5, "└──"),
         ] {
             assert!(rows[top + row].contains(text), "{rows:#?}");

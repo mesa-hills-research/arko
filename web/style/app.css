@@ -383,9 +383,10 @@ button.cache { padding: 0; border: 0; background: none; }
    collapses. The header and the composer stand where a row of their
    neighbour's kind would, em box to em box, so the first and the last row
    add the half-leading of their line, or none where their edge is drawn
-   (a bubble, a card, a report). What hangs past the rows' ends, unseen
-   (a button's touch target), is cut there, so the scroller's range ends
-   where the end does, and a scroll to the end leaves no blank under it. */
+   (a bubble, a card, a report, the end of a question's box). What hangs
+   past the rows' ends, unseen (a button's touch target), is cut there, so
+   the scroller's range ends where the end does, and a scroll to the end
+   leaves no blank under it. */
 .rows { display: flow-root; overflow-y: clip; }
 .row { overflow-wrap: anywhere; }
 #rows > .row { --lead: calc((1lh - 1em) / 2); margin: var(--above, 0px) 0 var(--below, 0px); }
@@ -402,12 +403,12 @@ button.cache { padding: 0; border: 0; background: none; }
 :is(#rows, .quiet-calls) > :is(.row:has(> details[open]), .row.thinking.open, .quiet-member.open) + [data-gap-open="apart"] { --above: var(--space-apart); }
 :is(#rows, .quiet-calls) > :is(.row:has(> details[open]), .row.thinking.open, .quiet-member.open) + [data-gap-open="turn"] { --above: var(--space-turn); }
 #rows > .row:first-child { margin-top: calc(var(--above, 0px) + var(--lead)); }
-#rows > [data-end="stack"] { --below: calc(var(--space-stack) + var(--lead)); }
-#rows > [data-end="apart"] { --below: calc(var(--space-apart) + var(--lead)); }
-#rows > [data-end="turn"] { --below: calc(var(--space-turn) + var(--lead)); }
-#rows > [data-end-open="stack"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-stack) + var(--lead)); }
-#rows > [data-end-open="apart"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-apart) + var(--lead)); }
-#rows > [data-end-open="turn"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-turn) + var(--lead)); }
+#rows > [data-end="stack"] { --below: calc(var(--space-stack) + var(--end-lead, var(--lead))); }
+#rows > [data-end="apart"] { --below: calc(var(--space-apart) + var(--end-lead, var(--lead))); }
+#rows > [data-end="turn"] { --below: calc(var(--space-turn) + var(--end-lead, var(--lead))); }
+#rows > [data-end-open="stack"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-stack) + var(--end-lead, var(--lead))); }
+#rows > [data-end-open="apart"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-apart) + var(--end-lead, var(--lead))); }
+#rows > [data-end-open="turn"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-turn) + var(--end-lead, var(--lead))); }
 
 .row.user { display: flex; flex-direction: column; align-items: flex-end; }
 .bubble {
@@ -429,17 +430,23 @@ button.cache { padding: 0; border: 0; background: none; }
 .label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .row.message .label { color: var(--link); }
 /* A question card, one quiet line where the agent asked, which opens the
-   answer panel while any of its questions is open, and under it the record
-   of those settled, boxed as the panel is. */
+   answer panel while any of its questions is open, and under it its
+   questions, boxed as the panel is, each with the line that holds its
+   answer. While a question is open, the whole card opens the panel. */
 .asked { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; }
 .asked svg { color: var(--warn-mark); }
 .asked:disabled { cursor: default; }
 .asked:disabled svg { color: var(--muted); }
+.row.question:has(li.open) .record-box { cursor: pointer; }
 @media (hover: hover) {
-  .asked:not(:disabled):hover { color: var(--text); }
+  .asked:not(:disabled):hover,
+  .row.question:has(li.open):hover .asked { color: var(--text); }
+  .row.question:has(li.open):hover .record-box { border-color: var(--muted); }
 }
-/* The hairline, not the accent, since a record needs nothing from the user. */
+/* The hairline, not the accent, since the "?" says what needs the user. */
 .record-box { margin-top: 6px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+/* It ends on its frame, with no half-leading under it. */
+#rows > .row.question:has(> .record-box) { --end-lead: 0px; }
 /* A card holds what it says 12 px from its frame to the ink, top and
    bottom, as a bubble holds its text. Its first and last lines start at its
    padding, em box to the frame, their half-leading trimmed, so the inset
@@ -450,9 +457,16 @@ button.cache { padding: 0; border: 0; background: none; }
 .row.report .md .mdb:nth-last-child(1 of :not(:empty)) > :is(p, ul, ol, h3, h4, h5):last-child { margin-bottom: calc((1em - 1lh) / 2); }
 .record { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .record li { display: flex; gap: 6px; }
-.record-number { flex: none; min-width: 16px; color: var(--muted); }
-.record-outcome { color: var(--muted); font-size: 14px; }
+/* Its room is two digits', or the widest number's (questions.rs), and the
+   numbers align on their last digit. */
+.record-number { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.record-text { flex: 1; min-width: 0; }
+/* One line, cut to fit (questions.rs), unless a click shows it whole. */
+.record-outcome { display: block; overflow: hidden; color: var(--muted); font-size: 14px; white-space: nowrap; }
+.record-outcome.whole { overflow: visible; white-space: pre-wrap; }
 .record-outcome.answer { color: var(--text); }
+.record-outcome[role="button"] { cursor: pointer; }
+.record-outcome:focus-visible { border-radius: var(--r-sm); outline: 2px solid var(--ring); outline-offset: 1px; }
 .row.report {
   position: relative;
   padding: 12px 14px;
@@ -1162,7 +1176,8 @@ a.chip-link { cursor: pointer; }
 .answers-question { display: flex; flex-direction: column; gap: 6px; }
 .answers-question.batch { padding-top: 16px; border-top: 1px solid var(--line); }
 .answers-ask { display: flex; align-items: baseline; gap: 6px; font-size: 15px; }
-.answers-number { flex: none; min-width: 16px; color: var(--muted); }
+/* (Its room is two digits', or the widest number's, questions.rs.) */
+.answers-number { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .answers-words { display: flex; flex: 1; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
 .answers-any { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .answers-chips { display: flex; flex-wrap: wrap; gap: 4px; }

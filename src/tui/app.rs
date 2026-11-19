@@ -2919,13 +2919,23 @@ impl App {
             self.watch(Some(worker));
             return;
         }
-        // The line of questions still open opens the answer panel on them.
+        // A question card opens the answer panel on the question clicked, or
+        // on its first open one. A settled question's cut line shows whole,
+        // or cut again.
         if self
             .transcript
             .item(key)
             .is_some_and(|item| item.kind == crate::remote::Kind::Question)
         {
-            self.open_card(key);
+            match self.transcript.question_at(at.x, at.y, &filter, &theme) {
+                Some(hit) if hit.open => {
+                    self.open_question(key, &hit.id);
+                }
+                Some(hit) if hit.cut => self.transcript.toggle_whole(&hit),
+                _ => {
+                    self.open_card(key);
+                }
+            }
         }
     }
 

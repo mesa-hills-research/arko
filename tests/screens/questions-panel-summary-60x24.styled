@@ -1,55 +1,62 @@
 size 60 24
 cursor 0 0 hidden
-text 0 "  │ Tools      2 skills · 1 MCP server                   │"
+text 0 "  └──────────────────────────────────────────────────────┘"
 style 0 0 2 fg=#dedede bg=#131313
-style 0 2 4 fg=#303030 bg=#131313
-style 0 4 15 fg=#9d9d9d bg=#131313
-style 0 15 56 fg=#dedede bg=#131313
-style 0 56 58 fg=#303030 bg=#131313
+style 0 2 58 fg=#303030 bg=#131313
 style 0 58 60 fg=#dedede bg=#131313
-text 1 "  └──────────────────────────────────────────────────────┘"
-style 1 0 2 fg=#dedede bg=#131313
-style 1 2 58 fg=#303030 bg=#131313
-style 1 58 60 fg=#dedede bg=#131313
-text 2 ""
-style 2 0 60 fg=#dedede bg=#131313
-text 3 "? Arko asked 3 questions"
-style 3 0 2 fg=#419cff bg=#131313
-style 3 2 24 fg=#9d9d9d bg=#131313
-style 3 24 60 fg=#dedede bg=#131313
-text 4 ""
-style 4 0 60 fg=#dedede bg=#131313
-text 5 "? Arko asked a question"
-style 5 0 2 fg=#419cff bg=#131313
-style 5 2 23 fg=#9d9d9d bg=#131313
-style 5 23 60 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 60 fg=#dedede bg=#131313
+text 2 "? ┌ Arko asked a question ───────────────────────────────┐"
+style 2 0 2 fg=#419cff bg=#131313
+style 2 2 3 fg=#303030 bg=#131313
+style 2 3 26 fg=#9d9d9d bg=#131313
+style 2 26 58 fg=#303030 bg=#131313
+style 2 58 60 fg=#dedede bg=#131313
+text 3 "  │   Anything else I should know?                       │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 56 fg=#dedede bg=#131313
+style 3 56 58 fg=#303030 bg=#131313
+style 3 58 60 fg=#dedede bg=#131313
+text 4 "  │   Needs your answer                                  │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 6 fg=#dedede bg=#131313
+style 4 6 23 fg=#9d9d9d bg=#131313
+style 4 23 56 fg=#dedede bg=#131313
+style 4 56 58 fg=#303030 bg=#131313
+style 4 58 60 fg=#dedede bg=#131313
+text 5 "  └──────────────────────────────────────────────────────┘"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 58 fg=#303030 bg=#131313
+style 5 58 60 fg=#dedede bg=#131313
 text 6 ""
 style 6 0 60 fg=#dedede bg=#131313
 text 7 "┌ Your answers ────────────────────────────────────────────┐"
 style 7 0 1 fg=#419cff bg=#131313
 style 7 1 15 fg=#419cff bg=#131313 bold
 style 7 15 60 fg=#419cff bg=#131313
-text 8 "│   2  Which checks?         Not answered                  │"
+text 8 "│    2  Which checks?        Not answered                  │"
 style 8 0 1 fg=#419cff bg=#131313
 style 8 1 4 fg=#dedede bg=#131313
-style 8 4 7 fg=#9d9d9d bg=#131313
-style 8 7 29 fg=#dedede bg=#131313
+style 8 4 8 fg=#9d9d9d bg=#131313
+style 8 8 29 fg=#dedede bg=#131313
 style 8 29 41 fg=#9d9d9d bg=#131313
 style 8 41 59 fg=#dedede bg=#131313
 style 8 59 60 fg=#419cff bg=#131313
-text 9 "│   3  How should I update…  Not answered                  │"
+text 9 "│    3  How should I updat…  Not answered                  │"
 style 9 0 1 fg=#419cff bg=#131313
 style 9 1 4 fg=#dedede bg=#131313
-style 9 4 7 fg=#9d9d9d bg=#131313
-style 9 7 29 fg=#dedede bg=#131313
+style 9 4 8 fg=#9d9d9d bg=#131313
+style 9 8 29 fg=#dedede bg=#131313
 style 9 29 41 fg=#9d9d9d bg=#131313
 style 9 41 59 fg=#dedede bg=#131313
 style 9 59 60 fg=#419cff bg=#131313
-text 10 "│   4  Anything else I sho…  Keep the branch local until   │"
+text 10 "│    4  Anything else I sh…  Keep the branch local until   │"
 style 10 0 1 fg=#419cff bg=#131313
 style 10 1 4 fg=#dedede bg=#131313
-style 10 4 7 fg=#9d9d9d bg=#131313
-style 10 7 59 fg=#dedede bg=#131313
+style 10 4 8 fg=#9d9d9d bg=#131313
+style 10 8 59 fg=#dedede bg=#131313
 style 10 59 60 fg=#419cff bg=#131313
 text 11 "│                            the tests pass on Linux and   │"
 style 11 0 1 fg=#419cff bg=#131313

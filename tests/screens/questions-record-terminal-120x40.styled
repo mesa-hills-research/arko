@@ -26,20 +26,21 @@ style 7 116 118 dim
 text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 style 8 2 118 dim
 text 9 ""
-text 10 "  ┌ Arko asked 3 questions ──────────────────────────────────────────────────────────────────────────────────────────┐"
+text 10 "? ┌ Arko asked 3 questions ──────────────────────────────────────────────────────────────────────────────────────────┐"
+style 10 0 2 dim
 style 10 3 27 dim
-text 11 "  │   1. Tabs or spaces?                                                                                             │"
-text 12 "  │      Spaces                                                                                                      │"
-style 12 9 15 dim
-text 13 "  │   2. Which checks?                                                                                               │"
-text 14 "  │      Answered in your message                                                                                    │"
-style 14 9 33 dim
-text 15 "  │   3. How should I update the configuration?                                                                      │"
-text 16 "  │      Arko closed it. The user said to leave it                                                                   │"
-style 16 9 50 dim
+text 11 "  │    1. Tabs or spaces?                                                                                            │"
+text 12 "  │       Spaces                                                                                                     │"
+text 13 "  │    2. Which checks?                                                                                              │"
+text 14 "  │       Answered in your message                                                                                   │"
+style 14 10 34 dim
+text 15 "  │    3. How should I update the configuration?                                                                     │"
+text 16 "  │       Arko closed it. The user said to leave it                                                                  │"
+style 16 10 51 dim
 text 17 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
 text 18 ""
-text 19 "  ┌ Arko asked a question ───────────────────────────────────────────────────────────────────────────────────────────┐"
+text 19 "? ┌ Arko asked a question ───────────────────────────────────────────────────────────────────────────────────────────┐"
+style 19 0 2 dim
 style 19 3 26 dim
 text 20 "  │   Anything else I should know?                                                                                   │"
 text 21 "  │   Dismissed                                                                                                      │"

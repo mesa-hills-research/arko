@@ -201,7 +201,9 @@ const TABLE = `(() => {
     return (parseFloat(s.lineHeight) - parseFloat(s.fontSize)) / 2;
   };
   const nextOf = (kind) => (kind === 'Held' ? 'Open' : kind);
-  const endOf = (row) => PX[step(kindOf(row), nextOf(kindOf(row)))] + leadOf(row);
+  // (A question card ends on its box's frame.)
+  const endLeadOf = (row) => (row.matches('.question:has(> .record-box)') ? 0 : leadOf(row));
+  const endOf = (row) => PX[step(kindOf(row), nextOf(kindOf(row)))] + endLeadOf(row);
   return { PX, step, isOpen, kindOf, framed, leadOf, nextOf, endOf };
 })()`;
 
@@ -428,6 +430,9 @@ class Tally {
 
 const VIEWS = ['full', 'quiet', 'messages'];
 
+// The controls every run must work at least once.
+const COVERED = ['cut line toggled by a click', 'cut line toggled by Enter', 'cut line toggled by Space'];
+
 class Meter {
   constructor() {
     this.tallies = new Map(); // step|view|reader
@@ -439,7 +444,12 @@ class Meter {
     this.tripExamples = new Map();
     this.steps = new Set();
     this.blanks = new Map(); // step|view
+    // The controls the sessions worked, each time it did what it says, so
+    // a run that never reached one fails.
+    this.worked = new Map(COVERED.map((what) => [what, 0]));
   }
+
+  work(what) { this.worked.set(what, (this.worked.get(what) ?? 0) + 1); }
 
   tally(map, key) {
     if (!map.has(key)) map.set(key, new Tally());
@@ -1166,7 +1176,7 @@ class Run {
       const log = document.getElementById('log');
       const box = log.getBoundingClientRect();
       const bottom = box.top + log.clientHeight;
-      const folds = [...document.querySelectorAll('#rows summary, #rows button.call-line')]
+      const folds = [...document.querySelectorAll('#rows summary, #rows button.call-line, #rows .record-outcome[aria-expanded]')]
         .map((element) => ({ element, rect: element.getBoundingClientRect() }))
         .filter(({ rect }) => rect.height > 0 && rect.top >= box.top && rect.bottom <= bottom);
       const wanted = ${JSON.stringify(opened)};
@@ -1196,6 +1206,27 @@ class Run {
     // bottom.)
     this.begin(step, { below: fold.bottom - 1 });
     await this.click(fold.x, fold.y);
+    await this.settle();
+    await this.scrollUp();
+  }
+
+  /// The reader shows the cut line of the question card `row` whole, or
+  /// cuts it again, by `key` (Enter or Space) on the line, which takes the
+  /// focus, where the screen shows it.
+  async keyLine(row, key) {
+    const line = await this.evaluate(`(() => {
+      const log = document.getElementById('log');
+      const box = log.getBoundingClientRect();
+      const line = document.querySelector('#rows [data-row="${row}"] .record-outcome[aria-expanded]');
+      if (!line) return null;
+      const rect = line.getBoundingClientRect();
+      if (rect.top < box.top || rect.bottom > box.top + log.clientHeight) return null;
+      line.focus({ preventScroll: true });
+      return { open: line.getAttribute('aria-expanded') === 'true', bottom: Math.round(rect.bottom * devicePixelRatio) };
+    })()`);
+    if (!line) return;
+    this.begin(line.open ? 'fold closes near the end' : 'fold opens near the end', { below: line.bottom - 1 });
+    await this.key(key, key === ' ' ? 'Space' : key);
     await this.settle();
     await this.scrollUp();
   }
@@ -1444,7 +1475,13 @@ class Run {
       });
     } else if (pick === 1) {
       const id = `q${++this.word}`;
-      await this.feed({ do: 'ask', id, text: `${this.some(3, 5)}?`, waits: false });
+      // (Every other ask has two questions, the first answered at length,
+      // its line cut, which the reader shows whole and cut again while the
+      // second is open.)
+      const two = this.word % 2 === 0;
+      const second = `q${++this.word}`;
+      const also = two ? [{ id: second, text: `${this.words(4)}?` }] : [];
+      await this.feed({ do: 'ask', id, text: `${this.some(3, 5)}?`, also, waits: false });
       await this.settle('question comes', { viewport: true });
       await this.trip('answer panel', async () => {
         this.begin('answer panel opens', { viewport: true });
@@ -1459,8 +1496,34 @@ class Run {
         await this.key('Escape', 'Escape');
         await this.settle();
       });
-      await this.feed({ do: 'answered', id, text: this.words(2) });
+      await this.feed({ do: 'answered', id, text: this.words(two ? 40 : 2) });
       await this.settle('question answered', { viewport: true });
+      if (two) {
+        const row = await this.evaluate(`(() => {
+          const line = [...document.querySelectorAll('#rows .record-outcome[aria-expanded]')].pop();
+          return line ? line.closest('[data-row]').getAttribute('data-row') : null;
+        })()`);
+        // (By the mouse and by the keyboard, each way.)
+        const kept = this.opened;
+        for (const by of ['mouse', 'Enter', ' ', 'mouse']) {
+          if (!row) break;
+          const state = `(() => document.querySelector('#rows [data-row="${row}"] .record-outcome[aria-expanded]')?.getAttribute('aria-expanded') ?? null)()`;
+          const was = await this.evaluate(state);
+          if (by === 'mouse') {
+            this.opened = row;
+            await this.toggle();
+          } else {
+            await this.keyLine(row, by);
+          }
+          const now = await this.evaluate(state);
+          if (was !== null && now !== null && was !== now) {
+            this.meter.work(by === 'mouse' ? 'cut line toggled by a click' : by === 'Enter' ? 'cut line toggled by Enter' : 'cut line toggled by Space');
+          }
+        }
+        this.opened = kept;
+        await this.feed({ do: 'dismissed', id: second });
+        await this.settle('question answered', { viewport: true });
+      }
     } else if (pick === 2) {
       await this.focusBox();
       await this.trip('slash menu', async () => {
@@ -3214,6 +3277,9 @@ async function main() {
   if (OUT) writeFileSync(OUT, `${tables}\n## The largest move of each cause, step and view\n\n${meter.exampleText()}`);
   console.log(tables);
   if (caseCount) console.log(`${caseCount} pixel cases, ${failures.filter((failure) => failure.startsWith('pixel case')).length} failed.`);
+  const unworked = [...meter.worked].filter(([, times]) => times === 0).map(([what]) => what);
+  console.log(`Controls worked: ${[...meter.worked].map(([what, times]) => `${what} ${times}`).join(', ')}.`);
+  if (!CASES_ONLY && !ONLY) for (const what of unworked) failures.push(`no session worked the control: ${what}`);
   for (const failure of failures) console.error(failure);
   const ok = failures.length === 0 && (CASES_ONLY || meter.frames() > 500) && meter.shifted() === 0 && meter.tripsFailed() === 0;
   if (!ok && !OUT) console.error(meter.exampleText());

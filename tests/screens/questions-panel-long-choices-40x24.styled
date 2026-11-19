@@ -1,84 +1,91 @@
 size 40 24
-cursor 6 17 visible default
-text 0 "  │            server                │"
+cursor 7 17 visible default
+text 0 "  └──────────────────────────────────┘"
 style 0 0 2 fg=#dedede bg=#131313
-style 0 2 4 fg=#303030 bg=#131313
-style 0 4 15 fg=#9d9d9d bg=#131313
-style 0 15 36 fg=#dedede bg=#131313
-style 0 36 38 fg=#303030 bg=#131313
+style 0 2 38 fg=#303030 bg=#131313
 style 0 38 40 fg=#dedede bg=#131313
-text 1 "  └──────────────────────────────────┘"
-style 1 0 2 fg=#dedede bg=#131313
-style 1 2 38 fg=#303030 bg=#131313
-style 1 38 40 fg=#dedede bg=#131313
-text 2 ""
-style 2 0 40 fg=#dedede bg=#131313
-text 3 "? Arko asked 3 questions"
-style 3 0 2 fg=#419cff bg=#131313
-style 3 2 24 fg=#9d9d9d bg=#131313
-style 3 24 40 fg=#dedede bg=#131313
-text 4 ""
-style 4 0 40 fg=#dedede bg=#131313
-text 5 "? Arko asked a question"
-style 5 0 2 fg=#419cff bg=#131313
-style 5 2 23 fg=#9d9d9d bg=#131313
-style 5 23 40 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 40 fg=#dedede bg=#131313
+text 2 "? ┌ Arko asked a question ───────────┐"
+style 2 0 2 fg=#419cff bg=#131313
+style 2 2 3 fg=#303030 bg=#131313
+style 2 3 26 fg=#9d9d9d bg=#131313
+style 2 26 38 fg=#303030 bg=#131313
+style 2 38 40 fg=#dedede bg=#131313
+text 3 "  │   Anything else I should know?   │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 36 fg=#dedede bg=#131313
+style 3 36 38 fg=#303030 bg=#131313
+style 3 38 40 fg=#dedede bg=#131313
+text 4 "  │   Needs your answer              │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 6 fg=#dedede bg=#131313
+style 4 6 23 fg=#9d9d9d bg=#131313
+style 4 23 36 fg=#dedede bg=#131313
+style 4 36 38 fg=#303030 bg=#131313
+style 4 38 40 fg=#dedede bg=#131313
+text 5 "  └──────────────────────────────────┘"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 38 fg=#303030 bg=#131313
+style 5 38 40 fg=#dedede bg=#131313
 text 6 ""
 style 6 0 40 fg=#dedede bg=#131313
 text 7 "┌ Question 3 of 4 ─────────────────────┐"
 style 7 0 1 fg=#419cff bg=#131313
 style 7 1 18 fg=#419cff bg=#131313 bold
 style 7 18 40 fg=#419cff bg=#131313
-text 8 "│     and preserve all existing        │"
+text 8 "│      and preserve all existing       │"
 style 8 0 1 fg=#419cff bg=#131313
 style 8 1 39 fg=#dedede bg=#131313
 style 8 39 40 fg=#419cff bg=#131313
-text 9 "│     comments and ordering            │"
+text 9 "│      comments and ordering           │"
 style 9 0 1 fg=#419cff bg=#131313
 style 9 1 39 fg=#dedede bg=#131313
 style 9 39 40 fg=#419cff bg=#131313
-text 10 "│   2 Write a separate example and     │"
+text 10 "│    2 Write a separate example and    │"
 style 10 0 1 fg=#419cff bg=#131313
 style 10 1 4 fg=#dedede bg=#131313
-style 10 4 6 fg=#9d9d9d bg=#131313
-style 10 6 39 fg=#dedede bg=#131313
+style 10 4 7 fg=#9d9d9d bg=#131313
+style 10 7 39 fg=#dedede bg=#131313
 style 10 39 40 fg=#419cff bg=#131313
-text 11 "│     let each project choose when to  │"
+text 11 "│      let each project choose when    │"
 style 11 0 1 fg=#419cff bg=#131313
 style 11 1 39 fg=#dedede bg=#131313
 style 11 39 40 fg=#419cff bg=#131313
-text 12 "│     migrate                          │"
+text 12 "│      to migrate                      │"
 style 12 0 1 fg=#419cff bg=#131313
 style 12 1 39 fg=#dedede bg=#131313
 style 12 39 40 fg=#419cff bg=#131313
-text 13 "│   3 Migrate automatically after      │"
+text 13 "│    3 Migrate automatically after     │"
 style 13 0 1 fg=#419cff bg=#131313
 style 13 1 4 fg=#dedede bg=#131313
-style 13 4 6 fg=#9d9d9d bg=#131313
-style 13 6 39 fg=#dedede bg=#131313
+style 13 4 7 fg=#9d9d9d bg=#131313
+style 13 7 39 fg=#dedede bg=#131313
 style 13 39 40 fg=#419cff bg=#131313
-text 14 "│     making a backup of the original  │"
+text 14 "│      making a backup of the          │"
 style 14 0 1 fg=#419cff bg=#131313
 style 14 1 39 fg=#dedede bg=#131313
 style 14 39 40 fg=#419cff bg=#131313
-text 15 "│     configuration                    │"
+text 15 "│      original configuration          │"
 style 15 0 1 fg=#419cff bg=#131313
 style 15 1 39 fg=#dedede bg=#131313
 style 15 39 40 fg=#419cff bg=#131313
-text 16 "│   4 You decide (Spaces)              │"
+text 16 "│    4 You decide (Spaces)             │"
 style 16 0 1 fg=#419cff bg=#131313
 style 16 1 4 fg=#dedede bg=#131313
-style 16 4 6 fg=#9d9d9d bg=#131313
-style 16 6 16 fg=#dedede bg=#131313
-style 16 16 25 fg=#9d9d9d bg=#131313
-style 16 25 39 fg=#dedede bg=#131313
+style 16 4 7 fg=#9d9d9d bg=#131313
+style 16 7 17 fg=#dedede bg=#131313
+style 16 17 26 fg=#9d9d9d bg=#131313
+style 16 26 39 fg=#dedede bg=#131313
 style 16 39 40 fg=#419cff bg=#131313
-text 17 "│   › Type your own answer             │"
+text 17 "│    › Type your own answer            │"
 style 17 0 1 fg=#419cff bg=#131313
 style 17 1 4 fg=#dedede bg=#131313
-style 17 4 6 fg=#419cff bg=#131313
-style 17 6 26 fg=#9d9d9d bg=#131313
-style 17 26 39 fg=#dedede bg=#131313
+style 17 4 7 fg=#419cff bg=#131313
+style 17 7 27 fg=#9d9d9d bg=#131313
+style 17 27 39 fg=#dedede bg=#131313
 style 17 39 40 fg=#419cff bg=#131313
 text 18 "└───────────── PgUp  more   1-4  pick ─┘"
 style 18 0 14 fg=#419cff bg=#131313

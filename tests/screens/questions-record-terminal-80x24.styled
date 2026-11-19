@@ -12,20 +12,21 @@ style 2 76 78 dim
 text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
 style 3 2 78 dim
 text 4 ""
-text 5 "  ┌ Arko asked 3 questions ──────────────────────────────────────────────────┐"
+text 5 "? ┌ Arko asked 3 questions ──────────────────────────────────────────────────┐"
+style 5 0 2 dim
 style 5 3 27 dim
-text 6 "  │   1. Tabs or spaces?                                                     │"
-text 7 "  │      Spaces                                                              │"
-style 7 9 15 dim
-text 8 "  │   2. Which checks?                                                       │"
-text 9 "  │      Answered in your message                                            │"
-style 9 9 33 dim
-text 10 "  │   3. How should I update the configuration?                              │"
-text 11 "  │      Arko closed it. The user said to leave it                           │"
-style 11 9 50 dim
+text 6 "  │    1. Tabs or spaces?                                                    │"
+text 7 "  │       Spaces                                                             │"
+text 8 "  │    2. Which checks?                                                      │"
+text 9 "  │       Answered in your message                                           │"
+style 9 10 34 dim
+text 10 "  │    3. How should I update the configuration?                             │"
+text 11 "  │       Arko closed it. The user said to leave it                          │"
+style 11 10 51 dim
 text 12 "  └──────────────────────────────────────────────────────────────────────────┘"
 text 13 ""
-text 14 "  ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+text 14 "? ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+style 14 0 2 dim
 style 14 3 26 dim
 text 15 "  │   Anything else I should know?                                           │"
 text 16 "  │   Dismissed                                                              │"

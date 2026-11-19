@@ -1,28 +1,35 @@
 size 80 24
-cursor 6 13 visible default
-text 0 "  │ Tools      2 skills · 1 MCP server                                       │"
+cursor 7 13 visible default
+text 0 "  └──────────────────────────────────────────────────────────────────────────┘"
 style 0 0 2 fg=#dedede bg=#131313
-style 0 2 4 fg=#303030 bg=#131313
-style 0 4 15 fg=#9d9d9d bg=#131313
-style 0 15 76 fg=#dedede bg=#131313
-style 0 76 78 fg=#303030 bg=#131313
+style 0 2 78 fg=#303030 bg=#131313
 style 0 78 80 fg=#dedede bg=#131313
-text 1 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 1 0 2 fg=#dedede bg=#131313
-style 1 2 78 fg=#303030 bg=#131313
-style 1 78 80 fg=#dedede bg=#131313
-text 2 ""
-style 2 0 80 fg=#dedede bg=#131313
-text 3 "? Arko asked 3 questions"
-style 3 0 2 fg=#419cff bg=#131313
-style 3 2 24 fg=#9d9d9d bg=#131313
-style 3 24 80 fg=#dedede bg=#131313
-text 4 ""
-style 4 0 80 fg=#dedede bg=#131313
-text 5 "? Arko asked a question"
-style 5 0 2 fg=#419cff bg=#131313
-style 5 2 23 fg=#9d9d9d bg=#131313
-style 5 23 80 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 80 fg=#dedede bg=#131313
+text 2 "? ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+style 2 0 2 fg=#419cff bg=#131313
+style 2 2 3 fg=#303030 bg=#131313
+style 2 3 26 fg=#9d9d9d bg=#131313
+style 2 26 78 fg=#303030 bg=#131313
+style 2 78 80 fg=#dedede bg=#131313
+text 3 "  │   Anything else I should know?                                           │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 76 fg=#dedede bg=#131313
+style 3 76 78 fg=#303030 bg=#131313
+style 3 78 80 fg=#dedede bg=#131313
+text 4 "  │   Needs your answer                                                      │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 6 fg=#dedede bg=#131313
+style 4 6 23 fg=#9d9d9d bg=#131313
+style 4 23 76 fg=#dedede bg=#131313
+style 4 76 78 fg=#303030 bg=#131313
+style 4 78 80 fg=#dedede bg=#131313
+text 5 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 78 fg=#303030 bg=#131313
+style 5 78 80 fg=#dedede bg=#131313
 text 6 ""
 style 6 0 80 fg=#dedede bg=#131313
 text 7 "┌ Question 1 of 4 ─────────────────────────────────────────────────────────────┐"
@@ -39,32 +46,32 @@ text 9 "│                                                                     
 style 9 0 1 fg=#419cff bg=#131313
 style 9 1 79 fg=#dedede bg=#131313
 style 9 79 80 fg=#419cff bg=#131313
-text 10 "│   1 Spaces                                                                   │"
+text 10 "│    1 Spaces                                                                  │"
 style 10 0 1 fg=#419cff bg=#131313
 style 10 1 4 fg=#dedede bg=#131313
-style 10 4 6 fg=#9d9d9d bg=#131313
-style 10 6 79 fg=#dedede bg=#131313
+style 10 4 7 fg=#9d9d9d bg=#131313
+style 10 7 79 fg=#dedede bg=#131313
 style 10 79 80 fg=#419cff bg=#131313
-text 11 "│   2 Tabs                                                                     │"
+text 11 "│    2 Tabs                                                                    │"
 style 11 0 1 fg=#419cff bg=#131313
 style 11 1 4 fg=#dedede bg=#131313
-style 11 4 6 fg=#9d9d9d bg=#131313
-style 11 6 79 fg=#dedede bg=#131313
+style 11 4 7 fg=#9d9d9d bg=#131313
+style 11 7 79 fg=#dedede bg=#131313
 style 11 79 80 fg=#419cff bg=#131313
-text 12 "│   3 You decide (Spaces)                                                      │"
+text 12 "│    3 You decide (Spaces)                                                     │"
 style 12 0 1 fg=#419cff bg=#131313
 style 12 1 4 fg=#dedede bg=#131313
-style 12 4 6 fg=#9d9d9d bg=#131313
-style 12 6 16 fg=#dedede bg=#131313
-style 12 16 25 fg=#9d9d9d bg=#131313
-style 12 25 79 fg=#dedede bg=#131313
+style 12 4 7 fg=#9d9d9d bg=#131313
+style 12 7 17 fg=#dedede bg=#131313
+style 12 17 26 fg=#9d9d9d bg=#131313
+style 12 26 79 fg=#dedede bg=#131313
 style 12 79 80 fg=#419cff bg=#131313
-text 13 "│   › Type your own answer                                                     │"
+text 13 "│    › Type your own answer                                                    │"
 style 13 0 1 fg=#419cff bg=#131313
 style 13 1 4 fg=#dedede bg=#131313
-style 13 4 6 fg=#419cff bg=#131313
-style 13 6 26 fg=#9d9d9d bg=#131313
-style 13 26 79 fg=#dedede bg=#131313
+style 13 4 7 fg=#419cff bg=#131313
+style 13 7 27 fg=#9d9d9d bg=#131313
+style 13 27 79 fg=#dedede bg=#131313
 style 13 79 80 fg=#419cff bg=#131313
 text 14 "│                                                                              │"
 style 14 0 1 fg=#419cff bg=#131313

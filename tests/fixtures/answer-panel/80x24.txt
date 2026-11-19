@@ -1,17 +1,17 @@
-? Arko asked 3 questions
+  └──────────────────────────────────────────────────────────────────────────┘
 
-? Arko asked a question
-
-
-
+? ┌ Arko asked a question ───────────────────────────────────────────────────┐
+  │   Anything else I should know?                                           │
+  │   Needs your answer                                                      │
+  └──────────────────────────────────────────────────────────────────────────┘
 
 ┌ Question 1 of 4 ─────────────────────────────────────────────────────────────┐
 │ Tabs or spaces?                                                              │
 │                                                                              │
-│   1 Spaces                                                                   │
-│   2 Tabs                                                                     │
-│   3 You decide (Spaces)                                                      │
-│   › Type your own answer                                                     │
+│    1 Spaces                                                                  │
+│    2 Tabs                                                                    │
+│    3 You decide (Spaces)                                                     │
+│    › Type your own answer                                                    │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -24,23 +24,23 @@
 ────────────────────────────────────────────────────────────────────────────────
 
 --- Long choices ---
-? Arko asked 3 questions
+  └──────────────────────────────────────────────────────────────────────────┘
 
-? Arko asked a question
-
-
-
+? ┌ Arko asked a question ───────────────────────────────────────────────────┐
+  │   Anything else I should know?                                           │
+  │   Needs your answer                                                      │
+  └──────────────────────────────────────────────────────────────────────────┘
 
 ┌ Question 3 of 4 ─────────────────────────────────────────────────────────────┐
 │ How should I update the configuration?                                       │
 │                                                                              │
-│   1 Keep the current configuration and preserve all existing comments and    │
-│     ordering                                                                 │
-│   2 Write a separate example and let each project choose when to migrate     │
-│   3 Migrate automatically after making a backup of the original              │
-│     configuration                                                            │
-│   4 You decide (Spaces)                                                      │
-│   › Type your own answer                                                     │
+│    1 Keep the current configuration and preserve all existing comments and   │
+│      ordering                                                                │
+│    2 Write a separate example and let each project choose when to migrate    │
+│    3 Migrate automatically after making a backup of the original             │
+│      configuration                                                           │
+│    4 You decide (Spaces)                                                     │
+│    › Type your own answer                                                    │
 │                                                                              │
 └───────── 1-4  pick   ↑↓  choose   Enter  next   Shift+Tab  back   Esc  chat ─┘
 ────────────────────────────────────────────────────────────────────────────────
@@ -50,20 +50,20 @@
 ────────────────────────────────────────────────────────────────────────────────
 
 --- Written answer ---
-? Arko asked 3 questions
+  └──────────────────────────────────────────────────────────────────────────┘
 
-? Arko asked a question
-
-
-
+? ┌ Arko asked a question ───────────────────────────────────────────────────┐
+  │   Anything else I should know?                                           │
+  │   Needs your answer                                                      │
+  └──────────────────────────────────────────────────────────────────────────┘
 
 ┌ Question 4 of 4 ─────────────────────────────────────────────────────────────┐
 │ Anything else I should know?                                                 │
 │                                                                              │
-│   1 You decide (Spaces)                                                      │
-│   › Keep the branch local until the tests pass on Linux and Windows.         │
-│     Preserve the configuration comments and show the migration diff before   │
-│     writing any files.                                                       │
+│    1 You decide (Spaces)                                                     │
+│    › Keep the branch local until the tests pass on Linux and Windows.        │
+│      Preserve the configuration comments and show the migration diff before  │
+│      writing any files.                                                      │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -76,18 +76,18 @@
 ────────────────────────────────────────────────────────────────────────────────
 
 --- Summary ---
-? Arko asked 3 questions
+  └──────────────────────────────────────────────────────────────────────────┘
 
-? Arko asked a question
-
-
-
+? ┌ Arko asked a question ───────────────────────────────────────────────────┐
+  │   Anything else I should know?                                           │
+  │   Needs your answer                                                      │
+  └──────────────────────────────────────────────────────────────────────────┘
 
 ┌ Your answers ────────────────────────────────────────────────────────────────┐
-│   1  Tabs or spaces?               Not answered                              │
-│   2  Which checks?                 Not answered                              │
-│   3  How should I update the con…  Not answered                              │
-│   4  Anything else I should know?  Keep the branch local until the tests     │
+│    1  Tabs or spaces?              Not answered                              │
+│    2  Which checks?                Not answered                              │
+│    3  How should I update the co…  Not answered                              │
+│    4  Anything else I should kno…  Keep the branch local until the tests     │
 │                                    pass on Linux and Windows. Preserve the   │
 │                                    configuration comments and show the       │
 │                                    migration diff before writing any files.  │

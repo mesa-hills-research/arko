@@ -495,6 +495,13 @@ fn fonts_loading(first: bool) {
     });
 }
 
+/// The width of `text` as the browser draws it in `font`, any font,
+/// measured again once the fonts load.
+pub fn text_width(font: &'static str, text: &str) -> f64 {
+    loaded().track();
+    measure(font, text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

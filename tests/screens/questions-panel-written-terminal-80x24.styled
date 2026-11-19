@@ -1,18 +1,14 @@
 size 80 24
-cursor 24 13 visible default
-text 0 "  │ Tools      2 skills · 1 MCP server                                       │"
-style 0 2 15 dim
-style 0 76 78 dim
-text 1 "  └──────────────────────────────────────────────────────────────────────────┘"
-style 1 2 78 dim
-text 2 ""
-text 3 "? Arko asked 3 questions"
-style 3 0 2 fg=cyan
-style 3 2 24 dim
-text 4 ""
-text 5 "? Arko asked a question"
-style 5 0 2 fg=cyan
-style 5 2 23 dim
+cursor 25 13 visible default
+text 0 "  └──────────────────────────────────────────────────────────────────────────┘"
+text 1 ""
+text 2 "? ┌ Arko asked a question ───────────────────────────────────────────────────┐"
+style 2 0 2 fg=cyan
+style 2 3 26 dim
+text 3 "  │   Anything else I should know?                                           │"
+text 4 "  │   Needs your answer                                                      │"
+style 4 6 23 dim
+text 5 "  └──────────────────────────────────────────────────────────────────────────┘"
 text 6 ""
 text 7 "┌ Question 4 of 4 ─────────────────────────────────────────────────────────────┐"
 style 7 0 1 fg=cyan
@@ -25,19 +21,19 @@ style 8 79 80 fg=cyan
 text 9 "│                                                                              │"
 style 9 0 1 fg=cyan
 style 9 79 80 fg=cyan
-text 10 "│   1 You decide (Spaces)                                                      │"
+text 10 "│    1 You decide (Spaces)                                                     │"
 style 10 0 1 fg=cyan
-style 10 4 6 dim
-style 10 16 25 dim
+style 10 4 7 dim
+style 10 17 26 dim
 style 10 79 80 fg=cyan
-text 11 "│   › Keep the branch local until the tests pass on Linux and Windows.         │"
+text 11 "│    › Keep the branch local until the tests pass on Linux and Windows.        │"
 style 11 0 1 fg=cyan
-style 11 4 6 fg=cyan
+style 11 4 7 fg=cyan
 style 11 79 80 fg=cyan
-text 12 "│     Preserve the configuration comments and show the migration diff before   │"
+text 12 "│      Preserve the configuration comments and show the migration diff before  │"
 style 12 0 1 fg=cyan
 style 12 79 80 fg=cyan
-text 13 "│     writing any files.                                                       │"
+text 13 "│      writing any files.                                                      │"
 style 13 0 1 fg=cyan
 style 13 79 80 fg=cyan
 text 14 "│                                                                              │"
