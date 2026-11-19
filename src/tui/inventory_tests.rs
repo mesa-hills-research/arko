@@ -48,6 +48,8 @@ const SIZES: &[(u16, u16)] = &[(40, 24), (60, 24), (80, 24), (120, 24), (120, 40
 const FEW: &[(u16, u16)] = &[(80, 24), (120, 40)];
 /// Too small to draw anything, by width and by height.
 const TINY: &[(u16, u16)] = &[(15, 24), (40, 5)];
+/// The sizes of the code runs' screens, tall enough for their open rows.
+const RUN_SIZES: &[(u16, u16)] = &[(40, 110), (60, 100), (100, 90)];
 
 /// The time the spinner and the highlight of "Working…" stand at, in
 /// milliseconds. The highlight is halfway across the word.
@@ -347,6 +349,37 @@ fn states() -> Vec<State> {
             });
         }
     }
+    // Code runs in each state (done, failed, a call refused inside, stopped,
+    // running) in each view, tall enough for their open rows.
+    let runs: [(&str, Build); 5] = [
+        s("code-runs-quiet", |app, _| code_runs(app, View::Quiet, false)),
+        s("code-runs-quiet-open", |app, _| {
+            code_runs(app, View::Quiet, true)
+        }),
+        s("code-runs-full", |app, _| code_runs(app, View::Full, false)),
+        s("code-runs-messages", |app, _| {
+            code_runs(app, View::Messages, false)
+        }),
+        s("code-runs-messages-open", |app, _| {
+            code_runs(app, View::Messages, true)
+        }),
+    ];
+    for (name, build) in runs {
+        all.push(State {
+            name: name.to_string(),
+            look: Look::Dark,
+            sizes: RUN_SIZES,
+            build,
+        });
+        for look in [Look::Light, Look::Terminal] {
+            all.push(State {
+                name: format!("{name}{}", look.suffix()),
+                look,
+                sizes: &[(100, 90)],
+                build,
+            });
+        }
+    }
     // A few states in xterm's 256 colours and in a light theme, which have
     // their own colours to check.
     for name in ["tour-full", "tour-quiet", "agent-list", "settings"] {
@@ -466,6 +499,38 @@ fn first_difference(old: &str, new: &str) -> String {
                     b.unwrap_or("(none)")
                 );
             }
+        }
+    }
+}
+
+/// The code runs' screens as the bytes the view writes a terminal, with each
+/// one's size, for screenshots in a terminal emulator:
+/// `CODE_RUN_SCREENS=DIR cargo test --lib code_run_screens -- --ignored`.
+#[test]
+#[ignore]
+fn code_run_screens() {
+    let Some(dir) = std::env::var_os("CODE_RUN_SCREENS").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    let _symbols = choose_symbols(Symbols::Full);
+    let screens = [
+        ("quiet-closed", View::Quiet, false),
+        ("quiet-open", View::Quiet, true),
+        ("full", View::Full, false),
+        ("messages", View::Messages, false),
+        ("messages-open", View::Messages, true),
+    ];
+    for (name, view, open) in screens {
+        for (width, height) in [(100, 64), (60, 90)] {
+            let _frozen = Frozen::new();
+            let mut app = fresh(Look::Dark);
+            code_runs(&mut app, view, open);
+            let mut terminal = golden::terminal(width, height);
+            terminal.draw(|frame| screen::draw(frame, &mut app)).unwrap();
+            let base = dir.join(format!("{name}-{width}"));
+            std::fs::write(base.with_extension("ans"), terminal.take_output()).unwrap();
+            std::fs::write(base.with_extension("size"), format!("{width} {height}")).unwrap();
         }
     }
 }
@@ -843,6 +908,24 @@ fn tour(app: &mut App, ending: Ending) {
 fn tour_in(app: &mut App, view: View, ending: Ending) {
     tour(app, ending);
     app.set_view(view);
+}
+
+/// A run of code in each state, as the feed makes them from their events,
+/// the last one running for 41 seconds, in `view`, every row `open` as the
+/// renderings open them.
+fn code_runs(app: &mut App, view: View, open: bool) {
+    let (feed, _) = crate::remote::code_runs::feed();
+    let since = now_ms() - 41_000;
+    for mut item in feed.subscribe().0.items {
+        item.at = since;
+        app.update(Update::Item(item), Activity::default);
+    }
+    work(app, since);
+    figures(app);
+    app.set_view(view);
+    if open {
+        app.transcript.open_for_renderings(view);
+    }
 }
 
 fn banner() -> super::Banner {

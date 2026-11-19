@@ -27,7 +27,8 @@ use termelon::testing::TestTerminal;
 
 use crate::glyphs::{Symbols, tests::choose_symbols};
 use crate::remote::{
-    Act, ActKind, Activity, CallStatus, ContentKind, Delivery, Item, Kind, Level, Update, content,
+    Act, ActKind, Activity, CallLine, CallStatus, Calls, ContentKind, Delivery, Item, Kind, Level,
+    Update, content, quiet,
 };
 use crate::tui::app::{App, Info};
 use crate::tui::input::{Editor, History};
@@ -63,6 +64,8 @@ enum Step {
     MergeFile,
     MergeKind,
     Result,
+    RunCall,
+    RunCallEnds,
     CallReply,
     ThoughtReply,
     ReplyGrows,
@@ -82,7 +85,7 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 24] = [
+    const ALL: [Step; 26] = [
         Step::Asked,
         Step::WorkingCall,
         Step::WorkingThought,
@@ -91,6 +94,8 @@ impl Step {
         Step::MergeFile,
         Step::MergeKind,
         Step::Result,
+        Step::RunCall,
+        Step::RunCallEnds,
         Step::CallReply,
         Step::ThoughtReply,
         Step::ReplyGrows,
@@ -119,6 +124,8 @@ impl Step {
             Step::MergeFile => "call joins a row of one file",
             Step::MergeKind => "call joins a row of its kind",
             Step::Result => "call → its result",
+            Step::RunCall => "code run's call starts",
+            Step::RunCallEnds => "code run's call ends",
             Step::CallReply => "result → reply",
             Step::ThoughtReply => "thought → reply",
             Step::ReplyGrows => "reply streams",
@@ -621,6 +628,13 @@ struct Run<'m> {
     /// the numbers for it.
     together: bool,
     reads: Rng,
+    /// Numbers for the code runs, which take the places of `rng` and
+    /// `doors` while one plays, so the rest of the session makes the choices
+    /// it would make without them.
+    runs: Rng,
+    run_doors: Rng,
+    /// Whether its turns make code runs.
+    code_runs: bool,
     id: u64,
     at: i64,
     word: u64,
@@ -695,6 +709,9 @@ impl<'m> Run<'m> {
             doors: Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1),
             reads: Rng(seed.wrapping_mul(0xA24B_AED4_963E_E407) | 1),
             together: false,
+            runs: Rng(seed.wrapping_mul(0xA24B_AED4_963E_E407) | 1),
+            run_doors: Rng(seed.wrapping_mul(0x9FB2_1C65_1E98_DF25) | 1),
+            code_runs: true,
             id: 0,
             at: chrono::Utc::now().timestamp_millis(),
             word: 0,
@@ -1080,6 +1097,15 @@ impl<'m> Run<'m> {
     /// A call, which comes after what is live, its result, and Working…
     /// after it.
     fn call(&mut self) {
+        if self.code_runs && self.runs.chance(15) {
+            let swap = |run: &mut Self| {
+                std::mem::swap(&mut run.rng, &mut run.runs);
+                std::mem::swap(&mut run.doors, &mut run.run_doors);
+            };
+            swap(self);
+            self.code_run();
+            swap(self);
+        }
         // What it does, and whether it joins the row of the call before it
         // in the Quiet view.
         let last = self.calls.last().cloned();
@@ -1246,6 +1272,115 @@ impl<'m> Run<'m> {
             self.frame(Step::Result);
         }
         if long && self.doors.chance(90) {
+            self.door();
+        }
+        self.meanwhile();
+    }
+
+    /// A code run. Its call and its code come together, then each call its
+    /// code makes starts and ends on the run's row, a few of them refused,
+    /// then its result comes. Now and then its code is long, behind a door.
+    fn code_run(&mut self) {
+        let purpose = self.words(3);
+        let step = if self.live == Live::Thought {
+            Step::ThoughtCall
+        } else {
+            Step::WorkingCall
+        };
+        let mut call = self.item(Kind::Call, &format!("run_code {purpose}"));
+        call.status = Some(CallStatus::Running);
+        call.act = Some(Act {
+            kind: ActKind::Code,
+            target: purpose.clone(),
+            ..Act::default()
+        });
+        let id = self.add(call.clone());
+        self.calls.push((ActKind::Code, purpose, true));
+        let long = self.rng.chance(30);
+        let lines = if long {
+            content::PREVIEW_LINES as u64 + 1 + self.rng.below(10)
+        } else {
+            1 + self.rng.below(6)
+        };
+        let code: Vec<String> = (0..lines).map(|_| self.some(2, 4)).collect();
+        let code = code.join("\n");
+        let (preview, more) = content::preview(ContentKind::Code, &code);
+        let mut block = self.item(Kind::Result, &preview);
+        block.call = Some(id);
+        block.content = Some(ContentKind::Code);
+        block.language = Some("js".into());
+        block.whole = more.is_some().then(|| code.into());
+        block.more = more;
+        self.add(block);
+        self.frame(step);
+        self.meanwhile();
+        let mut calls = Calls::default();
+        let mut done: Vec<Act> = Vec::new();
+        for _ in 0..1 + self.rng.below(4) {
+            let folder = self.folder.clone();
+            let (kind, target, text) = match self.rng.below(3) {
+                0 => {
+                    let target = format!("{folder}/{}.rs", self.words(1));
+                    (ActKind::Read, target.clone(), format!("read {target}"))
+                }
+                1 => {
+                    let target = format!("{folder}/{}", self.words(1));
+                    (ActKind::List, target.clone(), format!("list {target}"))
+                }
+                _ => {
+                    let target = format!("cargo {}", self.words(2));
+                    (ActKind::Command, target.clone(), format!("$ {target}"))
+                }
+            };
+            let act = Act {
+                kind,
+                target,
+                ..Act::default()
+            };
+            calls.count += 1;
+            calls.running = quiet::doing(&act);
+            calls.lines.push(CallLine {
+                text,
+                status: CallStatus::Running,
+                outcome: String::new(),
+                failed: String::new(),
+            });
+            call.act.as_mut().unwrap().calls = Some(calls.clone());
+            self.update(Update::Change(call.clone()));
+            self.frame(Step::RunCall);
+            self.meanwhile();
+            let refused = self.rng.chance(15);
+            let line = calls.lines.last_mut().unwrap();
+            if refused {
+                line.status = CallStatus::Failed;
+                line.outcome = "refused".into();
+                let said = quiet::alone(&act, CallStatus::Failed, Some("refused")).said();
+                line.failed = format!("{said} · refused");
+            } else {
+                line.status = CallStatus::Ok;
+                line.outcome = "2 lines".into();
+                done.push(act);
+            }
+            calls.running.clear();
+            calls.summary = quiet::called(&done);
+            call.act.as_mut().unwrap().calls = Some(calls.clone());
+            self.update(Update::Change(call.clone()));
+            self.frame(Step::RunCallEnds);
+            self.meanwhile();
+        }
+        // It ends, and its result comes after it.
+        let lines = 1 + self.rng.below(4);
+        call.status = Some(CallStatus::Ok);
+        call.outcome = Some(format!("{lines} lines"));
+        self.update(Update::Change(call));
+        let text: Vec<String> = (0..lines).map(|_| self.some(1, 4)).collect();
+        let mut result = self.item(Kind::Result, &text.join("\n"));
+        result.call = Some(id);
+        result.content = Some(ContentKind::Muted);
+        self.add(result);
+        self.live = Live::Result;
+        self.frame(Step::Result);
+        if long && self.rng.chance(90) {
             self.door();
         }
         self.meanwhile();
@@ -1661,6 +1796,9 @@ fn measure_with(seeds: Option<u64>, starts: bool) -> Meter {
                         let mut run = Run::new(seed, view, *size, scrolled, &mut meter);
                         run.starts = starts;
                         run.together = seeds.is_some();
+                        // (The workers' sessions play as they did before
+                        // code runs, which the main one plays.)
+                        run.code_runs = !starts;
                         run.app.transcript.set_open_thinking(thinking);
                         for _ in 0..turns {
                             run.turn();

@@ -1,0 +1,600 @@
+size 100 90
+cursor 3 88 visible default
+text 0 "▎ Count the TODO comments, rename the setting, clean up, build and test"
+style 0 0 2 fg=#0060de bg=#eaeaea
+style 0 2 100 fg=#000000 bg=#eaeaea
+text 1 ""
+style 1 0 100 fg=#000000 bg=#f9f9f9
+text 2 "▾ run_code count TODO comments per crate · ✓ 3 lines"
+style 2 0 2 fg=#696969 bg=#f9f9f9
+style 2 2 40 fg=#000000 bg=#f9f9f9
+style 2 40 43 fg=#696969 bg=#f9f9f9
+style 2 43 44 fg=#2a8300 bg=#f9f9f9
+style 2 44 52 fg=#696969 bg=#f9f9f9
+style 2 52 100 fg=#000000 bg=#f9f9f9
+text 3 "│  const crates = [\"arko_agents\", \"arko_ai\", \"arko_index\"];"
+style 3 0 2 fg=#696969 bg=#f9f9f9
+style 3 2 3 fg=#000000 bg=#efefef
+style 3 3 8 fg=#0433ff bg=#efefef
+style 3 8 9 fg=#000000 bg=#efefef
+style 3 9 15 fg=#333333 bg=#efefef
+style 3 15 19 fg=#000000 bg=#efefef
+style 3 19 32 fg=#036a07 bg=#efefef
+style 3 32 34 fg=#000000 bg=#efefef
+style 3 34 43 fg=#036a07 bg=#efefef
+style 3 43 45 fg=#000000 bg=#efefef
+style 3 45 57 fg=#036a07 bg=#efefef
+style 3 57 100 fg=#000000 bg=#efefef
+text 4 "│  const hits = [];"
+style 4 0 2 fg=#696969 bg=#f9f9f9
+style 4 2 3 fg=#000000 bg=#efefef
+style 4 3 8 fg=#0433ff bg=#efefef
+style 4 8 9 fg=#000000 bg=#efefef
+style 4 9 13 fg=#333333 bg=#efefef
+style 4 13 100 fg=#000000 bg=#efefef
+text 5 "│  for (const name of crates) {"
+style 5 0 2 fg=#696969 bg=#f9f9f9
+style 5 2 3 fg=#000000 bg=#efefef
+style 5 3 6 fg=#0433ff bg=#efefef
+style 5 6 8 fg=#000000 bg=#efefef
+style 5 8 13 fg=#0433ff bg=#efefef
+style 5 13 14 fg=#000000 bg=#efefef
+style 5 14 18 fg=#333333 bg=#efefef
+style 5 18 19 fg=#000000 bg=#efefef
+style 5 19 21 fg=#0433ff bg=#efefef
+style 5 21 22 fg=#000000 bg=#efefef
+style 5 22 28 fg=#333333 bg=#efefef
+style 5 28 100 fg=#000000 bg=#efefef
+text 6 "│    const listed = await tools.list_files({ directory: `crates/${name}/src` });"
+style 6 0 2 fg=#696969 bg=#f9f9f9
+style 6 2 5 fg=#000000 bg=#efefef
+style 6 5 10 fg=#0433ff bg=#efefef
+style 6 10 11 fg=#000000 bg=#efefef
+style 6 11 17 fg=#333333 bg=#efefef
+style 6 17 20 fg=#000000 bg=#efefef
+style 6 20 25 fg=#0433ff bg=#efefef
+style 6 25 26 fg=#000000 bg=#efefef
+style 6 26 31 fg=#333333 bg=#efefef
+style 6 31 32 fg=#000000 bg=#efefef
+style 6 32 42 fg=#333333 bg=#efefef
+style 6 42 45 fg=#000000 bg=#efefef
+style 6 45 54 fg=#333333 bg=#efefef
+style 6 54 56 fg=#000000 bg=#efefef
+style 6 56 64 fg=#036a07 bg=#efefef
+style 6 64 66 fg=#000000 bg=#efefef
+style 6 66 70 fg=#333333 bg=#efefef
+style 6 70 71 fg=#000000 bg=#efefef
+style 6 71 76 fg=#036a07 bg=#efefef
+style 6 76 100 fg=#000000 bg=#efefef
+text 7 "│    const paths = listed"
+style 7 0 2 fg=#696969 bg=#f9f9f9
+style 7 2 5 fg=#000000 bg=#efefef
+style 7 5 10 fg=#0433ff bg=#efefef
+style 7 10 11 fg=#000000 bg=#efefef
+style 7 11 16 fg=#333333 bg=#efefef
+style 7 16 19 fg=#000000 bg=#efefef
+style 7 19 25 fg=#333333 bg=#efefef
+style 7 25 100 fg=#000000 bg=#efefef
+text 8 "│      .split(\"\\n\")"
+style 8 0 2 fg=#696969 bg=#f9f9f9
+style 8 2 8 fg=#000000 bg=#efefef
+style 8 8 13 fg=#333333 bg=#efefef
+style 8 13 14 fg=#000000 bg=#efefef
+style 8 14 18 fg=#036a07 bg=#efefef
+style 8 18 100 fg=#000000 bg=#efefef
+text 9 "│      .map((line) => line.trim())"
+style 9 0 2 fg=#696969 bg=#f9f9f9
+style 9 2 8 fg=#000000 bg=#efefef
+style 9 8 11 fg=#333333 bg=#efefef
+style 9 11 13 fg=#000000 bg=#efefef
+style 9 13 17 fg=#333333 bg=#efefef
+style 9 17 22 fg=#000000 bg=#efefef
+style 9 22 26 fg=#333333 bg=#efefef
+style 9 26 27 fg=#000000 bg=#efefef
+style 9 27 31 fg=#333333 bg=#efefef
+style 9 31 100 fg=#000000 bg=#efefef
+text 10 "│      .filter((line) => line.endsWith(\".rs\"));"
+style 10 0 2 fg=#696969 bg=#f9f9f9
+style 10 2 8 fg=#000000 bg=#efefef
+style 10 8 14 fg=#333333 bg=#efefef
+style 10 14 16 fg=#000000 bg=#efefef
+style 10 16 20 fg=#333333 bg=#efefef
+style 10 20 25 fg=#000000 bg=#efefef
+style 10 25 29 fg=#333333 bg=#efefef
+style 10 29 30 fg=#000000 bg=#efefef
+style 10 30 38 fg=#333333 bg=#efefef
+style 10 38 39 fg=#000000 bg=#efefef
+style 10 39 44 fg=#036a07 bg=#efefef
+style 10 44 100 fg=#000000 bg=#efefef
+text 11 "│    let count = 0;"
+style 11 0 2 fg=#696969 bg=#f9f9f9
+style 11 2 5 fg=#000000 bg=#efefef
+style 11 5 8 fg=#0433ff bg=#efefef
+style 11 8 9 fg=#000000 bg=#efefef
+style 11 9 14 fg=#333333 bg=#efefef
+style 11 14 17 fg=#000000 bg=#efefef
+style 11 17 18 fg=#0433ff bg=#efefef
+style 11 18 100 fg=#000000 bg=#efefef
+text 12 "│    for (const path of paths) {"
+style 12 0 2 fg=#696969 bg=#f9f9f9
+style 12 2 5 fg=#000000 bg=#efefef
+style 12 5 8 fg=#0433ff bg=#efefef
+style 12 8 10 fg=#000000 bg=#efefef
+style 12 10 15 fg=#0433ff bg=#efefef
+style 12 15 16 fg=#000000 bg=#efefef
+style 12 16 20 fg=#333333 bg=#efefef
+style 12 20 21 fg=#000000 bg=#efefef
+style 12 21 23 fg=#0433ff bg=#efefef
+style 12 23 24 fg=#000000 bg=#efefef
+style 12 24 29 fg=#333333 bg=#efefef
+style 12 29 100 fg=#000000 bg=#efefef
+text 13 "│      const text = await tools.read_file({ path: `crates/${name}/src/${path}` });"
+style 13 0 2 fg=#696969 bg=#f9f9f9
+style 13 2 7 fg=#000000 bg=#efefef
+style 13 7 12 fg=#0433ff bg=#efefef
+style 13 12 13 fg=#000000 bg=#efefef
+style 13 13 17 fg=#333333 bg=#efefef
+style 13 17 20 fg=#000000 bg=#efefef
+style 13 20 25 fg=#0433ff bg=#efefef
+style 13 25 26 fg=#000000 bg=#efefef
+style 13 26 31 fg=#333333 bg=#efefef
+style 13 31 32 fg=#000000 bg=#efefef
+style 13 32 41 fg=#333333 bg=#efefef
+style 13 41 44 fg=#000000 bg=#efefef
+style 13 44 48 fg=#333333 bg=#efefef
+style 13 48 50 fg=#000000 bg=#efefef
+style 13 50 58 fg=#036a07 bg=#efefef
+style 13 58 60 fg=#000000 bg=#efefef
+style 13 60 64 fg=#333333 bg=#efefef
+style 13 64 65 fg=#000000 bg=#efefef
+style 13 65 70 fg=#036a07 bg=#efefef
+style 13 70 72 fg=#000000 bg=#efefef
+style 13 72 76 fg=#333333 bg=#efefef
+style 13 76 77 fg=#000000 bg=#efefef
+style 13 77 78 fg=#036a07 bg=#efefef
+style 13 78 100 fg=#000000 bg=#efefef
+text 14 "│      count += (text.match(/TODO/g) ?? []).length;"
+style 14 0 2 fg=#696969 bg=#f9f9f9
+style 14 2 7 fg=#000000 bg=#efefef
+style 14 7 12 fg=#333333 bg=#efefef
+style 14 12 17 fg=#000000 bg=#efefef
+style 14 17 21 fg=#333333 bg=#efefef
+style 14 21 22 fg=#000000 bg=#efefef
+style 14 22 27 fg=#333333 bg=#efefef
+style 14 27 29 fg=#000000 bg=#efefef
+style 14 29 33 fg=#d21f07 bg=#efefef
+style 14 33 34 fg=#000000 bg=#efefef
+style 14 34 35 fg=#d21f07 bg=#efefef
+style 14 35 44 fg=#000000 bg=#efefef
+style 14 44 50 fg=#333333 bg=#efefef
+style 14 50 100 fg=#000000 bg=#efefef
+text 15 "│    }"
+style 15 0 2 fg=#696969 bg=#f9f9f9
+style 15 2 100 fg=#000000 bg=#efefef
+text 16 "│    if (count) {"
+style 16 0 2 fg=#696969 bg=#f9f9f9
+style 16 2 5 fg=#000000 bg=#efefef
+style 16 5 7 fg=#0433ff bg=#efefef
+style 16 7 9 fg=#000000 bg=#efefef
+style 16 9 14 fg=#333333 bg=#efefef
+style 16 14 100 fg=#000000 bg=#efefef
+text 17 "│      hits.push(`${count} ${name}`);"
+style 17 0 2 fg=#696969 bg=#f9f9f9
+style 17 2 7 fg=#000000 bg=#efefef
+style 17 7 11 fg=#333333 bg=#efefef
+style 17 11 12 fg=#000000 bg=#efefef
+style 17 12 16 fg=#333333 bg=#efefef
+style 17 16 17 fg=#000000 bg=#efefef
+style 17 17 18 fg=#036a07 bg=#efefef
+style 17 18 20 fg=#000000 bg=#efefef
+style 17 20 25 fg=#333333 bg=#efefef
+style 17 25 26 fg=#000000 bg=#efefef
+style 17 26 27 fg=#036a07 bg=#efefef
+style 17 27 29 fg=#000000 bg=#efefef
+style 17 29 33 fg=#333333 bg=#efefef
+style 17 33 34 fg=#000000 bg=#efefef
+style 17 34 35 fg=#036a07 bg=#efefef
+style 17 35 100 fg=#000000 bg=#efefef
+text 18 "│    }"
+style 18 0 2 fg=#696969 bg=#f9f9f9
+style 18 2 100 fg=#000000 bg=#efefef
+text 19 "│ … 4 more lines"
+style 19 0 16 fg=#696969 bg=#f9f9f9
+style 19 16 100 fg=#000000 bg=#f9f9f9
+text 20 "│ · list crates · ✓ 4 entries"
+style 20 0 18 fg=#696969 bg=#f9f9f9
+style 20 18 19 fg=#2a8300 bg=#f9f9f9
+style 20 19 29 fg=#696969 bg=#f9f9f9
+style 20 29 100 fg=#000000 bg=#f9f9f9
+text 21 "│ · read crates/arko_agents/src/runtime/loop.rs · ✓ 2 lines"
+style 21 0 50 fg=#696969 bg=#f9f9f9
+style 21 50 51 fg=#2a8300 bg=#f9f9f9
+style 21 51 59 fg=#696969 bg=#f9f9f9
+style 21 59 100 fg=#000000 bg=#f9f9f9
+text 22 "│ · read crates/arko_ai/src/model.rs · ✓ 2 lines"
+style 22 0 39 fg=#696969 bg=#f9f9f9
+style 22 39 40 fg=#2a8300 bg=#f9f9f9
+style 22 40 48 fg=#696969 bg=#f9f9f9
+style 22 48 100 fg=#000000 bg=#f9f9f9
+text 23 "│ · read crates/arko_index/src/lib.rs · ✓ 2 lines"
+style 23 0 40 fg=#696969 bg=#f9f9f9
+style 23 40 41 fg=#2a8300 bg=#f9f9f9
+style 23 41 49 fg=#696969 bg=#f9f9f9
+style 23 49 100 fg=#000000 bg=#f9f9f9
+text 24 "│ 31 arko_agents"
+style 24 0 16 fg=#696969 bg=#f9f9f9
+style 24 16 100 fg=#000000 bg=#f9f9f9
+text 25 "│ 12 arko_ai"
+style 25 0 12 fg=#696969 bg=#f9f9f9
+style 25 12 100 fg=#000000 bg=#f9f9f9
+text 26 "│ 4 arko_index"
+style 26 0 14 fg=#696969 bg=#f9f9f9
+style 26 14 100 fg=#000000 bg=#f9f9f9
+text 27 ""
+style 27 0 100 fg=#000000 bg=#f9f9f9
+text 28 "▾ run_code rename the setting in… · ✗ The code threw on line 2, at a call of read_file that failed…"
+style 28 0 2 fg=#d21f07 bg=#f9f9f9
+style 28 2 33 fg=#000000 bg=#f9f9f9
+style 28 33 36 fg=#696969 bg=#f9f9f9
+style 28 36 99 fg=#d21f07 bg=#f9f9f9
+style 28 99 100 fg=#000000 bg=#f9f9f9
+text 29 "│ run_code rename the setting in every crate"
+style 29 0 44 fg=#696969 bg=#f9f9f9
+style 29 44 100 fg=#000000 bg=#f9f9f9
+text 30 "│  for (const path of [\"crates/arko_ai/src/config.rs\", \"crates/arko_ui/src/config.rs\"]) {"
+style 30 0 2 fg=#696969 bg=#f9f9f9
+style 30 2 3 fg=#000000 bg=#efefef
+style 30 3 6 fg=#0433ff bg=#efefef
+style 30 6 8 fg=#000000 bg=#efefef
+style 30 8 13 fg=#0433ff bg=#efefef
+style 30 13 14 fg=#000000 bg=#efefef
+style 30 14 18 fg=#333333 bg=#efefef
+style 30 18 19 fg=#000000 bg=#efefef
+style 30 19 21 fg=#0433ff bg=#efefef
+style 30 21 23 fg=#000000 bg=#efefef
+style 30 23 53 fg=#036a07 bg=#efefef
+style 30 53 55 fg=#000000 bg=#efefef
+style 30 55 85 fg=#036a07 bg=#efefef
+style 30 85 100 fg=#000000 bg=#efefef
+text 31 "│    const text = await tools.read_file({ path });"
+style 31 0 2 fg=#696969 bg=#f9f9f9
+style 31 2 5 fg=#000000 bg=#efefef
+style 31 5 10 fg=#0433ff bg=#efefef
+style 31 10 11 fg=#000000 bg=#efefef
+style 31 11 15 fg=#333333 bg=#efefef
+style 31 15 18 fg=#000000 bg=#efefef
+style 31 18 23 fg=#0433ff bg=#efefef
+style 31 23 24 fg=#000000 bg=#efefef
+style 31 24 29 fg=#333333 bg=#efefef
+style 31 29 30 fg=#000000 bg=#efefef
+style 31 30 39 fg=#333333 bg=#efefef
+style 31 39 42 fg=#000000 bg=#efefef
+style 31 42 46 fg=#333333 bg=#efefef
+style 31 46 100 fg=#000000 bg=#efefef
+text 32 "│    await tools.write_file({ path, content: text.replaceAll(\"keep_warm\", \"warm\") });"
+style 32 0 2 fg=#696969 bg=#f9f9f9
+style 32 2 5 fg=#000000 bg=#efefef
+style 32 5 10 fg=#0433ff bg=#efefef
+style 32 10 11 fg=#000000 bg=#efefef
+style 32 11 16 fg=#333333 bg=#efefef
+style 32 16 17 fg=#000000 bg=#efefef
+style 32 17 27 fg=#333333 bg=#efefef
+style 32 27 30 fg=#000000 bg=#efefef
+style 32 30 34 fg=#333333 bg=#efefef
+style 32 34 36 fg=#000000 bg=#efefef
+style 32 36 43 fg=#333333 bg=#efefef
+style 32 43 45 fg=#000000 bg=#efefef
+style 32 45 49 fg=#333333 bg=#efefef
+style 32 49 50 fg=#000000 bg=#efefef
+style 32 50 60 fg=#333333 bg=#efefef
+style 32 60 61 fg=#000000 bg=#efefef
+style 32 61 72 fg=#036a07 bg=#efefef
+style 32 72 74 fg=#000000 bg=#efefef
+style 32 74 80 fg=#036a07 bg=#efefef
+style 32 80 100 fg=#000000 bg=#efefef
+text 33 "│  }"
+style 33 0 2 fg=#696969 bg=#f9f9f9
+style 33 2 100 fg=#000000 bg=#efefef
+text 34 "│ · read crates/arko_ai/src/config.rs · ✓ 2 lines"
+style 34 0 40 fg=#696969 bg=#f9f9f9
+style 34 40 41 fg=#2a8300 bg=#f9f9f9
+style 34 41 49 fg=#696969 bg=#f9f9f9
+style 34 49 100 fg=#000000 bg=#f9f9f9
+text 35 "│ · write crates/arko_ai/src/config.rs (1 line) · ✓"
+style 35 0 50 fg=#696969 bg=#f9f9f9
+style 35 50 51 fg=#2a8300 bg=#f9f9f9
+style 35 51 100 fg=#000000 bg=#f9f9f9
+text 36 "│ · read crates/arko_ui/src/config.rs · ✗ No such file or directory (os error 2)"
+style 36 0 2 fg=#696969 bg=#f9f9f9
+style 36 2 4 fg=#d21f07 bg=#f9f9f9
+style 36 4 40 fg=#696969 bg=#f9f9f9
+style 36 40 80 fg=#d21f07 bg=#f9f9f9
+style 36 80 100 fg=#000000 bg=#f9f9f9
+text 37 "│ The code threw on line 2, at a call of read_file that failed: No such file or directory (os error"
+style 37 0 99 fg=#696969 bg=#f9f9f9
+style 37 99 100 fg=#000000 bg=#f9f9f9
+text 38 "│ 2)"
+style 38 0 4 fg=#696969 bg=#f9f9f9
+style 38 4 100 fg=#000000 bg=#f9f9f9
+text 39 "│ Before it ended, the code wrote 1 file."
+style 39 0 41 fg=#696969 bg=#f9f9f9
+style 39 41 100 fg=#000000 bg=#f9f9f9
+text 40 ""
+style 40 0 100 fg=#000000 bg=#f9f9f9
+text 41 "▾ run_code clean the build folders · ✓ 2 lines"
+style 41 0 2 fg=#696969 bg=#f9f9f9
+style 41 2 34 fg=#000000 bg=#f9f9f9
+style 41 34 37 fg=#696969 bg=#f9f9f9
+style 41 37 38 fg=#2a8300 bg=#f9f9f9
+style 41 38 46 fg=#696969 bg=#f9f9f9
+style 41 46 100 fg=#000000 bg=#f9f9f9
+text 42 "│  for (const name of [\"target\", \"web/dist\"]) {"
+style 42 0 2 fg=#696969 bg=#f9f9f9
+style 42 2 3 fg=#000000 bg=#efefef
+style 42 3 6 fg=#0433ff bg=#efefef
+style 42 6 8 fg=#000000 bg=#efefef
+style 42 8 13 fg=#0433ff bg=#efefef
+style 42 13 14 fg=#000000 bg=#efefef
+style 42 14 18 fg=#333333 bg=#efefef
+style 42 18 19 fg=#000000 bg=#efefef
+style 42 19 21 fg=#0433ff bg=#efefef
+style 42 21 23 fg=#000000 bg=#efefef
+style 42 23 31 fg=#036a07 bg=#efefef
+style 42 31 33 fg=#000000 bg=#efefef
+style 42 33 43 fg=#036a07 bg=#efefef
+style 42 43 100 fg=#000000 bg=#efefef
+text 43 "│    try {"
+style 43 0 2 fg=#696969 bg=#f9f9f9
+style 43 2 5 fg=#000000 bg=#efefef
+style 43 5 8 fg=#0433ff bg=#efefef
+style 43 8 100 fg=#000000 bg=#efefef
+text 44 "│      await tools.shell({ command: `rm -rf ${name}` });"
+style 44 0 2 fg=#696969 bg=#f9f9f9
+style 44 2 7 fg=#000000 bg=#efefef
+style 44 7 12 fg=#0433ff bg=#efefef
+style 44 12 13 fg=#000000 bg=#efefef
+style 44 13 18 fg=#333333 bg=#efefef
+style 44 18 19 fg=#000000 bg=#efefef
+style 44 19 24 fg=#333333 bg=#efefef
+style 44 24 27 fg=#000000 bg=#efefef
+style 44 27 34 fg=#333333 bg=#efefef
+style 44 34 36 fg=#000000 bg=#efefef
+style 44 36 44 fg=#036a07 bg=#efefef
+style 44 44 46 fg=#000000 bg=#efefef
+style 44 46 50 fg=#333333 bg=#efefef
+style 44 50 51 fg=#000000 bg=#efefef
+style 44 51 52 fg=#036a07 bg=#efefef
+style 44 52 100 fg=#000000 bg=#efefef
+text 45 "│    } catch (error) {"
+style 45 0 2 fg=#696969 bg=#f9f9f9
+style 45 2 7 fg=#000000 bg=#efefef
+style 45 7 12 fg=#0433ff bg=#efefef
+style 45 12 14 fg=#000000 bg=#efefef
+style 45 14 19 fg=#333333 bg=#efefef
+style 45 19 100 fg=#000000 bg=#efefef
+text 46 "│      console.log(`${name}: ${error.message}`);"
+style 46 0 2 fg=#696969 bg=#f9f9f9
+style 46 2 7 fg=#000000 bg=#efefef
+style 46 7 14 fg=#333333 bg=#efefef
+style 46 14 15 fg=#000000 bg=#efefef
+style 46 15 18 fg=#333333 bg=#efefef
+style 46 18 19 fg=#000000 bg=#efefef
+style 46 19 20 fg=#036a07 bg=#efefef
+style 46 20 22 fg=#000000 bg=#efefef
+style 46 22 26 fg=#333333 bg=#efefef
+style 46 26 27 fg=#000000 bg=#efefef
+style 46 27 29 fg=#036a07 bg=#efefef
+style 46 29 31 fg=#000000 bg=#efefef
+style 46 31 36 fg=#333333 bg=#efefef
+style 46 36 37 fg=#000000 bg=#efefef
+style 46 37 44 fg=#333333 bg=#efefef
+style 46 44 45 fg=#000000 bg=#efefef
+style 46 45 46 fg=#036a07 bg=#efefef
+style 46 46 100 fg=#000000 bg=#efefef
+text 47 "│    }"
+style 47 0 2 fg=#696969 bg=#f9f9f9
+style 47 2 100 fg=#000000 bg=#efefef
+text 48 "│  }"
+style 48 0 2 fg=#696969 bg=#f9f9f9
+style 48 2 100 fg=#000000 bg=#efefef
+text 49 "│  return \"Done.\";"
+style 49 0 2 fg=#696969 bg=#f9f9f9
+style 49 2 3 fg=#000000 bg=#efefef
+style 49 3 9 fg=#0433ff bg=#efefef
+style 49 9 10 fg=#000000 bg=#efefef
+style 49 10 17 fg=#036a07 bg=#efefef
+style 49 17 100 fg=#000000 bg=#efefef
+text 50 "│ · $ rm -rf target · ✗ refused"
+style 50 0 2 fg=#696969 bg=#f9f9f9
+style 50 2 4 fg=#d21f07 bg=#f9f9f9
+style 50 4 22 fg=#696969 bg=#f9f9f9
+style 50 22 31 fg=#d21f07 bg=#f9f9f9
+style 50 31 100 fg=#000000 bg=#f9f9f9
+text 51 "│ · $ rm -rf web/dist · ✓ 0.1 s"
+style 51 0 24 fg=#696969 bg=#f9f9f9
+style 51 24 25 fg=#2a8300 bg=#f9f9f9
+style 51 25 31 fg=#696969 bg=#f9f9f9
+style 51 31 100 fg=#000000 bg=#f9f9f9
+text 52 "│ target: refused (The command guard refused it.)"
+style 52 0 49 fg=#696969 bg=#f9f9f9
+style 52 49 100 fg=#000000 bg=#f9f9f9
+text 53 "│ Done."
+style 53 0 7 fg=#696969 bg=#f9f9f9
+style 53 7 100 fg=#000000 bg=#f9f9f9
+text 54 ""
+style 54 0 100 fg=#000000 bg=#f9f9f9
+text 55 "▾ run_code build each crate · ✗ stopped"
+style 55 0 2 fg=#d21f07 bg=#f9f9f9
+style 55 2 27 fg=#000000 bg=#f9f9f9
+style 55 27 30 fg=#696969 bg=#f9f9f9
+style 55 30 39 fg=#d21f07 bg=#f9f9f9
+style 55 39 100 fg=#000000 bg=#f9f9f9
+text 56 "│  for (const name of [\"arko_ai\", \"arko_agents\"]) {"
+style 56 0 2 fg=#696969 bg=#f9f9f9
+style 56 2 3 fg=#000000 bg=#efefef
+style 56 3 6 fg=#0433ff bg=#efefef
+style 56 6 8 fg=#000000 bg=#efefef
+style 56 8 13 fg=#0433ff bg=#efefef
+style 56 13 14 fg=#000000 bg=#efefef
+style 56 14 18 fg=#333333 bg=#efefef
+style 56 18 19 fg=#000000 bg=#efefef
+style 56 19 21 fg=#0433ff bg=#efefef
+style 56 21 23 fg=#000000 bg=#efefef
+style 56 23 32 fg=#036a07 bg=#efefef
+style 56 32 34 fg=#000000 bg=#efefef
+style 56 34 47 fg=#036a07 bg=#efefef
+style 56 47 100 fg=#000000 bg=#efefef
+text 57 "│    await tools.shell({ command: `cargo build -p ${name}` });"
+style 57 0 2 fg=#696969 bg=#f9f9f9
+style 57 2 5 fg=#000000 bg=#efefef
+style 57 5 10 fg=#0433ff bg=#efefef
+style 57 10 11 fg=#000000 bg=#efefef
+style 57 11 16 fg=#333333 bg=#efefef
+style 57 16 17 fg=#000000 bg=#efefef
+style 57 17 22 fg=#333333 bg=#efefef
+style 57 22 25 fg=#000000 bg=#efefef
+style 57 25 32 fg=#333333 bg=#efefef
+style 57 32 34 fg=#000000 bg=#efefef
+style 57 34 50 fg=#036a07 bg=#efefef
+style 57 50 52 fg=#000000 bg=#efefef
+style 57 52 56 fg=#333333 bg=#efefef
+style 57 56 57 fg=#000000 bg=#efefef
+style 57 57 58 fg=#036a07 bg=#efefef
+style 57 58 100 fg=#000000 bg=#efefef
+text 58 "│  }"
+style 58 0 2 fg=#696969 bg=#f9f9f9
+style 58 2 100 fg=#000000 bg=#efefef
+text 59 "│ · $ cargo build -p arko_ai · ✓ 41.2 s"
+style 59 0 31 fg=#696969 bg=#f9f9f9
+style 59 31 32 fg=#2a8300 bg=#f9f9f9
+style 59 32 39 fg=#696969 bg=#f9f9f9
+style 59 39 100 fg=#000000 bg=#f9f9f9
+text 60 "│ · $ cargo build -p arko_agents · ✗ stopped"
+style 60 0 2 fg=#696969 bg=#f9f9f9
+style 60 2 4 fg=#d21f07 bg=#f9f9f9
+style 60 4 35 fg=#696969 bg=#f9f9f9
+style 60 35 44 fg=#d21f07 bg=#f9f9f9
+style 60 44 100 fg=#000000 bg=#f9f9f9
+text 61 ""
+style 61 0 100 fg=#000000 bg=#f9f9f9
+text 62 "▾ run_code run each crate's tests · 41s …"
+style 62 0 2 fg=#696969 bg=#f9f9f9
+style 62 2 33 fg=#000000 bg=#f9f9f9
+style 62 33 41 fg=#696969 bg=#f9f9f9
+style 62 41 100 fg=#000000 bg=#f9f9f9
+text 63 "│  for (const name of [\"arko_index\", \"arko_ai\"]) {"
+style 63 0 2 fg=#696969 bg=#f9f9f9
+style 63 2 3 fg=#000000 bg=#efefef
+style 63 3 6 fg=#0433ff bg=#efefef
+style 63 6 8 fg=#000000 bg=#efefef
+style 63 8 13 fg=#0433ff bg=#efefef
+style 63 13 14 fg=#000000 bg=#efefef
+style 63 14 18 fg=#333333 bg=#efefef
+style 63 18 19 fg=#000000 bg=#efefef
+style 63 19 21 fg=#0433ff bg=#efefef
+style 63 21 23 fg=#000000 bg=#efefef
+style 63 23 35 fg=#036a07 bg=#efefef
+style 63 35 37 fg=#000000 bg=#efefef
+style 63 37 46 fg=#036a07 bg=#efefef
+style 63 46 100 fg=#000000 bg=#efefef
+text 64 "│    const output = await tools.shell({ command: `cargo test -p ${name}` });"
+style 64 0 2 fg=#696969 bg=#f9f9f9
+style 64 2 5 fg=#000000 bg=#efefef
+style 64 5 10 fg=#0433ff bg=#efefef
+style 64 10 11 fg=#000000 bg=#efefef
+style 64 11 17 fg=#333333 bg=#efefef
+style 64 17 20 fg=#000000 bg=#efefef
+style 64 20 25 fg=#0433ff bg=#efefef
+style 64 25 26 fg=#000000 bg=#efefef
+style 64 26 31 fg=#333333 bg=#efefef
+style 64 31 32 fg=#000000 bg=#efefef
+style 64 32 37 fg=#333333 bg=#efefef
+style 64 37 40 fg=#000000 bg=#efefef
+style 64 40 47 fg=#333333 bg=#efefef
+style 64 47 49 fg=#000000 bg=#efefef
+style 64 49 64 fg=#036a07 bg=#efefef
+style 64 64 66 fg=#000000 bg=#efefef
+style 64 66 70 fg=#333333 bg=#efefef
+style 64 70 71 fg=#000000 bg=#efefef
+style 64 71 72 fg=#036a07 bg=#efefef
+style 64 72 100 fg=#000000 bg=#efefef
+text 65 "│    console.log(output.split(\"\\n\").pop());"
+style 65 0 2 fg=#696969 bg=#f9f9f9
+style 65 2 5 fg=#000000 bg=#efefef
+style 65 5 12 fg=#333333 bg=#efefef
+style 65 12 13 fg=#000000 bg=#efefef
+style 65 13 16 fg=#333333 bg=#efefef
+style 65 16 17 fg=#000000 bg=#efefef
+style 65 17 23 fg=#333333 bg=#efefef
+style 65 23 24 fg=#000000 bg=#efefef
+style 65 24 29 fg=#333333 bg=#efefef
+style 65 29 30 fg=#000000 bg=#efefef
+style 65 30 34 fg=#036a07 bg=#efefef
+style 65 34 36 fg=#000000 bg=#efefef
+style 65 36 39 fg=#333333 bg=#efefef
+style 65 39 100 fg=#000000 bg=#efefef
+text 66 "│  }"
+style 66 0 2 fg=#696969 bg=#f9f9f9
+style 66 2 100 fg=#000000 bg=#efefef
+text 67 "│ · list crates · ✓ 4 entries"
+style 67 0 18 fg=#696969 bg=#f9f9f9
+style 67 18 19 fg=#2a8300 bg=#f9f9f9
+style 67 19 29 fg=#696969 bg=#f9f9f9
+style 67 29 100 fg=#000000 bg=#f9f9f9
+text 68 "│ · $ cargo test -p arko_index · ✓ 24 passed"
+style 68 0 33 fg=#696969 bg=#f9f9f9
+style 68 33 34 fg=#2a8300 bg=#f9f9f9
+style 68 34 44 fg=#696969 bg=#f9f9f9
+style 68 44 100 fg=#000000 bg=#f9f9f9
+text 69 "│ · $ cargo test -p arko_ai …"
+style 69 0 29 fg=#696969 bg=#f9f9f9
+style 69 29 100 fg=#000000 bg=#f9f9f9
+text 70 ""
+style 70 0 100 fg=#000000 bg=#f9f9f9
+text 71 ""
+style 71 0 100 fg=#000000 bg=#f9f9f9
+text 72 ""
+style 72 0 100 fg=#000000 bg=#f9f9f9
+text 73 ""
+style 73 0 100 fg=#000000 bg=#f9f9f9
+text 74 ""
+style 74 0 100 fg=#000000 bg=#f9f9f9
+text 75 ""
+style 75 0 100 fg=#000000 bg=#f9f9f9
+text 76 ""
+style 76 0 100 fg=#000000 bg=#f9f9f9
+text 77 ""
+style 77 0 100 fg=#000000 bg=#f9f9f9
+text 78 ""
+style 78 0 100 fg=#000000 bg=#f9f9f9
+text 79 ""
+style 79 0 100 fg=#000000 bg=#f9f9f9
+text 80 ""
+style 80 0 100 fg=#000000 bg=#f9f9f9
+text 81 ""
+style 81 0 100 fg=#000000 bg=#f9f9f9
+text 82 ""
+style 82 0 100 fg=#000000 bg=#f9f9f9
+text 83 ""
+style 83 0 100 fg=#000000 bg=#f9f9f9
+text 84 ""
+style 84 0 100 fg=#000000 bg=#f9f9f9
+text 85 "────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 85 0 100 fg=#d2d2d2 bg=#f9f9f9
+text 86 " ● working 1m00s · 142k/250k · main: $3.20                                             Ctrl+C  stop"
+style 86 0 1 fg=#000000 bg=#f9f9f9
+style 86 1 10 fg=#0060de bg=#f9f9f9
+style 86 10 42 fg=#696969 bg=#f9f9f9
+style 86 42 86 fg=#000000 bg=#f9f9f9
+style 86 86 94 fg=#000000 bg=#efefef
+style 86 94 99 fg=#696969 bg=#f9f9f9
+style 86 99 100 fg=#000000 bg=#f9f9f9
+text 87 "────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 87 0 100 fg=#d2d2d2 bg=#f9f9f9
+text 88 " › Add to the task"
+style 88 0 1 fg=#000000 bg=#f9f9f9
+style 88 1 3 fg=#0060de bg=#f9f9f9
+style 88 3 18 fg=#696969 bg=#f9f9f9
+style 88 18 100 fg=#000000 bg=#f9f9f9
+text 89 "────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 89 0 100 fg=#d2d2d2 bg=#f9f9f9

@@ -1,0 +1,204 @@
+size 100 90
+cursor 3 88 visible default
+text 0 "▎ Count the TODO comments, rename the setting, clean up, build and test"
+style 0 0 2 fg=#419cff bg=#202020
+style 0 2 100 fg=#dedede bg=#202020
+text 1 ""
+style 1 0 100 fg=#dedede bg=#131313
+text 2 "▾ 5 tool calls · 2 failed · running"
+style 2 0 2 fg=#9d9d9d bg=#131313
+style 2 2 14 fg=#dedede bg=#131313
+style 2 14 25 fg=#ff5257 bg=#131313
+style 2 25 35 fg=#9d9d9d bg=#131313
+style 2 35 100 fg=#dedede bg=#131313
+text 3 "▸ Ran code to count TODO comments per crate"
+style 3 0 2 fg=#9d9d9d bg=#131313
+style 3 2 100 fg=#dedede bg=#131313
+text 4 "▸ Ran code to rename the setting in every crate                                                    ✗"
+style 4 0 2 fg=#9d9d9d bg=#131313
+style 4 2 99 fg=#dedede bg=#131313
+style 4 99 100 fg=#ff5257 bg=#131313
+text 5 "▸ Ran code to clean the build folders"
+style 5 0 2 fg=#9d9d9d bg=#131313
+style 5 2 100 fg=#dedede bg=#131313
+text 6 "▸ Ran code to build each crate (stopped)"
+style 6 0 40 fg=#9d9d9d bg=#131313
+style 6 40 100 fg=#dedede bg=#131313
+text 7 "▸ Running code to run each crate's tests · 3 tool calls · running cargo test -p arko_ai · 41s …"
+style 7 0 2 fg=#9d9d9d bg=#131313
+style 7 2 40 fg=#dedede bg=#131313
+style 7 40 95 fg=#9d9d9d bg=#131313
+style 7 95 100 fg=#dedede bg=#131313
+text 8 ""
+style 8 0 100 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 100 fg=#dedede bg=#131313
+text 10 ""
+style 10 0 100 fg=#dedede bg=#131313
+text 11 ""
+style 11 0 100 fg=#dedede bg=#131313
+text 12 ""
+style 12 0 100 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 100 fg=#dedede bg=#131313
+text 14 ""
+style 14 0 100 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 100 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 100 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 100 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 100 fg=#dedede bg=#131313
+text 19 ""
+style 19 0 100 fg=#dedede bg=#131313
+text 20 ""
+style 20 0 100 fg=#dedede bg=#131313
+text 21 ""
+style 21 0 100 fg=#dedede bg=#131313
+text 22 ""
+style 22 0 100 fg=#dedede bg=#131313
+text 23 ""
+style 23 0 100 fg=#dedede bg=#131313
+text 24 ""
+style 24 0 100 fg=#dedede bg=#131313
+text 25 ""
+style 25 0 100 fg=#dedede bg=#131313
+text 26 ""
+style 26 0 100 fg=#dedede bg=#131313
+text 27 ""
+style 27 0 100 fg=#dedede bg=#131313
+text 28 ""
+style 28 0 100 fg=#dedede bg=#131313
+text 29 ""
+style 29 0 100 fg=#dedede bg=#131313
+text 30 ""
+style 30 0 100 fg=#dedede bg=#131313
+text 31 ""
+style 31 0 100 fg=#dedede bg=#131313
+text 32 ""
+style 32 0 100 fg=#dedede bg=#131313
+text 33 ""
+style 33 0 100 fg=#dedede bg=#131313
+text 34 ""
+style 34 0 100 fg=#dedede bg=#131313
+text 35 ""
+style 35 0 100 fg=#dedede bg=#131313
+text 36 ""
+style 36 0 100 fg=#dedede bg=#131313
+text 37 ""
+style 37 0 100 fg=#dedede bg=#131313
+text 38 ""
+style 38 0 100 fg=#dedede bg=#131313
+text 39 ""
+style 39 0 100 fg=#dedede bg=#131313
+text 40 ""
+style 40 0 100 fg=#dedede bg=#131313
+text 41 ""
+style 41 0 100 fg=#dedede bg=#131313
+text 42 ""
+style 42 0 100 fg=#dedede bg=#131313
+text 43 ""
+style 43 0 100 fg=#dedede bg=#131313
+text 44 ""
+style 44 0 100 fg=#dedede bg=#131313
+text 45 ""
+style 45 0 100 fg=#dedede bg=#131313
+text 46 ""
+style 46 0 100 fg=#dedede bg=#131313
+text 47 ""
+style 47 0 100 fg=#dedede bg=#131313
+text 48 ""
+style 48 0 100 fg=#dedede bg=#131313
+text 49 ""
+style 49 0 100 fg=#dedede bg=#131313
+text 50 ""
+style 50 0 100 fg=#dedede bg=#131313
+text 51 ""
+style 51 0 100 fg=#dedede bg=#131313
+text 52 ""
+style 52 0 100 fg=#dedede bg=#131313
+text 53 ""
+style 53 0 100 fg=#dedede bg=#131313
+text 54 ""
+style 54 0 100 fg=#dedede bg=#131313
+text 55 ""
+style 55 0 100 fg=#dedede bg=#131313
+text 56 ""
+style 56 0 100 fg=#dedede bg=#131313
+text 57 ""
+style 57 0 100 fg=#dedede bg=#131313
+text 58 ""
+style 58 0 100 fg=#dedede bg=#131313
+text 59 ""
+style 59 0 100 fg=#dedede bg=#131313
+text 60 ""
+style 60 0 100 fg=#dedede bg=#131313
+text 61 ""
+style 61 0 100 fg=#dedede bg=#131313
+text 62 ""
+style 62 0 100 fg=#dedede bg=#131313
+text 63 ""
+style 63 0 100 fg=#dedede bg=#131313
+text 64 ""
+style 64 0 100 fg=#dedede bg=#131313
+text 65 ""
+style 65 0 100 fg=#dedede bg=#131313
+text 66 ""
+style 66 0 100 fg=#dedede bg=#131313
+text 67 ""
+style 67 0 100 fg=#dedede bg=#131313
+text 68 ""
+style 68 0 100 fg=#dedede bg=#131313
+text 69 ""
+style 69 0 100 fg=#dedede bg=#131313
+text 70 ""
+style 70 0 100 fg=#dedede bg=#131313
+text 71 ""
+style 71 0 100 fg=#dedede bg=#131313
+text 72 ""
+style 72 0 100 fg=#dedede bg=#131313
+text 73 ""
+style 73 0 100 fg=#dedede bg=#131313
+text 74 ""
+style 74 0 100 fg=#dedede bg=#131313
+text 75 ""
+style 75 0 100 fg=#dedede bg=#131313
+text 76 ""
+style 76 0 100 fg=#dedede bg=#131313
+text 77 ""
+style 77 0 100 fg=#dedede bg=#131313
+text 78 ""
+style 78 0 100 fg=#dedede bg=#131313
+text 79 ""
+style 79 0 100 fg=#dedede bg=#131313
+text 80 ""
+style 80 0 100 fg=#dedede bg=#131313
+text 81 ""
+style 81 0 100 fg=#dedede bg=#131313
+text 82 ""
+style 82 0 100 fg=#dedede bg=#131313
+text 83 ""
+style 83 0 100 fg=#dedede bg=#131313
+text 84 ""
+style 84 0 100 fg=#dedede bg=#131313
+text 85 "────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 85 0 100 fg=#303030 bg=#131313
+text 86 " ● working 1m00s · 142k/250k · main: $3.20 · messages                                  Ctrl+C  stop"
+style 86 0 1 fg=#dedede bg=#131313
+style 86 1 10 fg=#419cff bg=#131313
+style 86 10 53 fg=#9d9d9d bg=#131313
+style 86 53 86 fg=#dedede bg=#131313
+style 86 86 94 fg=#dedede bg=#232323
+style 86 94 99 fg=#9d9d9d bg=#131313
+style 86 99 100 fg=#dedede bg=#131313
+text 87 "────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 87 0 100 fg=#303030 bg=#131313
+text 88 " › Add to the task"
+style 88 0 1 fg=#dedede bg=#131313
+style 88 1 3 fg=#419cff bg=#131313
+style 88 3 18 fg=#9d9d9d bg=#131313
+style 88 18 100 fg=#dedede bg=#131313
+text 89 "────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 89 0 100 fg=#303030 bg=#131313

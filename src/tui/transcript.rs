@@ -40,7 +40,7 @@ use super::theme::{Theme, Tint};
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
-    ActKind, CallStatus, ContentKind, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot, Source,
+    ActKind, CallStatus, Calls, ContentKind, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot, Source,
     Update, WorkerState, WorkerSummary, content, quiet,
 };
 
@@ -724,7 +724,8 @@ impl Transcript {
     }
 
     /// An entry for `item`, where an agent's thinking opens as `open_thinking`
-    /// says, and a command shows its output in the Full view.
+    /// says, and a command shows its output in the Full view, as a code run
+    /// shows its code, its calls and its result.
     fn entry(&self, item: Item) -> Entry {
         let item = for_terminal(item);
         let open = match item.kind {
@@ -732,7 +733,7 @@ impl Transcript {
             Kind::Call => item
                 .act
                 .as_ref()
-                .is_some_and(|act| act.kind == ActKind::Command),
+                .is_some_and(|act| matches!(act.kind, ActKind::Command | ActKind::Code)),
             _ => false,
         };
         Entry {
@@ -1024,10 +1025,21 @@ impl Transcript {
             }
             Update::Change(item) => {
                 self.changed(item.id);
-                if let Some(entry) = self.find_mut(item.id) {
+                let id = item.id;
+                let run = item.act.as_ref().is_some_and(|act| act.kind == ActKind::Code);
+                if let Some(entry) = self.find_mut(id) {
                     entry.item = for_terminal(item);
                     entry.touch();
                     entry.changed = Instant::now();
+                }
+                // A code run's calls show after its code.
+                if run
+                    && let Some(at) = self.index(id)
+                    && let Some(code) = self.entries.iter_mut().skip(at + 1).find(|entry| {
+                        entry.item.call == Some(id) && entry.item.content == Some(ContentKind::Code)
+                    })
+                {
+                    code.touch();
                 }
             }
             Update::Worker(summary) => match self.workers.iter_mut().find(|w| w.id == summary.id) {
@@ -1694,8 +1706,7 @@ impl Transcript {
         own: bool,
     ) -> &mut Cached {
         let style = theme_key(theme) ^ u64::from(own);
-        let entry = &mut self.entries[index];
-        let fresh = entry.cache.as_ref().is_some_and(|c| {
+        let fresh = self.entries[index].cache.as_ref().is_some_and(|c| {
             c.width == width
                 && c.style == style
                 && c.clock == face.clock
@@ -1704,6 +1715,15 @@ impl Transcript {
                 && c.status == face.status
                 && c.worker == face.worker
         });
+        // A code run's code shows the calls the code made after it, which
+        // change with the run's call (and touch this entry).
+        let item = &self.entries[index].item;
+        let calls = (!fresh && item.content == Some(ContentKind::Code))
+            .then_some(item.call)
+            .flatten()
+            .and_then(|call| self.item(call))
+            .and_then(|call| call.act.as_ref()?.calls.clone());
+        let entry = &mut self.entries[index];
         if !fresh {
             entry.cache = None;
         }
@@ -1714,6 +1734,7 @@ impl Transcript {
                 folds: face.folds,
                 status: face.status,
                 worker: face.worker.as_ref(),
+                calls: calls.as_ref(),
             };
             Cached {
                 width,
@@ -2156,11 +2177,14 @@ impl Transcript {
             );
         };
         if !row.merged {
+            // A code run's calls, which follow its code.
+            let mut calls = None;
             for member in &row.members {
                 let entry = &self.entries[*member];
                 let item = &entry.item;
                 match item.kind {
                     Kind::Call => {
+                        calls = item.act.as_ref().and_then(|act| act.calls.as_ref());
                         let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
                         // Where its line cut its words, the call as written,
                         // unless the detail is the whole command or query.
@@ -2169,7 +2193,13 @@ impl Transcript {
                                 && !act.detail.is_empty()
                         });
                         if quiet_cut(&row.words, width) && !whole {
-                            rail(&mut lines, detail_lines(&call_words(item), theme, inner), 0);
+                            // (A code run's words whole, which its call as
+                            // written only repeats with the tool's name.)
+                            let words = match item.act.as_ref().map(|act| act.kind) {
+                                Some(ActKind::Code) => rendered(&row.words.text),
+                                _ => call_words(item),
+                            };
+                            rail(&mut lines, detail_lines(&words, theme, inner), 0);
                         }
                         if !detail.is_empty() {
                             rail(&mut lines, detail_lines(detail, theme, inner), 0);
@@ -2179,6 +2209,11 @@ impl Transcript {
                         let start = lines.len();
                         rail(&mut lines, content_lines(item, theme, inner, entry.open), 0);
                         spans.push((item.id, start..lines.len()));
+                        if item.content == Some(ContentKind::Code)
+                            && let Some(calls) = calls
+                        {
+                            rail(&mut lines, run_quiet_lines(calls, theme, inner), 0);
+                        }
                     }
                     _ => {}
                 }
@@ -4209,6 +4244,55 @@ struct Look<'a> {
     status: Option<quiet::WorkerRow>,
     /// It is the row of a worker it set going.
     worker: Option<&'a WorkerFace>,
+    /// It is a code run's code, and these are the calls the code made,
+    /// which follow it.
+    calls: Option<&'a Calls>,
+}
+
+/// What a code run's calls did, after its code in its open Quiet row: one
+/// muted line of what those that went well did, then a line with ✗ at its
+/// right for each that failed or was refused.
+fn run_quiet_lines(calls: &Calls, theme: &Theme, width: usize) -> Vec<Wrapped> {
+    // Each one line, cut to fit (Full has every call whole).
+    let line = |text: &str, style: Style, room: usize| {
+        let text = rendered(text);
+        let shown = cut_end(&text, room.max(1));
+        let mut line = Wrapped::line(vec![Span::styled(shown.clone(), style)]);
+        if shown != text {
+            line.whole = Some(text);
+        }
+        line
+    };
+    let mut lines = Vec::new();
+    if !calls.summary.is_empty() {
+        lines.push(line(&calls.summary, theme.dim(), width));
+    }
+    for failed in calls.lines.iter().filter(|line| !line.failed.is_empty()) {
+        let mut row = vec![line(&failed.failed, theme.text(), width.saturating_sub(3))];
+        cross_at_right(&mut row, theme, width);
+        lines.extend(row);
+    }
+    lines
+}
+
+/// Each of a code run's calls as Full writes it, muted, after its code in
+/// Full, the one that runs ending in "…" (the run's own line has its
+/// spinner and timer).
+fn run_full_lines(calls: &Calls, theme: &Theme, width: usize) -> Vec<Wrapped> {
+    calls
+        .lines
+        .iter()
+        .flat_map(|line| {
+            let text = match line.status {
+                CallStatus::Running => format!("{} …", line.text),
+                _ => line.text.clone(),
+            };
+            let mut item = Item::new(Kind::Call, text);
+            item.status = Some(line.status);
+            item.outcome = (!line.outcome.is_empty()).then(|| line.outcome.clone());
+            call_line(&item, theme, width, true, None, None, true)
+        })
+        .collect()
 }
 
 /// A Quiet row's marker, ▸ (▾ while `fold` is open), or a dot for a row
@@ -4231,6 +4315,9 @@ fn quiet_tail(words: &quiet::Words, clock: Option<&str>) -> String {
     if let Some(note) = &words.note {
         tail.push_str(&format!(" · {note}"));
     }
+    for live in &words.live {
+        tail.push_str(&format!(" · {live}"));
+    }
     if words.running {
         if let Some(clock) = clock {
             tail.push_str(&format!(" · {clock}"));
@@ -4245,12 +4332,38 @@ fn quiet_tail(words: &quiet::Words, clock: Option<&str>) -> String {
 /// its cell into the next one, and the last column has none.)
 const CROSS: usize = 4;
 
+/// The fewest columns a Quiet row's words keep before how the row runs
+/// gives way.
+const LIVE_WORDS: usize = 24;
+
+/// `words` as a Quiet line at `width` says them, with as much of how the
+/// row runs ([`quiet::Words::live`]) as leaves its words [`LIVE_WORDS`]
+/// columns, its last part going first.
+fn quiet_fitted<'a>(
+    words: &'a quiet::Words,
+    width: usize,
+    clock: Option<&str>,
+) -> Cow<'a, quiet::Words> {
+    let cross = if words.failed { CROSS } else { 0 };
+    let fits = |words: &quiet::Words| {
+        let room = width.saturating_sub(MARGIN + cross + text_width(&quiet_tail(words, clock)));
+        room >= LIVE_WORDS.min(text_width(&rendered(&words.text)))
+    };
+    if words.live.is_empty() || fits(words) {
+        return Cow::Borrowed(words);
+    }
+    let mut fitted = words.clone();
+    while fitted.live.pop().is_some() && !fits(&fitted) {}
+    Cow::Owned(fitted)
+}
+
 /// The columns a Quiet row's words have on its line at `width`, past its
 /// marker, what follows them and its ✗ ([`CROSS`]).
 fn quiet_room(words: &quiet::Words, width: usize, clock: Option<&str>) -> usize {
+    let words = quiet_fitted(words, width, clock);
     let cross = if words.failed { CROSS } else { 0 };
     width
-        .saturating_sub(MARGIN + cross + text_width(&quiet_tail(words, clock)))
+        .saturating_sub(MARGIN + cross + text_width(&quiet_tail(&words, clock)))
         .max(WORDS_MIN)
 }
 
@@ -4281,7 +4394,7 @@ fn quiet_line(
     let shown = cut_end(&text, quiet_room(words, width, clock));
     let cut = shown != text;
     let mut spans = vec![Span::styled(shown, style)];
-    let tail = quiet_tail(words, clock);
+    let tail = quiet_tail(&quiet_fitted(words, width, clock), clock);
     if !tail.is_empty() {
         spans.push(Span::styled(tail, theme.dim()));
     }
@@ -4289,7 +4402,7 @@ fn quiet_line(
     let room = width.saturating_sub(MARGIN + cross).max(1);
     let mut line =
         Wrapped::line(fit_spans(spans, room)).decorated(marker(fold_symbol(fold), theme.dim()));
-    if cut {
+    if cut || quiet_fitted(words, width, clock).live != words.live {
         line.whole = Some(rendered(words.said()));
     }
     let mut lines = vec![line];
@@ -4405,6 +4518,16 @@ fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wr
                 let spans =
                     painted_spans(text, &spans, base, |name| theme.syntax(name, tint).map(on));
                 (Some(Span::styled(lead, lead_style)), spans, tinted)
+            }
+            // Code on the editor surface, a column in, in the theme's syntax
+            // colours.
+            content::Line::Plain(text) if kind == ContentKind::Code => {
+                let surface = Style::new().bg(theme.surface);
+                let spans = painted.next().unwrap_or_default();
+                let spans = painted_spans(text, &spans, theme.text().patch(surface), |name| {
+                    theme.syntax(name, None).map(|style| style.patch(surface))
+                });
+                (Some(Span::styled(" ", surface)), spans, Some(surface))
             }
             content::Line::Plain(text) => {
                 let style = match kind {
@@ -4973,6 +5096,7 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
         folds,
         status,
         worker,
+        ..
     } = look;
     // A worker's report or message to its lead, in its lead's view.
     if let Some(row) = status {
@@ -5117,7 +5241,13 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             }
             lines
         }
-        Kind::Result => railed(content_lines(item, theme, inner, open), theme),
+        Kind::Result => {
+            let mut lines = content_lines(item, theme, inner, open);
+            if let Some(calls) = look.calls {
+                lines.extend(run_full_lines(calls, theme, inner));
+            }
+            railed(lines, theme)
+        }
         Kind::Notice => {
             let (symbol, style) = match item.level {
                 Some(Level::Error) => ("✗", theme.error()),
@@ -5631,6 +5761,56 @@ mod tests {
 
     fn full() -> Filter {
         Filter::Main(View::Full)
+    }
+
+    /// A code run's row opens to its code from the start, then what its
+    /// code's calls did, then its result, in Quiet and in Full, where it is
+    /// open from the start as a command is. Its code's door opens the rest
+    /// below the preview and closes it again, and no line above the door
+    /// moves either way.
+    #[test]
+    fn a_code_runs_code_door_opens_the_rest_and_closes_it() {
+        let theme = Theme::terminal();
+        let (feed, runs) = crate::remote::code_runs::feed();
+        let code: Vec<&str> = runs[0].code.lines().collect();
+        for view in [View::Quiet, View::Full] {
+            let filter = Filter::Main(view);
+            let mut t = Transcript::new();
+            t.reset(feed.subscribe().0);
+            // The first run, its call and its code's block.
+            let call = t
+                .entries
+                .iter()
+                .find(|entry| entry.item.act.as_ref().is_some_and(|act| act.kind == ActKind::Code))
+                .map(|entry| entry.item.id)
+                .unwrap();
+            if view == View::Quiet {
+                let shown = rows(&mut t, &filter, 100, 90);
+                assert_eq!(shown[2], "▸ Ran code to count TODO comments per crate", "{shown:?}");
+                t.toggle(call, 2, &filter, &theme);
+            }
+            let shown = rows(&mut t, &filter, 100, 90);
+            let at = shown
+                .iter()
+                .position(|row| row == "│ … 4 more lines")
+                .unwrap_or_else(|| panic!("{view:?} {shown:?}"));
+            assert_eq!(shown[at - 16], format!("│  {}", code[0]), "{view:?} {shown:?}");
+            // What the calls did follows the code, then the result.
+            let after = match view {
+                View::Quiet => "│ Listed 1 folder and read 3 files",
+                _ => "│ · list crates · ✓ 4 entries",
+            };
+            assert_eq!(shown[at + 1], after, "{view:?} {shown:?}");
+            assert!(shown[at..].iter().any(|row| row == "│ 31 arko_agents"), "{shown:?}");
+            t.toggle(call + 1, at as u16, &filter, &theme);
+            let opened = rows(&mut t, &filter, 100, 90);
+            assert_eq!(opened[..at], shown[..at], "{view:?}: nothing above the door moves");
+            assert_eq!(opened[at], format!("│  {}", code[16]), "{view:?} {opened:?}");
+            assert_eq!(opened[at + 3], format!("│  {}", code[19]), "{view:?} {opened:?}");
+            assert_eq!(opened[at + 4], "│ ↑ show the first lines only", "{view:?}");
+            t.toggle(call + 1, (at + 4) as u16, &filter, &theme);
+            assert_eq!(rows(&mut t, &filter, 100, 90), shown, "{view:?}: it closes again");
+        }
     }
 
     /// A question card is one quiet line while its questions are open (the
