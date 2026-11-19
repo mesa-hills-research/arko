@@ -1336,9 +1336,14 @@ fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoVie
             .flatten()
             .and_then(|cell| cell.data.with(|item| item.act.as_ref()?.calls.clone()))
     };
+    // (Nothing while there is nothing to show, so no empty block takes a gap
+    // in what the call holds.)
     move || {
         let calls = calls()?;
         if full {
+            if calls.lines.is_empty() {
+                return None;
+            }
             let lines = calls
                 .lines
                 .into_iter()
@@ -1398,7 +1403,7 @@ fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoVie
         if !summed {
             lines.push(summary());
         }
-        Some(view! { <div class="run-calls">{lines}</div> }.into_any())
+        (!lines.is_empty()).then(|| view! { <div class="run-calls">{lines}</div> }.into_any())
     }
 }
 
