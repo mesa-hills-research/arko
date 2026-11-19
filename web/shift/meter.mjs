@@ -24,6 +24,7 @@
 // view with more turns. To look closer, SHIFT_METER_ONLY=1:quiet:up plays
 // one session (size, view, following or up), SHIFT_METER_CASES=0 leaves the
 // pixel cases out and SHIFT_METER_CASES_ONLY=1 plays only them,
+// SHIFT_METER_CASE=<pattern> plays only the pixel cases whose names match it,
 // SHIFT_METER_VERBOSE=1 prints each move, and SHIFT_METER_TRACE=<step>
 // prints the lines of every frame of the steps it names and the page's
 // console. SHIFT_METER_TABS is how many browsers play at once (3).
@@ -46,6 +47,7 @@ const VERBOSE = process.env.SHIFT_METER_VERBOSE === '1';
 const PAGE = arg('page');
 const TRACE = process.env.SHIFT_METER_TRACE;
 const CASES_ONLY = process.env.SHIFT_METER_CASES_ONLY === '1';
+const CASE = process.env.SHIFT_METER_CASE ? new RegExp(process.env.SHIFT_METER_CASE) : null;
 
 // ----- Chromium over the DevTools protocol -----
 
@@ -577,32 +579,35 @@ class Run {
       }, sessionId);
     }
     await this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTRUMENT.replace('__VIEW__', this.view) }, sessionId);
-    if (PAGE) {
-      // The page's files as built in this tree, whatever the server was
-      // built with.
-      this.cdp.on(sessionId, 'Fetch.requestPaused', (event) => {
-        const name = new URL(event.request.url).pathname.slice(1);
-        let body = null;
-        try {
-          body = readFileSync(join(PAGE, name));
-        } catch {
-          body = null;
-        }
-        if (body === null || event.responseStatusCode !== 200) {
-          this.cdp.send('Fetch.continueRequest', { requestId: event.requestId }, sessionId).catch(() => {});
-          return;
-        }
-        this.cdp.send('Fetch.fulfillRequest', {
-          requestId: event.requestId,
-          responseCode: 200,
-          responseHeaders: event.responseHeaders.filter((header) => !/^(content-length|content-encoding|etag)$/i.test(header.name)),
-          body: body.toString('base64'),
-        }, sessionId).catch(() => {});
-      });
-      await this.cdp.send('Fetch.enable', {
-        patterns: ['arko-web.js', 'arko-web_bg.wasm', 'app.css', 'boot.js', 'themes.css'].map((name) => ({ urlPattern: `*/${name}*`, requestStage: 'Response' })),
-      }, sessionId);
-    }
+    // The page's files as built in this tree, whatever the server was built
+    // with, and the requests a case holds back (`holdWholes`).
+    this.patterns = PAGE
+      ? ['arko-web.js', 'arko-web_bg.wasm', 'app.css', 'boot.js', 'themes.css'].map((name) => ({ urlPattern: `*/${name}*`, requestStage: 'Response' }))
+      : [];
+    this.heldBack = null;
+    this.cdp.on(sessionId, 'Fetch.requestPaused', (event) => {
+      if (event.responseStatusCode === undefined && this.heldBack) {
+        this.heldBack.push(event.requestId);
+        return;
+      }
+      let body = null;
+      try {
+        body = PAGE ? readFileSync(join(PAGE, new URL(event.request.url).pathname.slice(1))) : null;
+      } catch {
+        body = null;
+      }
+      if (body === null || event.responseStatusCode !== 200) {
+        this.cdp.send('Fetch.continueRequest', { requestId: event.requestId }, sessionId).catch(() => {});
+        return;
+      }
+      this.cdp.send('Fetch.fulfillRequest', {
+        requestId: event.requestId,
+        responseCode: 200,
+        responseHeaders: event.responseHeaders.filter((header) => !/^(content-length|content-encoding|etag)$/i.test(header.name)),
+        body: body.toString('base64'),
+      }, sessionId).catch(() => {});
+    });
+    if (this.patterns.length) await this.cdp.send('Fetch.enable', { patterns: this.patterns }, sessionId);
     const { url } = await this.agent.ask({ do: 'session' });
     this.frameTime = 1000;
     await this.cdp.send('Page.navigate', { url }, sessionId);
@@ -1481,6 +1486,22 @@ class Case extends Run {
     return this.look();
   }
 
+  /// Holds back the page's requests for the wholes of contents, as a slow
+  /// connection would, until `letGo`.
+  async holdWholes() {
+    this.heldBack = [];
+    await this.cdp.send('Fetch.enable', { patterns: [...this.patterns, { urlPattern: '*/api/result/*', requestStage: 'Request' }] }, this.session);
+  }
+
+  /// Lets the requests held back go, once one came, and holds no more.
+  async letGo() {
+    for (let at = 0; at < 200 && !this.heldBack.length; at++) await sleep(10);
+    const held = this.heldBack;
+    this.heldBack = null;
+    for (const requestId of held) await this.cdp.send('Fetch.continueRequest', { requestId }, this.session);
+    return held.length;
+  }
+
   /// A transcript taller than the view, at its end and following.
   async fill(paragraphs = 24) {
     await this.feed({ do: 'user', text: `Please ${this.words(6)}` });
@@ -1523,6 +1544,7 @@ async function pixelCases(cdp, agent) {
   const skipped = [];
   let count = 0;
   const play = async (ratio, name, body, view = 'full') => {
+    if (CASE && !CASE.test(name)) return;
     count++;
     const run = new Case({ cdp, agent, meter: new Meter(), size: { name: `cases @${ratio}`, width: 1000, height: 700, dpr: ratio, mobile: name.startsWith('touch') }, view, scrolled: false, seed: 7 });
     try {
@@ -1736,6 +1758,84 @@ async function pixelCases(cdp, agent) {
           if (now && line.y < fold.top && Math.round(now.raw - line.raw) !== 0) return `"${line.text}" above it moved ${Math.round(now.raw - line.raw)}`;
         }
         return after.choice === before.choice ? null : `the choice went ${before.choice} → ${after.choice}`;
+      });
+    }
+    // A command's output at the end, its first lines and the door to the
+    // rest, which the page asks Arko for. Its whole comes after the click's
+    // frame or before it, and either way the door opens below the content's
+    // first lines and moves no line above it. Closing it again keeps those
+    // lines where they show, and the door under the pointer where none of
+    // them does (a long content closed from its end).
+    for (const [order, long] of [['after', false], ['before', false], ['after', true]]) {
+      const name = long
+        ? 'a long door opened at the end while following and closed from its end keeps its lines, then the door, in place'
+        : `a door opened at the end while following keeps the lines above it, its whole coming ${order} the click's frame`;
+      await play(ratio, name, async (run) => {
+        await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+        for (let at = 0; at < 12; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `cargo build -p ${run.words(1)}` } });
+        const output = Array.from({ length: long ? 90 : 30 }, () => `${run.some(2, 4)} ok`).join('\n');
+        await run.feed({ do: 'result', call, tool: 'shell', output: `exit code 0, 41.0 s\n${output}` });
+        await run.feed({ do: 'end' });
+        await run.settle(null);
+        const door = `(() => {
+          const log = document.getElementById('log');
+          const box = log.getBoundingClientRect();
+          const door = [...document.querySelectorAll('#rows button.door')].pop();
+          if (!door) return null;
+          const r = door.getBoundingClientRect();
+          const held = door.previousElementSibling;
+          const lines = held.matches('pre') ? held.textContent.split('\\n').length : held.querySelectorAll('.line').length;
+          return { x: r.left + 10, y: r.top + r.height / 2, top: r.top * devicePixelRatio, label: door.textContent, lines, below: r.bottom - (box.top + log.clientHeight), first: held.getBoundingClientRect().top - box.top };
+        })()`;
+        const shut = await run.evaluate(door);
+        if (!shut || shut.below > 0) return `no door on the screen (${JSON.stringify(shut)})`;
+        const before = await run.look();
+        if (!follows(before)) return `not following before the click (${before.choice})`;
+        await run.holdWholes();
+        if (order === 'after') {
+          await run.click(shut.x, shut.y);
+          await run.settle(null);
+          if (!(await run.letGo())) return 'the click asked for no whole';
+        } else {
+          // (A click and its answer with no frame between, as a browser that
+          // draws less often may have them.)
+          await run.evaluate(`[...document.querySelectorAll('#rows button.door')].pop().click()`);
+          if (!(await run.letGo())) return 'the click asked for no whole';
+          for (let at = 0; at < 200 && !(await run.evaluate(door)).label.startsWith('↑'); at++) await sleep(10);
+        }
+        await run.settle(null);
+        const open = await run.evaluate(door);
+        if (!open.label.startsWith('↑') || open.lines <= shut.lines) return `the door didn't open ("${open.label}", ${shut.lines} → ${open.lines} lines)`;
+        const opened = await run.look();
+        // (The lines of `a` from device pixel row `from` to `to` that `b`
+        // shows too.)
+        const still = (a, b, from, to) => {
+          for (const [id, line] of a.ids) {
+            const now = b.ids.get(id);
+            if (now && line.y >= from && line.y < to && Math.round(now.raw - line.raw) !== 0) return `"${line.text}" moved ${Math.round(now.raw - line.raw)}`;
+          }
+          return null;
+        };
+        const moved = still(before, opened, -Infinity, shut.top);
+        if (moved) return `opening: ${moved}`;
+        // The reader scrolls to the door below and closes it.
+        if (open.below > -20) await run.roll((open.below + 20) * ratio, 400);
+        const reached = await run.evaluate(door);
+        const ready = await run.look();
+        if (long && reached.first + shut.lines * 18 > 0) return `the first lines show at the door (${reached.first})`;
+        await run.click(reached.x, reached.y);
+        await run.settle(null);
+        const closed = await run.look();
+        const again = await run.evaluate(door);
+        if (again.label !== shut.label || again.lines !== shut.lines) return `the door didn't close ("${again.label}", ${again.lines} lines)`;
+        if (long) {
+          if (Math.round(again.top - reached.top) !== 0) return `closing moved the door ${Math.round(again.top - reached.top)}`;
+          const below = still(ready, closed, reached.top, Infinity);
+          return below ? `closing: ${below}` : null;
+        }
+        const back = still(ready, closed, -Infinity, reached.top);
+        return back ? `closing: ${back}` : null;
       });
     }
     await play(ratio, 'the thumb dragged up reads, and to the bottom follows', async (run) => {

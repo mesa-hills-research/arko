@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use wasm_bindgen::JsCast;
 
 use crate::app::{page, request};
 use crate::content::{self, Line, Mark};
@@ -129,12 +130,28 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
         })
     };
     let gone = move || state.with(|state| matches!(state, Some(Fetched::Gone)));
-    let toggle = move |_| {
+    let toggle = move |event: web_sys::MouseEvent| {
+        // (The door goes below what shows, so the content's lines, the
+        // element before it, keep their place as it opens or closes.)
+        let door = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .and_then(|target| target.closest("button.door").ok().flatten());
+        let keep = move || {
+            let door = door.as_ref().filter(|door| door.is_connected());
+            if let Some((lines, door)) =
+                door.and_then(|door| Some((door.previous_element_sibling()?, door)))
+            {
+                crate::scroll::door_toggles(&lines, door);
+            }
+        };
         if open() {
+            keep();
             page.doors_open.set(id, false);
             return;
         }
         if whole(id).is_some() {
+            keep();
             page.doors_open.set(id, true);
             return;
         }
@@ -154,6 +171,9 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
                 Fetched::Whole(result) => {
                     markdown::remember(&result.code);
                     WHOLES.with(|wholes| wholes.borrow_mut().keep(id, result.text));
+                    // (Where the lines are now, which the reader may have
+                    // scrolled meanwhile.)
+                    keep();
                     state.set(None);
                     page.doors_open.set(id, true);
                 }

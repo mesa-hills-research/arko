@@ -264,14 +264,18 @@ struct Top {
     height: f64,
 }
 
-/// A line the reader clicked, which keeps its place as what it opens or
-/// closes lays out again, by its element and its row, how far its top is
-/// below its row's and below the view's top.
+/// A line that keeps its place as what the reader opened or closed lays
+/// out (a click, [`door_toggles`]), by its element and its row, how far
+/// its top is below its row's and below the view's top. A content's door
+/// after it, by its place among its row's doors and how far it is below the
+/// view's top, keeps its own place instead where the line's would put it
+/// above the view, as when a long content closes from its end.
 struct Clicked {
     line: Element,
     row: Option<String>,
     inner: f64,
     offset: f64,
+    door: Option<(u32, f64)>,
 }
 
 /// What the marker counts from, the last frame drawn following. The row
@@ -1102,15 +1106,27 @@ impl State {
         self.write(&geometry, top)
     }
 
-    /// Where the line the reader clicked puts the view.
+    /// Where the line the reader clicked puts the view, or its door, where
+    /// the line would put the door above the view's top.
     fn clicked_at(&self, geometry: &Geometry, clicked: &Clicked) -> Option<f64> {
+        let row = clicked
+            .row
+            .as_deref()
+            .and_then(|key| row_of(self.rows.as_ref()?, key));
         let line = if clicked.line.is_connected() {
             geometry.at(&clicked.line)
         } else {
-            let row = row_of(self.rows.as_ref()?, clicked.row.as_deref()?)?;
-            geometry.at(&row) + clicked.inner
+            geometry.at(row.as_ref()?) + clicked.inner
         };
-        Some(line - clicked.offset)
+        let top = line - clicked.offset;
+        let door = row.zip(clicked.door).and_then(|(row, (index, offset))| {
+            let door = row.get_elements_by_class_name("door").item(index)?;
+            Some((geometry.at(&door), offset))
+        });
+        Some(match door {
+            Some((at, offset)) if at < top => at - offset,
+            _ => top,
+        })
     }
 
     /// The reader's own scroll, `delta` CSS px (down is more), which the
@@ -1145,6 +1161,34 @@ impl State {
             self.hidden = 0.0;
         }
         self.choice = choice;
+    }
+
+    /// `line`, and the door after it, keep their places at the next frame,
+    /// where the line shows.
+    fn keep(&mut self, line: Element, door: Option<&Element>) {
+        let Some(geometry) = self.geometry() else {
+            return;
+        };
+        let at = geometry.at(&line);
+        let shows = line.is_connected()
+            && geometry.bottom_of(&line) > geometry.top
+            && at < geometry.top + geometry.height;
+        if !shows {
+            return;
+        }
+        let row = line.closest("[data-row]").ok().flatten();
+        let door = row.as_ref().zip(door).and_then(|(row, door)| {
+            let doors = row.get_elements_by_class_name("door");
+            let index = (0..doors.length()).find(|at| doors.item(*at).as_ref() == Some(door))?;
+            Some((index, geometry.at(door) - geometry.top))
+        });
+        self.clicked = Some(Clicked {
+            inner: row.as_ref().map_or(0.0, |row| at - geometry.at(row)),
+            row: row.and_then(|row| row.get_attribute("data-row")),
+            offset: at - geometry.top,
+            line,
+            door,
+        });
     }
 
     /// The view goes to the end, with no blank below it, and follows. All
@@ -1321,20 +1365,17 @@ fn on_click(event: web_sys::Event) {
         .ok()
         .flatten()
         .unwrap_or(target);
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let Some(geometry) = state.geometry() else {
-            return;
-        };
-        let row = line.closest("[data-row]").ok().flatten();
-        let at = geometry.at(&line);
-        state.clicked = Some(Clicked {
-            inner: row.as_ref().map_or(0.0, |row| at - geometry.at(row)),
-            row: row.and_then(|row| row.get_attribute("data-row")),
-            offset: at - geometry.top,
-            line,
-        });
-    });
+    STATE.with(|state| state.borrow_mut().keep(line, None));
+    changed();
+}
+
+/// A content's door opens or closes now, and the content's first lines,
+/// `lines`, keep their place at the next frame, also when its whole came a
+/// while after the click. Closing from its end keeps the door in its place
+/// instead, where none of the first lines would show. Lines off the screen
+/// keep nothing, and the top line keeps its place as for any change.
+pub fn door_toggles(lines: &Element, door: &Element) {
+    STATE.with(|state| state.borrow_mut().keep(lines.clone(), Some(door)));
     changed();
 }
 
