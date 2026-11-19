@@ -292,6 +292,49 @@ pub struct Act {
     /// words say it all.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
+    /// For a code run, the calls its code made, as they ran. A reopened
+    /// session has none, since it keeps only the run's call and result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Calls>,
+}
+
+/// The calls a code run's code made (`run_code`), for its rows: the count
+/// and the call that runs on its Quiet row, what they did and those that
+/// failed when it's open, and each call's Full line in Full.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct Calls {
+    /// How many it made.
+    pub count: u32,
+    /// What the call that runs does, as its row would say it ("Running
+    /// cargo test -p arko_ai"), while one runs.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub running: String,
+    /// What the calls that went well did, in one sentence ("Listed 1 folder
+    /// and read 31 files").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Each call as Full writes it, in order, at most as many as a run may
+    /// make ([`Calls::count`] counts them all).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<CallLine>,
+}
+
+/// A call a code run's code made, as its line under the run says it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct CallLine {
+    /// The call as Full writes it ("read src/engine.rs").
+    pub text: String,
+    pub status: CallStatus,
+    /// Its result in a few words ("310 lines", "refused").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub outcome: String,
+    /// For a call that failed or was refused, what its Quiet row would say
+    /// ("Couldn’t read a.rs · refused"), a line of its own with ✗ in the
+    /// open run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub failed: String,
 }
 
 /// What a call's content is ([`content`](super::content)), which says how
@@ -311,6 +354,9 @@ pub enum ContentKind {
     /// An edit's diff, each line its mark (`-` removed, `+` added, a space
     /// kept), its number, a tab and its text.
     Diff,
+    /// Code as it was written, every line of it, in its `language` (a code
+    /// run's).
+    Code,
 }
 
 /// The kinds of call the Quiet view words and merges.
@@ -339,6 +385,9 @@ pub enum ActKind {
     Note,
     /// A call of an MCP server's tool.
     Mcp,
+    /// A run of code that calls the agent's tools (`run_code`), whose
+    /// target is what the code is for. It has a row of its own.
+    Code,
 }
 
 /// What reached a wait, which is the runs that finished or stopped, the messages,

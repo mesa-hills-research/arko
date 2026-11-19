@@ -14,6 +14,8 @@
 //! The key goes in the link's fragment, which browsers don't send, and the
 //! page trades it for a session cookie. The page is served without TLS.
 
+#[cfg(test)]
+pub(crate) mod code_runs;
 pub mod content;
 mod feed;
 #[cfg(feature = "remote")]
@@ -53,7 +55,7 @@ use tokio::sync::mpsc;
 pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use feed::family_order_of;
 pub use feed::{
-    Act, ActKind, Activity, Batches, CallStatus, Came, ContentKind, Delivery, ENDED_JOBS, Feed,
+    Act, ActKind, Activity, Batches, CallLine, CallStatus, Calls, Came, ContentKind, Delivery, ENDED_JOBS, Feed,
     Following, Item, JobKind, JobStart, JobState, JobSummary, Kind, Level, MAIN_AGENT, Question,
     REFRESH_MESSAGE, Received, Snapshot, Source, Update, WorkerChange, WorkerInfo, WorkerState,
     WorkerSummary, family_order, family_order_with_levels,

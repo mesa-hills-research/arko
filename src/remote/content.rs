@@ -122,9 +122,13 @@ pub fn number_width(kind: ContentKind, text: &str) -> usize {
 }
 
 /// The code of a content's numbered lines, one a line, which its
-/// highlighting is for. The page finds the spans by this code's hash, and
-/// they count bytes in it. `None` for a content without numbered lines.
+/// highlighting is for, and of a content of code its every line. The page
+/// finds the spans by this code's hash, and they count bytes in it. `None`
+/// for a content without code.
 pub fn code(kind: ContentKind, text: &str) -> Option<String> {
+    if kind == ContentKind::Code {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
     if !matches!(kind, ContentKind::Lines | ContentKind::Diff) {
         return None;
     }

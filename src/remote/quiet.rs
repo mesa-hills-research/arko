@@ -136,6 +136,10 @@ pub struct Words {
     /// More, said after it, muted, such as how a call's job is going, or
     /// what came while it waited.
     pub note: Option<String>,
+    /// How it runs, said after its note, muted, which gives way first where
+    /// the line is narrow, its last part first (a code run's count of calls,
+    /// then the call that runs).
+    pub live: Vec<String>,
     /// A call a stop or a compaction cut short, whose row is muted.
     pub muted: bool,
     /// A call of it runs.
@@ -152,6 +156,9 @@ impl Words {
         }
         if let Some(note) = &self.note {
             said.push_str(&format!(" · {note}"));
+        }
+        for live in &self.live {
+            said.push_str(&format!(" · {live}"));
         }
         said
     }
@@ -317,12 +324,12 @@ impl Member<'_> {
         )
     }
 
-    /// Whether it joins no row before it, as a call of another kind and a
-    /// test run don't, which is known as it comes, and a long call while it
-    /// runs. That one joins the row before it once it ended, unless
+    /// Whether it joins no row before it, as a call of another kind, a code
+    /// run and a test run don't, which is known as it comes, and a long call
+    /// while it runs. That one joins the row before it once it ended, unless
     /// something came below it meanwhile, which settles it where it is.
     fn alone(&self) -> bool {
-        self.act.kind == ActKind::Other
+        matches!(self.act.kind, ActKind::Other | ActKind::Code)
             || self.act.alone
             || (self.long() && (self.running() || self.late))
     }
@@ -868,8 +875,8 @@ fn words(group: &Group) -> Words {
             tense("Calling", "Called"),
             calls[0].name
         ),
-        // (A call of another kind has a row of its own.)
-        Some(ActKind::Other) => calls[0].act.done.clone(),
+        // (A call of another kind and a code run have rows of their own.)
+        Some(ActKind::Other | ActKind::Code) => calls[0].act.done.clone(),
     };
     // How the jobs of its calls go, which stay in the row.
     let jobs: Vec<&Member> = calls.iter().filter(|member| member.call.job).collect();
@@ -1175,6 +1182,19 @@ fn phrases(member: &Member) -> Phrases {
             format!("Called {name}"),
             format!("call {name}"),
         ),
+        // ("Ran code to count TODO comments per crate")
+        ActKind::Code => {
+            let to = if name.is_empty() {
+                String::new()
+            } else {
+                format!(" to {name}")
+            };
+            three(
+                format!("Running code{to}"),
+                format!("Ran code{to}"),
+                format!("run code{to}"),
+            )
+        }
         ActKind::Other => {
             let doing = act.doing.clone();
             let done = if act.done.is_empty() {
@@ -1205,10 +1225,137 @@ fn lower_first(text: &str) -> String {
     }
 }
 
+/// What the row of `act`'s call alone says, with its `status` and
+/// `outcome` ("Couldn’t read app.rs").
+pub fn alone(act: &Act, status: CallStatus, outcome: Option<&str>) -> Words {
+    let member = Member {
+        index: 0,
+        call: Call {
+            act: Some(act),
+            status: Some(status),
+            outcome,
+            ..Call::default()
+        },
+        act,
+        name: Names::default().of(None, act),
+        late: false,
+    };
+    one(&member)
+}
+
+/// What the calls of a code run that went well did, in one sentence, each
+/// kind in the order it first came ("Listed 1 folder and read 31 files").
+/// A file read, written or listed again counts once.
+pub fn called(acts: &[Act]) -> String {
+    let mut kinds: Vec<ActKind> = Vec::new();
+    for act in acts {
+        if !kinds.contains(&act.kind) {
+            kinds.push(act.kind);
+        }
+    }
+    let of = |kind: ActKind| acts.iter().filter(move |act| act.kind == kind);
+    let files = |kind: ActKind| distinct(of(kind).map(|act| act.target.as_str())).len();
+    let times = |kind: ActKind| of(kind).count();
+    let parts: Vec<String> = kinds
+        .into_iter()
+        .map(|kind| match kind {
+            ActKind::Read => format!("read {}", plural(files(kind), "file", "files")),
+            ActKind::List => format!("listed {}", plural(files(kind), "folder", "folders")),
+            ActKind::Write => format!("wrote {}", plural(files(kind), "file", "files")),
+            ActKind::Edit => {
+                let calls: Vec<Member> = of(kind)
+                    .map(|act| Member {
+                        index: 0,
+                        call: Call::default(),
+                        act,
+                        name: String::new(),
+                        late: false,
+                    })
+                    .collect();
+                format!(
+                    "made {} to {}",
+                    plural(edits(&calls), "edit", "edits"),
+                    plural(files(kind), "file", "files")
+                )
+            }
+            ActKind::Command => format!("ran {}", plural(times(kind), "command", "commands")),
+            ActKind::Search => format!("searched {}", plural(times(kind), "time", "times")),
+            // (Another kind, such as a look at the indexes, by its words.)
+            _ => {
+                let mut done: Vec<String> = Vec::new();
+                for act in of(kind) {
+                    let words = lower_first(&alone(act, CallStatus::Ok, None).text);
+                    if !done.contains(&words) {
+                        done.push(words);
+                    }
+                }
+                listed(&done, 2)
+            }
+        })
+        .collect();
+    upper_first(&listed(&parts, parts.len()))
+}
+
+fn upper_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// What the row of a code run says: what its code is for, and while it
+/// runs how many calls the code made and the one that runs. A stop leaves
+/// it in the past tense, since what the code did stands.
+fn code_run(member: &Member, Phrases { doing, done, .. }: Phrases) -> Words {
+    let calls = member.act.calls.as_ref();
+    match member.call.status {
+        Some(CallStatus::Running) | None => {
+            let mut live = Vec::new();
+            if let Some(calls) = calls.filter(|calls| calls.count > 0) {
+                live.push(plural(calls.count as usize, "tool call", "tool calls"));
+                if !calls.running.is_empty() {
+                    live.push(lower_first(&calls.running));
+                }
+            }
+            Words {
+                text: doing,
+                live,
+                ..Words::default()
+            }
+        }
+        Some(CallStatus::Failed) if member.call.outcome.map(str::trim) == Some(STOPPED) => Words {
+            text: done,
+            news: Some(STOPPED.into()),
+            muted: true,
+            ..Words::default()
+        },
+        // Held for a compaction, or the session ended first.
+        Some(CallStatus::Failed) if !member.failed() => Words {
+            text: doing,
+            note: member.call.outcome.map(|outcome| outcome.trim().to_string()),
+            muted: true,
+            ..Words::default()
+        },
+        Some(CallStatus::Failed) => Words {
+            text: done,
+            failed: true,
+            ..Words::default()
+        },
+        Some(CallStatus::Ok) => Words {
+            text: done,
+            ..Words::default()
+        },
+    }
+}
+
 /// What the row of one call says.
 fn one(member: &Member) -> Words {
     let act = member.act;
     let Phrases { doing, done, verb } = phrases(member);
+    if act.kind == ActKind::Code {
+        return code_run(member, Phrases { doing, done, verb });
+    }
     let outcome = member
         .call
         .outcome

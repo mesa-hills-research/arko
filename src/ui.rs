@@ -1414,6 +1414,13 @@ impl EventPrinter {
             LOAD_SKILL_TOOL_NAME => {
                 format!("{bullet} {} {}", self.output.bold("skill"), text("name"))
             }
+            crate::code_mode::RUN_CODE => format!(
+                "{bullet} {} {}",
+                self.output.bold(tool),
+                cut(text("purpose").trim(), 160)
+            )
+            .trim_end()
+            .to_string(),
             tool if index::TOOL_NAMES.contains(&tool) || mcp::split_tool_name(tool).is_some() => {
                 let (name, detail) = labelled(tool, parameters);
                 format!("{bullet} {}{}", self.output.bold(&name), detail)
@@ -1600,6 +1607,10 @@ pub fn brief_waiting_for(
                 .trim_end()
                 .to_string(),
         },
+        // ("run_code count TODO comments per crate")
+        crate::code_mode::RUN_CODE => format!("{tool} {}", cut(text("purpose").trim(), 160))
+            .trim_end()
+            .to_string(),
         tool if index::TOOL_NAMES.contains(&tool) || mcp::split_tool_name(tool).is_some() => {
             let (name, detail) = labelled(tool, parameters);
             format!("{name}{detail}")

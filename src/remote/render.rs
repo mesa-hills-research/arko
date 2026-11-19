@@ -16,11 +16,13 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use arko_agents::LOAD_SKILL_TOOL_NAME;
+use arko_agents::NestedCallOutcome;
 use arko_agents::terminal;
 use arko_agents::tool::ToolReceipt;
 
 use super::content;
 use super::feed::{Act, ActKind, CallStatus, Came, ContentKind, Item, Kind};
+use super::protocol::CallLine;
 use super::plural;
 use super::quiet;
 use crate::crew;
@@ -96,6 +98,80 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
         item.act = Some(act);
     }
     Some(item)
+}
+
+/// The code a code run runs, as the block its row opens to from the start,
+/// which the block of its result follows once that comes. `None` for a call
+/// of any other tool.
+pub fn code_block(tool: &str, parameters: &Parameters) -> Option<Item> {
+    (tool == crate::code_mode::RUN_CODE)
+        .then(|| {
+            Content::new(
+                ContentKind::Code,
+                text(parameters, "code"),
+                Some("js".into()),
+            )
+        })
+        .flatten()
+        .map(Content::block)
+}
+
+/// A call a code run's code started, as its line under the run says it,
+/// and what it does, which the run's row says while it runs.
+pub fn nested_call(tool: &str, parameters: &Parameters) -> (CallLine, Option<Act>) {
+    let item = call(tool, parameters, super::feed::MAIN_AGENT);
+    let text = item
+        .as_ref()
+        .map_or_else(|| tool.to_string(), |item| item.text.clone());
+    let line = CallLine {
+        text,
+        status: CallStatus::Running,
+        outcome: String::new(),
+        failed: String::new(),
+    };
+    (line, item.and_then(|item| item.act))
+}
+
+/// How a call a code run's code made ended (`ended`), with its result or
+/// why it failed (`output`, the first `output.len()` of its `whole` bytes).
+/// Its `line` says so, and `act` (what it did) learns what the result
+/// adds. Returns whether it went well.
+pub fn nested_ended(
+    line: &mut CallLine,
+    act: &mut Option<Act>,
+    tool: &str,
+    parameters: &Parameters,
+    ended: NestedCallOutcome,
+    output: &str,
+    whole: usize,
+) -> bool {
+    let outcome = match ended {
+        NestedCallOutcome::Finished => outcome(tool, parameters, output),
+        NestedCallOutcome::Refused => Outcome::failed("refused"),
+        NestedCallOutcome::Stopped => Outcome::failed(quiet::STOPPED),
+        NestedCallOutcome::Failed | NestedCallOutcome::Halted => Outcome::failed(output),
+    };
+    // Counts made from a cut result would be wrong, so a cut one says
+    // nothing more than how it went.
+    let cut = whole > output.len();
+    let words = match outcome.status {
+        CallStatus::Ok if cut => None,
+        _ => outcome.text.filter(|text| !text.trim().is_empty()),
+    };
+    line.status = outcome.status;
+    line.outcome = words.clone().unwrap_or_default();
+    if !cut {
+        outcome.settled.apply(act);
+    }
+    let failed = outcome.status == CallStatus::Failed && ended != NestedCallOutcome::Stopped;
+    if failed && let Some(act) = act.as_ref() {
+        let said = quiet::alone(act, outcome.status, words.as_deref()).said();
+        line.failed = match words.filter(|words| !said.contains(words.as_str())) {
+            Some(words) => format!("{said} · {words}"),
+            None => said,
+        };
+    }
+    outcome.status == CallStatus::Ok
 }
 
 /// `value` as text, a string as it is and anything else as JSON.
@@ -533,6 +609,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             "Updated the plan".into(),
             "update the plan".into(),
         ),
+        crate::code_mode::RUN_CODE => on(ActKind::Code, text("purpose")),
         other_tool => match crate::mcp::split_tool_name(other_tool) {
             Some((server, name)) => on(ActKind::Mcp, format!("{name} on {server}")),
             None => other(
@@ -1463,6 +1540,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
         RUN_WORKFLOW_AGENT_TOOL_NAME => {
             Outcome::ok(format!("reported ({})", plural(lines(), "line", "lines")))
         }
+        crate::code_mode::RUN_CODE => Outcome::ok(plural(lines(), "line", "lines")),
         _ => Outcome::ok(
             output
                 .lines()
@@ -1484,12 +1562,15 @@ struct Content {
 impl Content {
     /// `text` as a content of `kind`, and `None` when it says nothing. A
     /// file's lines and a diff stay as they are, their blank lines and
-    /// spaces too. Text loses the blank lines it starts and ends with.
+    /// spaces too, and code as well but for the line breaks it ends with.
+    /// Text loses the blank lines it starts and ends with.
     fn new(kind: ContentKind, text: impl Into<String>, language: Option<String>) -> Option<Self> {
         let text = text.into();
         let text = match kind {
             ContentKind::Lines | ContentKind::Diff => text,
             _ if text.trim().is_empty() => String::new(),
+            // Code as written, but for the line breaks it ends with.
+            ContentKind::Code => text.trim_end_matches(['\n', '\r']).to_string(),
             _ => {
                 let end = text.trim_end_matches(['\n', '\r']);
                 let start = end.len() - end.trim_start().len();

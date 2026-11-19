@@ -69,7 +69,7 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Act, ActKind, Activity, CallStatus, Came, ContentKind, Delivery, JobKind, JobState, JobSummary,
+    Act, ActKind, Activity, CallLine, CallStatus, Calls, Came, ContentKind, Delivery, JobKind, JobState, JobSummary,
     Kind, Level, Question, Source, WorkerState,
 };
 
@@ -379,6 +379,19 @@ impl Item {
             self.ended = Some(next);
         }
         settled.apply(&mut self.act);
+        // A code run's calls end with it, and one it left running was
+        // dropped with it.
+        if status != CallStatus::Running
+            && let Some(calls) = self.act.as_mut().and_then(|act| act.calls.as_mut())
+        {
+            calls.running.clear();
+            for line in &mut calls.lines {
+                if line.status == CallStatus::Running {
+                    line.status = CallStatus::Failed;
+                    line.outcome = super::quiet::STOPPED.into();
+                }
+            }
+        }
     }
 
     fn size(&self) -> usize {
@@ -434,7 +447,19 @@ fn act_size(act: &Act) -> usize {
                 .map(String::len)
                 .sum()
         })
+        + act.calls.as_ref().map_or(0, |calls| {
+            calls.running.len()
+                + calls.summary.len()
+                + calls
+                    .lines
+                    .iter()
+                    .map(|line| 16 + line.text.len() + line.outcome.len() + line.failed.len())
+                    .sum::<usize>()
+        })
 }
+
+/// The most lines a code run's calls keep, one for each call a run may make.
+const RUN_LINES: usize = crate::code_mode::MAX_CALLS as usize;
 
 /// A worker, as a line such as
 /// `r2 · Fix flaky test · 18 tool calls · 2m · running`.
@@ -1395,6 +1420,33 @@ struct Call {
     /// result may come after the job ended, when the feed no longer keeps
     /// the job, and its line says how the job ended from this.
     job: Option<JobSummary>,
+    /// For a code run, its code's calls while they run, and what those that
+    /// went well did.
+    run: Option<Box<RunCalls>>,
+}
+
+/// A code run's calls, as the feed follows them for its row
+/// ([`Act::calls`]).
+#[derive(Default)]
+struct RunCalls {
+    /// The calls that run, by their ID.
+    running: HashMap<Uuid, Nested>,
+    /// What the calls that went well did, which the run's summary says.
+    done: Vec<Act>,
+    /// The calls started so far, which orders those that run.
+    started: u64,
+}
+
+/// A call a code run's code made, while it runs.
+struct Nested {
+    /// Its place among the run's lines, unless the run had too many.
+    at: Option<usize>,
+    line: super::protocol::CallLine,
+    act: Option<Act>,
+    tool: String,
+    parameters: HashMap<String, serde_json::Value>,
+    /// Which of the run's calls it was, from the first.
+    started: u64,
 }
 
 /// Where an agent's output stood as its model request went out.
@@ -1990,6 +2042,119 @@ impl Feed {
         }
     }
 
+    /// The code of the code run `outer` started the call `id` of `tool` with
+    /// `parameters`. The run's row counts it and says it runs, and Full has a
+    /// line for it under the run.
+    fn nested_started(
+        &self,
+        state: &mut State,
+        outer: &Uuid,
+        id: &Uuid,
+        tool: &str,
+        parameters: &HashMap<String, serde_json::Value>,
+    ) {
+        let Some(call) = state.calls.get_mut(outer) else {
+            return;
+        };
+        let (line, act) = render::nested_call(tool, parameters);
+        let doing = act.as_ref().map(super::quiet::doing).unwrap_or_default();
+        let (item, agent) = (call.item, call.agent.clone());
+        let run = call.run.get_or_insert_with(Box::default);
+        run.started += 1;
+        let started = run.started;
+        let mut at = None;
+        let (lane, _) = state.lane(&agent);
+        let changed = lane.change(item, |item| {
+            let Some(act) = item.act.as_mut() else {
+                return;
+            };
+            let calls = act.calls.get_or_insert_with(Default::default);
+            calls.count = calls.count.saturating_add(1);
+            calls.running = doing;
+            if calls.lines.len() < RUN_LINES {
+                at = Some(calls.lines.len());
+                calls.lines.push(line.clone());
+            }
+        });
+        if let Some(run) = state.calls.get_mut(outer).and_then(|call| call.run.as_mut()) {
+            run.running.insert(
+                *id,
+                Nested {
+                    at,
+                    line,
+                    act,
+                    tool: tool.to_string(),
+                    parameters: parameters.clone(),
+                    started,
+                },
+            );
+        }
+        if let Some(item) = changed {
+            self.publish(state, Update::Change(item));
+        }
+    }
+
+    /// The call `id` of the code run `outer` ended, how `ended` says, with
+    /// `output` of its `whole` bytes. Its line says so, the run's open row
+    /// says what the calls that went well did, and one that failed has a
+    /// line of its own there.
+    fn nested_finished(
+        &self,
+        state: &mut State,
+        outer: &Uuid,
+        id: &Uuid,
+        ended: arko_agents::NestedCallOutcome,
+        output: &str,
+        whole: usize,
+    ) {
+        let Some(call) = state.calls.get_mut(outer) else {
+            return;
+        };
+        let item = call.item;
+        let agent = call.agent.clone();
+        let Some(run) = call.run.as_mut() else {
+            return;
+        };
+        let Some(mut nested) = run.running.remove(id) else {
+            return;
+        };
+        let went_well = render::nested_ended(
+            &mut nested.line,
+            &mut nested.act,
+            &nested.tool,
+            &nested.parameters,
+            ended,
+            output,
+            whole,
+        );
+        if went_well && let Some(act) = nested.act.take() {
+            run.done.push(act);
+        }
+        let summary = super::quiet::called(&run.done);
+        // The latest of those that still run, if any does.
+        let running = run
+            .running
+            .values()
+            .max_by_key(|other| other.started)
+            .and_then(|other| other.act.as_ref())
+            .map(super::quiet::doing)
+            .unwrap_or_default();
+        let (lane, _) = state.lane(&agent);
+        let changed = lane.change(item, |item| {
+            let Some(calls) = item.act.as_mut().and_then(|act| act.calls.as_mut()) else {
+                return;
+            };
+            if let Some(line) = nested.at.and_then(|at| calls.lines.get_mut(at)) {
+                *line = nested.line;
+            }
+            calls.summary = summary;
+            calls.running = running;
+        });
+        if let Some(item) = changed {
+            self.publish(state, Update::Change(item));
+        }
+    }
+
     /// What `agent`'s failed response streamed since `streamed` goes, meaning the
     /// items it started, and what it added to the one before (the retry
     /// streams it again).
@@ -2257,8 +2422,14 @@ impl Feed {
                             message: render::message(tool_name, parameters),
                             parameters: parameters.clone(),
                             job: None,
+                            run: None,
                         },
                     );
+                    // A code run opens to its code while it runs.
+                    if let Some(mut block) = render::code_block(tool_name, parameters) {
+                        block.call = Some(id);
+                        self.push(&mut state, block.agent(agent.clone()));
+                    }
                 }
                 if !main && let Some(worker) = state.worker(&agent) {
                     worker.summary.tool_calls += 1;
@@ -2303,6 +2474,34 @@ impl Feed {
                     self.push(&mut state, item);
                 }
             }
+            AgentEvent::NestedToolCallStarted {
+                outer_tool_call_id,
+                tool_call_id,
+                tool_name,
+                parameters,
+                ..
+            } => self.nested_started(
+                &mut state,
+                outer_tool_call_id,
+                tool_call_id,
+                tool_name,
+                parameters,
+            ),
+            AgentEvent::NestedToolCallFinished {
+                outer_tool_call_id,
+                tool_call_id,
+                outcome,
+                output,
+                output_bytes,
+                ..
+            } => self.nested_finished(
+                &mut state,
+                outer_tool_call_id,
+                tool_call_id,
+                *outcome,
+                output,
+                *output_bytes,
+            ),
             AgentEvent::ToolRejected {
                 tool_call_id,
                 reason,

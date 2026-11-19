@@ -105,7 +105,15 @@ fn items_from(
                                 continue;
                             }
                             let outcome = if result.is_error {
-                                render::Outcome::error(&tool, &result.output)
+                                // A stop's result says so, as the feed does
+                                // when a stop cancels a call.
+                                let stopped = result
+                                    .output
+                                    .starts_with("The task was cancelled while this call was running");
+                                match stopped {
+                                    true => render::Outcome::failed(super::quiet::STOPPED),
+                                    false => render::Outcome::error(&tool, &result.output),
+                                }
                             } else {
                                 let seen = render::job_seen(&tool, &parameters, items.iter());
                                 render::outcome_after(
@@ -229,6 +237,13 @@ fn items_from(
                         item.outcome = Some(super::quiet::INTERRUPTED.into());
                     }
                     let index = push(&mut items, item);
+                    // A code run opens to its code, as it did live.
+                    if call_item
+                        && let Some(mut block) = render::code_block(&call.name, &parameters)
+                    {
+                        block.call = Some(items[index].id);
+                        push(&mut items, block);
+                    }
                     if (call_item || call.name == ASK_USER_TOOL_NAME)
                         && let Some(id) = &call.id
                     {
