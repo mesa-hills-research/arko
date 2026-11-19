@@ -180,9 +180,9 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
                 ..on(ActKind::Command, words.words)
             }
         }
+        // Its row names the indexes, and opening it shows the query once.
         "index_search" => Act {
-            query: cut(&text("query"), ROW_QUERY_CHARS),
-            detail: long(&raw("query"), ROW_QUERY_CHARS),
+            detail: raw("query"),
             ..on(ActKind::Search, index_name(&text("index")))
         },
         "Grep" | "Glob" => Act {
@@ -1414,9 +1414,11 @@ fn content(
             )
         }
         LIST_FILES_TOOL_NAME | "Grep" | "Glob" | "Bash" => result(ContentKind::Plain),
+        // (Not its first line, how many it found and where, which the
+        // call's line says.)
         "index_search" => {
             let hits = crate::index::read_search_hits(output)?;
-            Content::new(ContentKind::Plain, hits.join("\n"), None)
+            Content::new(ContentKind::Plain, hits[1..].join("\n"), None)
         }
         LOAD_SKILL_TOOL_NAME => match skill_text(output) {
             Some(skill) => Content::new(ContentKind::Plain, skill, None),
@@ -2684,6 +2686,36 @@ mod tests {
                 assert_eq!(number(blocks.outcome.as_deref().unwrap()), Some(2));
                 assert_eq!(number(&said(&[&replaced, &blocks])), Some(7), "{tool}");
             }
+        }
+    }
+
+    /// An index search's query shows once. Its act names the index and
+    /// keeps the whole query as its detail, which opening its Quiet row
+    /// shows, and no query for the row's words. Its results leave out how
+    /// many there were and where, which the Full line's outcome says.
+    #[test]
+    fn a_searchs_query_and_count_show_once() {
+        let output = "2 results from arko (code, hybrid):\n\nsrc/a.rs:1-9 · fn a\n1 | fn a() {\nsrc/b.rs:3-4 · fn b\n3 | fn b() {";
+        for query in [
+            "branched message index",
+            "terminal Full command detail duplicate whole command running call detail shown once",
+        ] {
+            let parameters = params(&[("index", "arko".into()), ("query", query.into())]);
+            let mut item = call("index_search", &parameters).unwrap();
+            let outcome = outcome_after("index_search", &parameters, output, None);
+            item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
+            let act = item.act.as_ref().unwrap();
+            assert_eq!(
+                (act.target.as_str(), act.query.as_str(), act.detail.as_str()),
+                ("arko", "", query)
+            );
+            let content = outcome.block.unwrap().text;
+            assert!(!content.contains(query), "{content}");
+            let said = outcome.text.unwrap();
+            assert!(!content.contains(&said), "{content}");
+            assert!(content.contains("src/a.rs:1-9") && content.contains("src/b.rs:3-4"));
+            // Full's line holds the query, so its detail doesn't.
+            assert!(item.text.contains(query) && item.detail.is_none());
         }
     }
 

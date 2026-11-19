@@ -1061,19 +1061,26 @@ fn phrases(member: &Member) -> Phrases {
             format!("Ran {name}"),
             format!("run {name}"),
         ),
+        // An index search names its indexes, and its query shows once,
+        // when it opens. A search of files (Claude Code's) names its
+        // pattern.
         ActKind::Search => {
-            let query = format!("“{}”", act.query);
             let indexes: Vec<String> = indexes(name);
             let which = match indexes.as_slice() {
+                [] if act.query.is_empty() => " the indexes".to_string(),
                 [] => String::new(),
                 [one] => format!(" the {one} index"),
                 [a, b] => format!(" the {a} and {b} indexes"),
                 many => format!(" {} indexes", many.len()),
             };
+            let what = match act.query.as_str() {
+                "" => which,
+                query => format!("{which} for “{query}”"),
+            };
             three(
-                format!("Searching{which} for {query}"),
-                format!("Searched{which} for {query}"),
-                format!("search{which} for {query}"),
+                format!("Searching{what}"),
+                format!("Searched{what}"),
+                format!("search{what}"),
             )
         }
         ActKind::Skill => three(
@@ -1549,7 +1556,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             outcome: "2 results from arko (code, hybrid)",
             content: Some((
                 Plain,
-                "2 results from arko (code, hybrid)\nsrc/engine.rs:96-105 · fn branched\nsrc/sessions.rs:412-440 · fn restore_branch",
+                "src/engine.rs:96-105 · fn branched\nsrc/sessions.rs:412-440 · fn restore_branch",
             )),
             ..fixture(
                 "a search",
@@ -1557,11 +1564,11 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 r#"{"index": "arko", "query": "branched message index"}"#,
                 "2 results from arko (code, hybrid):\n\nsrc/engine.rs:96-105 · fn branched\n96 | fn branched() {\n97 | }\nsrc/sessions.rs:412-440 · fn restore_branch (part of a 200-line definition at lines 400-600: read_file shows the rest)\n412 | fn restore_branch() {",
                 Act {
-                    query: "branched message index".into(),
+                    detail: "branched message index".into(),
                     ..act(ActKind::Search, "arko")
                 },
                 "index search “branched message index”",
-                "Searched the arko index for “branched message index”",
+                "Searched the arko index",
             )
         },
         Fixture {
@@ -1569,7 +1576,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             full_detail: None,
             content: Some((
                 Plain,
-                "1 result from arko (code, hybrid)\nsrc/remote/quiet.rs:138-155 · fn rows",
+                "src/remote/quiet.rs:138-155 · fn rows",
             )),
             ..fixture(
                 "a search past the row's length",
@@ -1577,12 +1584,11 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 r#"{"index": "arko", "query": "how does the feed decide where a long call goes when its row is the last one"}"#,
                 "1 result from arko (code, hybrid):\nsrc/remote/quiet.rs:138-155 · fn rows\n    pub fn rows(steps: &[Step]) -> Vec<Piece> {",
                 Act {
-                    query: "how does the feed decide where a long call goes when its row…".into(),
                     detail: "how does the feed decide where a long call goes when its row is the last one".into(),
                     ..act(ActKind::Search, "arko")
                 },
                 "index search “how does the feed decide where a long call goes when its row is the last one”",
-                "Searched the arko index for “how does the feed decide where a long call goes when its row…”",
+                "Searched the arko index",
             )
         },
         Fixture {

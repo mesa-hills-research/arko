@@ -405,16 +405,17 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         })
     };
     // Where its line cut its words, a row of one call opens to the call as
-    // written, unless its detail is the whole command.
+    // written, unless its detail is the whole command or query.
     let whole = move || {
         (cut.get() && !data.with(|row| row.merged))
             .then(|| members().first().copied().and_then(cell))
             .flatten()
             .filter(|cell| {
                 !cell.data.with(|item| {
-                    item.act
-                        .as_ref()
-                        .is_some_and(|act| act.kind == ActKind::Command && !act.detail.is_empty())
+                    item.act.as_ref().is_some_and(|act| {
+                        matches!(act.kind, ActKind::Command | ActKind::Search)
+                            && !act.detail.is_empty()
+                    })
                 })
             })
             .map(|cell| {
