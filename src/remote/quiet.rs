@@ -242,7 +242,7 @@ pub fn mark(status: Option<CallStatus>, act: Option<&Act>) -> Option<CallStatus>
 /// The words a call's line says after its mark once it ended, from how it
 /// went (`status`) and its outcome's words ("41.0 s", "failed (exit 1)").
 /// A call that failed says so, whatever else it has to say.
-pub fn ended<'a>(status: Option<CallStatus>, outcome: Option<&'a str>) -> Option<&'a str> {
+pub fn ended(status: Option<CallStatus>, outcome: Option<&str>) -> Option<&str> {
     match status {
         Some(CallStatus::Failed) => Some(outcome.unwrap_or(FAILED)),
         Some(CallStatus::Ok) => outcome,
