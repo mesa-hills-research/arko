@@ -205,6 +205,28 @@ const INSTRUMENT = `(() => {
     }
     return known;
   };
+  // A word's font, and how far below its box's top its baseline is in it.
+  // A word stands on its baseline, so a word drawn in another font on the
+  // same baseline, such as a code span's as its closing mark comes, stays
+  // where it is.
+  const ascents = new Map();
+  const canvas = document.createElement('canvas').getContext('2d');
+  // (A face that loads draws the same font with other metrics.)
+  document.fonts.addEventListener('loadingdone', () => ascents.clear());
+  const ascent = (element) => {
+    // (From the longhands, as the shorthand is empty where a font's other
+    // properties, such as its numerals, have no place in it.)
+    const style = getComputedStyle(element);
+    const font = \`\${style.fontStyle} \${style.fontWeight} \${style.fontSize} \${style.fontFamily}\`;
+    let known = ascents.get(font);
+    if (known === undefined) {
+      canvas.font = font;
+      known = canvas.measureText('x').fontBoundingBoxAscent;
+      if (!Number.isFinite(known)) throw new Error(\`no baseline for the font \${font}\`);
+      ascents.set(font, known);
+    }
+    return [font, known];
+  };
   meter.measure = () => {
     const log = document.getElementById('log');
     const rows = document.getElementById('rows');
@@ -238,6 +260,7 @@ const INSTRUMENT = `(() => {
         if (!text || !text.trim()) continue;
         const parent = node.parentElement;
         if (!parent || !shows(parent)) continue;
+        const [font, lift] = ascent(parent);
         const range = document.createRange();
         const pattern = /\\S+/g;
         let match;
@@ -254,7 +277,7 @@ const INSTRUMENT = `(() => {
             line = { top: word.top, bottom: word.bottom, y: Math.round(word.top * dpr), x: Math.round(word.left * dpr), key, words: [] };
             mine.push(line);
           }
-          line.words.push([match[0], Math.round(word.top * dpr), Math.round(word.left * dpr), word.top * dpr]);
+          line.words.push([match[0], Math.round(word.top * dpr), Math.round(word.left * dpr), word.top * dpr, (word.top + lift) * dpr, font]);
         }
       }
       lines.push(...mine);
@@ -311,15 +334,20 @@ function lineIds(shot) {
   const out = new Map();
   for (const { y, x, key, words, text } of all) {
     const own = words.find(([word]) => sessionWord(clean(word)) && seen.get(`${key}|${clean(word)}`) === 1);
-    if (own) out.set(`${key}|w:${clean(own[0])}`, { y: own[1], x: own[2], raw: own[3], text });
+    if (own) out.set(`${key}|w:${clean(own[0])}`, { y: own[1], x: own[2], raw: own[3], base: own[4], font: own[5], text });
     else if (texts.get(`${key}|${text}`) === 1) {
       // (Where its first word, a marker, is drawn in another glyph.)
       const word = words.find(([word]) => /[A-Za-z0-9]/.test(word)) ?? words[0];
-      out.set(`${key}|t:${text}`, { y: word ? word[1] : y, x: word ? word[2] : x, raw: word ? word[3] : y, text });
+      out.set(`${key}|t:${text}`, { y: word ? word[1] : y, x: word ? word[2] : x, raw: word ? word[3] : y, base: word ? word[4] : y, font: word?.[5], text });
     }
   }
   return out;
 }
+
+/// How far a line moved from `was` to `now`, in device pixels (down is
+/// more). By its box, unless its word is drawn in another font, when it's by
+/// its baseline, as a word restyled in place stands on the same one.
+const shift = (was, now) => Math.round(was.font === now.font ? now.raw - was.raw : now.base - was.base);
 
 // ----- the tallies -----
 
@@ -763,12 +791,13 @@ class Run {
     let up = 0;
     let sideways = 0;
     let sidewaysLine = null;
-    for (const [id, { y: from, x, raw, text }] of before.ids) {
+    for (const [id, was] of before.ids) {
+      const { y: from, x, text } = was;
       const now = after.ids.get(id);
       if (!now) continue;
-      // (By how far its rectangle moved, as a line on a half device pixel
-      // rounds either way with float noise that moves nothing drawn.)
-      const to = from + Math.round(now.raw - raw);
+      // (By how far it moved, as a line on a half device pixel rounds
+      // either way with float noise that moves nothing drawn.)
+      const to = from + shift(was, now);
       if (below !== null && from > below) continue;
       if (to < from) up = Math.max(up, from - to);
       // (A line that keeps its text and its row keeps its column too.)
@@ -874,10 +903,11 @@ class Run {
     trip.trips++;
     let worst = 0;
     let worstLine = null;
-    for (const [id, { y, raw, text }] of before.ids) {
+    for (const [id, line] of before.ids) {
+      const { y, text } = line;
       const now = after.ids.get(id);
       if (!now) continue;
-      const moved = Math.abs(Math.round(now.raw - raw));
+      const moved = Math.abs(shift(line, now));
       if (moved > worst) { worst = moved; worstLine = { id, from: y, to: now.y, text }; }
     }
     if (worst > 0 && (any || wasFollowing === after.following)) {
@@ -2257,6 +2287,66 @@ async function pixelCases(cdp, agent) {
       return (await run.evaluate(`document.getElementById('log').dataset.held`)) === 'false' ? null : 'a lost release holds';
     });
   }
+  // A code span that closes while a reply streams draws its words in the
+  // code font, on the baselines they stood on. On a phone, following, with
+  // the span's first line full, its last words keep a line of their own,
+  // which doesn't move.
+  await play(3, 'a code span that closes on a wrapped line moves none of its words', async (run) => {
+    await run.metrics(390, 844);
+    await run.fill();
+    await run.feed({ do: 'user', text: `Then ${run.words(4)}` });
+    await run.feed({ do: 'text', text: 'w901 w902 w903 w904 w905 w906 `w907 w908 w909' });
+    await run.settle(null);
+    const open = await run.look();
+    if (!follows(open)) return `not following (${open.choice})`;
+    await run.feed({ do: 'text', text: '`' });
+    await run.settle('reply streams');
+    const closed = await run.look();
+    const id = [...open.ids.keys()].find((key) => key.endsWith('|w:w908'));
+    const was = open.ids.get(id);
+    const now = closed.ids.get(id);
+    if (!was || !now || was.text !== now.text) return `the span's last words didn't keep a line of their own ("${was?.text}" → "${now?.text}")`;
+    if (!(await run.evaluate(`[...document.querySelectorAll('#rows code')].some((code) => code.textContent.includes('w908'))`))) return 'the span didn\'t close';
+    const moved = shift(was, now);
+    if (moved !== 0) return `"${now.text}" moved ${moved}`;
+    if (run.meter.shifted() !== 0) return `${run.meter.shifted()} frames moved a line`;
+    // A device pixel's move of the span or of plain text above it counts,
+    // in the case's own tallies.
+    for (const [what, words, select] of [['code', 'w908', '#rows code'], ['plain text', 'w901', '#rows p']]) {
+      const before = await run.look();
+      const shifted = run.meter.shifted();
+      await run.evaluate(`(() => {
+        const element = [...document.querySelectorAll('${select}')].find((each) => each.textContent.includes('${words}'));
+        element.style.position = 'relative';
+        element.style.top = \`\${1 / devicePixelRatio}px\`;
+      })()`);
+      await run.settle('a line moves a device pixel');
+      const after = await run.look();
+      const key = [...before.ids.keys()].find((key) => key.endsWith(`|w:${words}`));
+      const by = key && after.ids.get(key) ? shift(before.ids.get(key), after.ids.get(key)) : null;
+      if (by !== 1 || run.meter.shifted() !== shifted + 1) return `the ${what} moved a device pixel and the meter measured ${by} in ${run.meter.shifted() - shifted} frames`;
+    }
+    // So does a span that closes in the frame its row moves a device pixel.
+    await run.feed({ do: 'text', text: '\n\nw911 w912 w913 w914 w915 w916 `w917 w918 w919' });
+    await run.settle(null);
+    const unclosed = await run.look();
+    const shifted = run.meter.shifted();
+    const events = await run.events();
+    await run.agent.ask({ do: 'text', text: '`' });
+    await run.delivered(events);
+    await run.evaluate(`(() => {
+      const row = [...document.querySelectorAll('#rows > *')].find((row) => row.textContent.includes('w918'));
+      row.style.position = 'relative';
+      row.style.top = \`\${1 / devicePixelRatio}px\`;
+    })()`);
+    await run.settle('a line moves a device pixel');
+    const both = await run.look();
+    const key = [...unclosed.ids.keys()].find((key) => key.endsWith('|w:w918'));
+    const [from, to] = [unclosed.ids.get(key), both.ids.get(key)];
+    if (!from || !to || from.font === to.font) return `the second span's last words didn't keep a line of their own in another font ("${from?.text}" → "${to?.text}")`;
+    const by = shift(from, to);
+    return by === 1 && run.meter.shifted() === shifted + 1 ? null : `a span closed as its row moved a device pixel, and the meter measured ${by} in ${run.meter.shifted() - shifted} frames`;
+  });
   return { failures, count, skipped };
 }
 
