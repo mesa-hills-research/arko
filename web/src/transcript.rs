@@ -298,15 +298,13 @@ fn cut_words(
     Effect::new(move |_| {
         words();
         width.track();
-        let measure = move || {
+        // (Once the browser has laid the line out. The row may go first,
+        // and its frame goes with it.)
+        crate::frame::next_frame(move || {
             if let Some(summary) = summary.get_untracked() {
-                cut.try_set(overflows(&summary, ".what"));
+                cut.set(overflows(&summary, ".what"));
             }
-        };
-        // (Once the browser has laid the line out.)
-        let frame = wasm_bindgen::closure::Closure::once_into_js(measure);
-        use wasm_bindgen::JsCast;
-        let _ = window().request_animation_frame(frame.unchecked_ref());
+        });
     });
     cut
 }
@@ -1693,6 +1691,37 @@ mod tests {
             let gone = RwSignal::new(true);
             gone.dispose();
             answered(gone, false);
+        });
+    }
+
+    /// A row that goes before the frame it measures its line at (the reader
+    /// left its view) measures nothing, as what it would read went with it.
+    /// One that stays measures once at the frame after its words change.
+    #[test]
+    fn a_row_that_goes_before_its_frame_measures_nothing() {
+        let owner = Owner::new();
+        owner.with(|| {
+            crate::testing::page();
+            let words = RwSignal::new("Ran 3 commands".to_string());
+            let row = |owner: &Owner| {
+                owner.with(|| {
+                    cut_words(NodeRef::new(), move || words.get());
+                });
+                crate::testing::run_effects();
+            };
+            let goes = Owner::new();
+            row(&goes);
+            drop(goes);
+            crate::frame::run();
+
+            let stays = Owner::new();
+            row(&stays);
+            assert_eq!(crate::frame::waiting(), 1);
+            words.set("Ran 4 commands".into());
+            crate::testing::run_effects();
+            assert_eq!(crate::frame::waiting(), 1);
+            crate::frame::run();
+            assert_eq!(crate::frame::waiting(), 0);
         });
     }
 }

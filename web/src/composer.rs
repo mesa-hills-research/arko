@@ -346,12 +346,8 @@ pub fn Composer() -> impl IntoView {
         expanded.track();
         resize();
     });
-    input.on_load(move |_| {
-        // Fits the box again once laid out.
-        let frame = wasm_bindgen::closure::Closure::once_into_js(resize);
-        use wasm_bindgen::JsCast;
-        let _ = window().request_animation_frame(frame.unchecked_ref());
-    });
+    // Fits the box again once laid out.
+    input.on_load(move |_| crate::frame::next_frame(resize));
     // Send keeps its place a moment, so a second tap can't land on Stop.
     let hold_send = move || {
         recent_sends.update(|count| *count += 1);

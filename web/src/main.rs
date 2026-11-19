@@ -12,6 +12,7 @@ mod composer;
 mod contents;
 mod copy;
 mod files;
+mod frame;
 mod images;
 mod layout;
 mod markdown;

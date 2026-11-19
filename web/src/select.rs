@@ -121,7 +121,7 @@ pub fn Select(
             open.set(true);
             // Once drawn, the list takes its place and the keys go to the
             // filter, or to the list.
-            let frame = wasm_bindgen::closure::Closure::once_into_js(move || {
+            crate::frame::next_frame(move || {
                 if let (Some(button), Some(pop)) = (button.get_untracked(), pop.get_untracked()) {
                     place(&button, &pop);
                 }
@@ -131,8 +131,6 @@ pub fn Select(
                     let _ = list.focus();
                 }
             });
-            use wasm_bindgen::JsCast;
-            let _ = window().request_animation_frame(frame.unchecked_ref());
         };
     let hide = move |refocus: bool| {
         open.set(false);

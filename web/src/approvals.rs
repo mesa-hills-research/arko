@@ -406,12 +406,11 @@ pub fn Tray(draft: RwSignal<String>, switch: RwSignal<MessageSwitch>) -> impl In
 fn Row(request: ApprovalRequest, rows: Rows, several: Signal<bool>) -> impl IntoView {
     let row: NodeRef<leptos::html::Li> = NodeRef::new();
     row.on_load(move |row| {
-        let drawn = wasm_bindgen::closure::Closure::once_into_js(move || {
+        crate::frame::next_frame(move || {
             if let Some(list) = row.parent_element() {
                 rendered_rows(&list, rows);
             }
-        });
-        let _ = window().request_animation_frame(drawn.unchecked_ref());
+        })
     });
     let id = request.id.clone();
     let approval = request.approval.clone();
