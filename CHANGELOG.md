@@ -34,10 +34,10 @@
 
 ### The transcript
 
-- A message sent while the agent works keeps its row until the agent reads it and after. It waits
-  under the agent's output and "Working…" stands below it, in the terminal and on the web page.
-  The message used to wait below "Working…", so it moved down and up as "Working…" came and went,
-  and swapped rows with it when the agent read it.
+- A message sent while the agent works no longer jumps as "Working…" comes and goes, or when the
+  agent reads it. It waits under the agent's output with "Working…" below it, in the terminal and
+  on the web page, and only output coming above it moves it. It used to wait below "Working…", so
+  it moved down and up with it and swapped rows with it when the agent read it.
 
 ## 0.23.1 (2026-11-18)
 
