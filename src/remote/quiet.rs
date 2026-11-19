@@ -46,6 +46,9 @@ pub const STOPPED: &str = "stopped";
 pub const HELD: &str = "held for the compaction";
 /// A call's outcome when the session stopped before its result came.
 pub const INTERRUPTED: &str = "interrupted";
+/// A call's outcome when its tool failed and its error is more than its
+/// line holds (an edit's), which opening the call shows.
+pub const FAILED: &str = "Failed";
 
 /// An item of a transcript, as the Quiet view reads it, in the order shown.
 #[derive(Debug, Clone, Copy)]

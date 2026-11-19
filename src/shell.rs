@@ -786,12 +786,12 @@ mod tests {
         let error = run(&tool, temp.path(), serde_json::json!({"command": command}))
             .await
             .unwrap_err();
-        // A refusal, which reads as a failure does.
-        assert!(matches!(error, ToolError::Refused(_)), "{error:?}");
-        assert!(
-            error.to_string().starts_with("Execution failed: Refused: "),
-            "{error}"
-        );
+        // A refusal, which reads as a failure does, and says why.
+        let ToolError::Refused(why) = &error else {
+            panic!("{error:?}");
+        };
+        assert!(why.starts_with("Refused: "), "{why}");
+        assert!(error.to_string().ends_with(why.as_str()), "{error}");
     }
 
     #[cfg(unix)]

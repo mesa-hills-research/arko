@@ -105,7 +105,7 @@ fn items_from(
                                 continue;
                             }
                             let outcome = if result.is_error {
-                                render::Outcome::failed(&result.output)
+                                render::Outcome::error(&tool, &result.output)
                             } else {
                                 render::outcome(&tool, &parameters, &result.output)
                             };

@@ -179,7 +179,7 @@ impl Gate for FakeGate {
             // An edit that may have changed its file, then failed.
             "apply_diff" => {
                 start(NestedState::Ran { failed: true });
-                NestedOutcome::Failed("Execution failed: no space left on device".into())
+                NestedOutcome::Failed("no space left on device".into())
             }
             "block" | "shell" => {
                 start(NestedState::Running);

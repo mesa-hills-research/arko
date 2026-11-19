@@ -112,6 +112,11 @@ fn value_text(value: &Value) -> String {
 /// The longest search query a Quiet row names, in characters.
 const ROW_QUERY_CHARS: usize = 60;
 
+/// Whether calls of `tool` edit a file in place, as their act says.
+fn edits_in_place(tool: &str) -> bool {
+    act(tool, &Parameters::new(), super::feed::MAIN_AGENT).kind == ActKind::Edit
+}
+
 /// What a call of `tool` does, for the Quiet view's row ([`quiet`]), with
 /// what its words cut whole ([`Act::detail`]).
 fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
@@ -933,15 +938,31 @@ impl Outcome {
     /// whole message as its content, muted. A stop's and a compaction's
     /// words are all there is to say.
     pub fn failed(message: &str) -> Self {
+        Self::failed_call(None, message)
+    }
+
+    /// [`Outcome::failed`] for a call of `tool` whose tool failed. A failed
+    /// edit's line says only [`quiet::FAILED`], since its error names the
+    /// file and why each block didn't apply, which the line can't hold. Its
+    /// content is the whole error.
+    pub fn error(tool: &str, message: &str) -> Self {
+        Self::failed_call(Some(tool), message)
+    }
+
+    fn failed_call(tool: Option<&str>, message: &str) -> Self {
         // arko's "Tool 'read_file' execution failed: I/O error during tool
         // execution for tool 'read_file': ..." names what the line already
-        // shows.
+        // shows. (Older arko_agents said "Execution failed: " again after
+        // it, and sessions saved then keep that.)
         let mut message = message.trim();
         if let Some((_, why)) = message
             .strip_prefix("Tool '")
             .and_then(|rest| rest.split_once("' execution failed: "))
         {
             message = why.trim();
+            message = message
+                .strip_prefix("Execution failed: ")
+                .unwrap_or(message);
         }
         if let Some((_, why)) = message
             .split_once(" for tool '")
@@ -954,21 +975,25 @@ impl Outcome {
         let why = message
             .strip_prefix("refused (")
             .and_then(|rest| rest.strip_suffix(')'));
+        let said_all =
+            [quiet::STOPPED, quiet::HELD, quiet::INTERRUPTED, "refused"].contains(&message);
         let (text, said) = match why {
             Some(why) => (
                 "refused".to_string(),
                 format!("Refused. {}", upper_first(why)),
             ),
+            None if !said_all && tool.is_some_and(edits_in_place) => {
+                (quiet::FAILED.to_string(), message.to_string())
+            }
             None => (
                 cut(message.lines().next().unwrap_or_default(), OUTCOME_CHARS),
                 message.to_string(),
             ),
         };
-        let block = (![quiet::STOPPED, quiet::HELD, quiet::INTERRUPTED, "refused"]
-            .contains(&message))
-        .then(|| Content::new(ContentKind::Muted, said, None))
-        .flatten()
-        .map(Content::block);
+        let block = (!said_all)
+            .then(|| Content::new(ContentKind::Muted, said, None))
+            .flatten()
+            .map(Content::block);
         Self {
             status: CallStatus::Failed,
             text: (!text.is_empty()).then_some(text),
@@ -1891,10 +1916,10 @@ mod tests {
             let mut item = super::call(fixture.tool, &parameters, "main").unwrap();
             assert_eq!(item.text, fixture.full, "{name}");
             assert_eq!(item.detail.as_deref(), fixture.full_detail, "{name}");
-            let outcome = if fixture.status == CallStatus::Failed && fixture.tool != SHELL_TOOL_NAME
-                || fixture.output.starts_with("refused")
-            {
+            let outcome = if fixture.output.starts_with("refused") {
                 Outcome::failed(fixture.output)
+            } else if fixture.status == CallStatus::Failed && fixture.tool != SHELL_TOOL_NAME {
+                Outcome::error(fixture.tool, fixture.output)
             } else {
                 let receipt = fixture.before.map(|before| {
                     let given = |name: &str| text(&parameters, name);
@@ -2522,6 +2547,60 @@ mod tests {
             Some(Some(ContentKind::Muted))
         );
         assert!(Outcome::failed(quiet::STOPPED).block.is_none());
+    }
+
+    /// A tool's error reads as the tool said it, once, whether it came with
+    /// "Execution failed: " doubled after the call's own words (as sessions
+    /// saved with older arko_agents keep it) or not. A failed edit's line
+    /// says one word, the same for every edit's error, which names no file,
+    /// and its content is the whole error. Other tools' lines say the
+    /// error's first line, and a refusal or a stop stays as it is.
+    #[test]
+    fn a_tools_error_reads_once_and_a_failed_edit_says_it_failed() {
+        let why = "None of the 2 blocks applied, so src/app.rs is unchanged.\nBlock 1: not found.";
+        let mut lines = Vec::new();
+        for tool in [APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME, "read_file"] {
+            for said in [
+                format!("Tool '{tool}' execution failed: Execution failed: {why}"),
+                format!("Tool '{tool}' execution failed: {why}"),
+            ] {
+                let failed = Outcome::error(tool, &said);
+                assert_eq!(failed.status, CallStatus::Failed);
+                let block = failed.block.expect("its content");
+                assert_eq!(block.text, why, "{tool}: {said}");
+                assert_eq!(failed.output.as_deref(), Some(why));
+                let line = failed.text.unwrap();
+                assert!(!line.contains("Execution failed"), "{line}");
+                lines.push((tool, line));
+            }
+        }
+        let edits: Vec<&String> = lines
+            .iter()
+            .filter(|(tool, _)| *tool != "read_file")
+            .map(|(_, line)| line)
+            .collect();
+        assert!(edits.iter().all(|line| *line == edits[0]), "{edits:?}");
+        assert!(!edits[0].contains("app.rs") && !edits[0].contains("blocks"));
+        let other = Outcome::error(
+            EDIT_FILE_TOOL_NAME,
+            "Tool 'edit_file' execution failed: boom",
+        );
+        assert_eq!(other.text.as_ref(), Some(edits[0]), "every edit's error");
+        let read = Outcome::error(
+            "read_file",
+            "Tool 'read_file' execution failed: No such file",
+        );
+        assert_eq!(read.text.as_deref(), Some("No such file"));
+        // A refusal and a stop of an edit say so, as any call's do.
+        for (said, line) in [
+            ("refused (outside access is off)", "refused"),
+            (quiet::STOPPED, quiet::STOPPED),
+        ] {
+            assert_eq!(
+                Outcome::error(APPLY_DIFF_TOOL_NAME, said).text.as_deref(),
+                Some(line)
+            );
+        }
     }
 
     /// Each call says what it does for the Quiet view, and its result

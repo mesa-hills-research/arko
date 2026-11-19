@@ -1371,6 +1371,8 @@ impl Lane {
 struct Call {
     item: u64,
     agent: String,
+    /// Its tool's name, which an error's words depend on.
+    tool: String,
     /// A `message_agent` call's message, for the worker that gets it.
     message: Option<String>,
     /// Its parameters, which its content is made from with its result.
@@ -2237,6 +2239,7 @@ impl Feed {
                         Call {
                             item: id,
                             agent: agent.clone(),
+                            tool: tool_name.clone(),
                             message: render::message(tool_name, parameters),
                             parameters: parameters.clone(),
                             job: None,
@@ -2300,7 +2303,8 @@ impl Feed {
                 ..
             } => match tool_call_id {
                 Some(id) if state.calls.contains_key(id) => {
-                    self.settle(&mut state, id, Outcome::failed(error_message));
+                    let outcome = Outcome::error(&state.calls[id].tool, error_message);
+                    self.settle(&mut state, id, outcome);
                 }
                 _ => {
                     let message = crate::providers::explain_error(error_message);
