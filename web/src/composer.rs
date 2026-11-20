@@ -667,6 +667,7 @@ pub fn Composer() -> impl IntoView {
                             rows="1"
                             aria-label=placeholder
                             placeholder=placeholder
+                            autocomplete="off"
                             role="combobox"
                             aria-autocomplete="list"
                             aria-expanded=move || menu.with(|open| open.as_ref().is_some_and(|open| !open.entries.is_empty())).to_string()

@@ -28,6 +28,10 @@
   /* A pill or circle, square in a theme with radius 0. */
   --r-full: calc(var(--radius) * 999);
   --shadow: 0 8px 28px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.08);
+  /* The page's height, what shows above a phone's keyboard while one is up
+     (viewport.rs). The heights that follow the screen's take it, since
+     100dvh stays the whole screen's behind an iPhone's keyboard. */
+  --page-height: var(--app-height, 100dvh);
 }
 
 /* A shape near the corner of a rounded parent stays concentric with it when
@@ -58,7 +62,7 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   display: flex;
   flex-direction: column;
-  height: var(--app-height, 100dvh);
+  height: var(--page-height);
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -936,6 +940,14 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
    place (viewport.rs), and the keyboard covers the home indicator. */
 html.keyboard body { position: fixed; top: var(--app-top, 0px); left: 0; right: 0; }
 html.keyboard .bottom { padding-bottom: 10px; }
+/* The box and what stands over it keep within the page then. The answer
+   panel and the approval tray give way first, their lists scrolling,
+   unless the field with the focus is the panel's. */
+html.keyboard .bottom { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; }
+html.keyboard .bottom > .column { display: flex; flex-direction: column; min-height: 0; }
+html.keyboard .bottom > .column > * { flex: none; }
+html.keyboard .bottom > .column > :is(.answers, .tray):not(:focus-within) { flex-shrink: 1; min-height: 0; }
+html.keyboard .replying { align-self: flex-start; }
 
 .error { margin: 0 0 6px; color: var(--error); font-size: 14px; }
 .note-line { margin: 0 0 6px; color: var(--muted); font-size: 14px; }
@@ -985,7 +997,7 @@ html.keyboard .bottom { padding-bottom: 10px; }
   .field textarea { field-sizing: content; overflow-y: auto; }
 }
 .field textarea::placeholder { color: var(--muted); }
-.compose.expanded textarea { min-height: 50dvh; max-height: 70dvh; }
+.compose.expanded textarea { min-height: calc(var(--page-height) * 0.5); max-height: calc(var(--page-height) * 0.7); }
 
 .expand { display: none; width: 30px; min-height: 30px; margin: 4px 5px 4px 0; border-radius: var(--r-full); color: var(--muted); }
 @media (hover: hover) and (pointer: fine) {
@@ -1085,7 +1097,7 @@ a.chip-link { cursor: pointer; }
   z-index: 6;
   display: flex;
   flex-direction: column;
-  max-height: min(50dvh, 340px);
+  max-height: min(calc(var(--page-height) * 0.5), 340px);
   padding: var(--pad);
   border: 1px solid var(--line);
   border-radius: var(--outer);
@@ -1133,12 +1145,15 @@ a.chip-link { cursor: pointer; }
 }
 
 /* The answer panel above the message box, with a popover's look, at most 60 %
-   of the screen's height, its questions scrolling inside. */
+   of the page's height, its questions scrolling inside. The room it holds
+   (`--room`, questions.rs) keeps under that too. */
 .answers {
+  --answers-max: calc(var(--page-height) * 0.6);
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 60dvh;
+  min-height: min(var(--room), var(--answers-max));
+  max-height: var(--answers-max);
   margin-bottom: 8px;
   padding: 12px;
   border: 1px solid var(--line);
@@ -1150,6 +1165,7 @@ a.chip-link { cursor: pointer; }
 .answers-head { display: flex; flex: none; align-items: center; gap: 8px; }
 .answers-title { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
 /* A word in the panel's place keeps its height (questions.rs). */
+.answers.ended { height: min(var(--room), var(--answers-max)); }
 .answers.ended .answers-title { color: var(--muted); font-weight: 400; }
 .answers-list { display: flex; flex: 1 1 auto; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .answers-question { display: flex; flex-direction: column; gap: 6px; }
@@ -1190,7 +1206,7 @@ a.chip-link { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 60dvh;
+  max-height: calc(var(--page-height) * 0.6);
   margin-bottom: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line);

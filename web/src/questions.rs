@@ -556,12 +556,15 @@ pub fn AnswerPanel() -> impl IntoView {
             }
         })
     });
+    // The room the panel holds, which app.css keeps it to. (Set as a
+    // property, since the page's policy blocks style attributes.)
+    let room = move || ask.room.get().map(|room| format!("{room}px"));
     // In the panel's place, the word on a question the reader was answering
     // that was settled elsewhere, as tall as the panel was.
     let note = move || {
         ask.note.get().map(|note| {
             view! {
-                <section class="answers ended" role="status" style:height=move || ask.room.get().map(|room| format!("min({room}px, 60dvh)"))>
+                <section class="answers ended" role="status" style=("--room", room)>
                     <div class="answers-head">
                         <p class="answers-title">{note}</p>
                         <button type="button" class="btn ghost icon small" aria-label="Close" title="Close" on:click=move |_| ask.release()>
@@ -574,7 +577,7 @@ pub fn AnswerPanel() -> impl IntoView {
     };
     view! {
         <Show when=move || ask.panel.get() && !open.with(Vec::is_empty) fallback=note>
-            <section node_ref=panel class="answers" style:min-height=move || ask.room.get().map(|room| format!("min({room}px, 60dvh)")) aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys
+            <section node_ref=panel class="answers" style=("--room", room) aria-label=move || open.with(|open| asks_text(open)) on:keydown=keys
                 on:focusin=move |event| ask.focused.set(question_of(event.target()))
                 on:focusout=move |event: web_sys::FocusEvent| {
                     if question_of(event.related_target()).is_none() {
@@ -718,12 +721,19 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                 </div>
             </div>
             <div class="answers-chips">{chips}{you_decide}</div>
+            // Safari offers a contact's details to a field it reads as a
+            // name or an address from the words near it, such as a question
+            // that asks for a name, and ignores autocomplete="off". The
+            // known way to keep them off is "search" in the field's name.
             <input
                 class="answers-other"
                 id=format!("answer-{id}")
+                name="answer-search"
                 placeholder=placeholder
                 aria-label=label
                 autocomplete="off"
+                autocapitalize="sentences"
+                enterkeyhint="send"
                 value=initial
                 on:input=move |event| {
                     let value = event_target_value(&event);

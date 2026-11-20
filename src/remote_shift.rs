@@ -294,12 +294,19 @@ fn act(session: &mut Session, request: &Value) -> Value {
             json!({})
         }
         // (With `also`, more questions of the same ask, each an `id` and a
-        // `text`.)
+        // `text`. Each may have `choices` and a `default`.)
         "ask" => {
             let asked = |request: &Value| crate::questions::AskedQuestion {
                 id: text(request, "id"),
                 question: arko_agents::questions::Question {
                     question: text(request, "text"),
+                    choices: request["choices"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|choice| choice.as_str().map(str::to_string))
+                        .collect(),
+                    default: request["default"].as_str().map(str::to_string),
                     ..Default::default()
                 },
             };

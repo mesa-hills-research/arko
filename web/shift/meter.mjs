@@ -3028,6 +3028,116 @@ async function pixelCases(cdp, agent) {
         return moved === 0 ? null : `the lines are ${moved} from their rows`;
       });
     }
+    // An iPhone's keyboard over the answer panel. Safari shrinks only the
+    // visual viewport for it, and the layout viewport and 100dvh stay, so
+    // the case does the same to the page. The answer field with the focus
+    // and Send stay above the keyboard, and in the field's list, as the
+    // keyboard comes, as the page pans and as the keyboard grows. The
+    // message box does once it has the focus. Once the keyboard goes, the
+    // panel, its list's scroll, the field and the transcript's lines are
+    // where they were. With two questions, the field is the first's, in the
+    // middle of the list.
+    for (const [width, height, visual] of [[390, 844, 409], [320, 568, 300]]) {
+      for (const questions of [1, 2]) {
+        await play(ratio, `touch: the keyboard over the answer panel leaves the field and Send in sight (${width} px, ${questions} questions)`, async (run) => {
+          await run.metrics(width, height);
+          await run.fill(8);
+          const choices = () => Array.from({ length: 5 }, () => run.words(1));
+          const also = questions === 2 ? [{ id: 'q2', text: `${run.words(8)}?`, choices: choices() }] : [];
+          await run.feed({ do: 'ask', id: 'q1', text: `${run.words(70)}?`, choices: choices(), default: run.words(1), also, waits: false });
+          await run.settle(null);
+          if (!(await run.evaluate(`!!document.querySelector('section.answers:not(.ended)')`))) return 'the answer panel didn\'t open';
+          await run.evaluate(`document.querySelector('section.answers .answers-other').focus()`);
+          await run.settle(null);
+          // The visual viewport's height and place as an iPhone's keyboard
+          // makes them, or the window's again with `null`.
+          await run.evaluate(`(() => {
+            const viewport = window.visualViewport;
+            window.__keyboard = (height, top) => {
+              delete viewport.height;
+              delete viewport.offsetTop;
+              if (height !== null) {
+                Object.defineProperty(viewport, 'height', { configurable: true, get: () => height });
+                Object.defineProperty(viewport, 'offsetTop', { configurable: true, get: () => top });
+              }
+              viewport.dispatchEvent(new Event(top ? 'scroll' : 'resize'));
+            };
+            return true;
+          })()`);
+          const measure = `(() => {
+            const box = (element) => {
+              if (!element) return null;
+              const r = element.getBoundingClientRect();
+              return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+            };
+            const viewport = window.visualViewport;
+            const panel = document.querySelector('section.answers');
+            const list = panel?.querySelector('.answers-list');
+            return {
+              shown: { top: viewport.offsetTop, bottom: viewport.offsetTop + viewport.height },
+              focus: document.activeElement?.matches('.answers-other') ? 'field' : document.activeElement?.matches('.compose textarea') ? 'message box' : 'elsewhere',
+              panel: box(panel),
+              list: box(list),
+              scrolled: list?.scrollTop,
+              field: box(panel?.querySelector('.answers-other')),
+              send: box(panel?.querySelector('.answers-foot .btn.primary')),
+              messageBox: box(document.querySelector('.compose .field')),
+              body: box(document.body),
+              page: [document.scrollingElement.scrollTop, document.body.scrollTop, window.scrollY],
+            };
+          })()`;
+          const px = (part) => `${part.top.toFixed(1)}–${part.bottom.toFixed(1)}`;
+          const inSight = (shot, when, parts) => {
+            for (const [name, part] of parts) {
+              if (!part) return `${when}, ${name} is gone`;
+              if (part.top < shot.shown.top - 0.5 || part.bottom > shot.shown.bottom + 0.5) {
+                return `${when}, ${name} stands at ${px(part)}, outside ${px(shot.shown)} above the keyboard`;
+              }
+            }
+            return null;
+          };
+          const a = await run.look();
+          const before = await run.evaluate(measure);
+          if (before.focus !== 'field') return 'the answer field has no focus';
+          for (const [keyboard, top, when] of [[visual, 0, 'with the keyboard up'], [visual, 60, 'with the page panned'], [visual - 44, 0, 'with the keyboard taller']]) {
+            await run.evaluate(`__keyboard(${keyboard}, ${top})`);
+            await run.settle(null);
+            const shot = await run.evaluate(measure);
+            if (shot.focus !== 'field') return `${when}, the focus is ${shot.focus}`;
+            const problem = inSight(shot, when, [['the answer field', shot.field], ['Send', shot.send]]);
+            if (problem) return problem;
+            if (shot.field.top < shot.list.top - 0.5 || shot.field.bottom > shot.list.bottom + 0.5) {
+              return `${when}, the answer field stands at ${px(shot.field)}, outside its list's ${px(shot.list)}`;
+            }
+          }
+          await run.evaluate(`document.querySelector('.compose textarea').focus()`);
+          await run.settle(null);
+          const boxed = await run.evaluate(measure);
+          if (boxed.focus !== 'message box') return `with the keyboard up, a tap on the message box leaves the focus ${boxed.focus}`;
+          const problem = inSight(boxed, 'with the message box focused', [['the message box', boxed.messageBox]]);
+          if (problem) return problem;
+          await run.evaluate(`__keyboard(null, 0)`);
+          await run.settle(null);
+          const after = await run.evaluate(measure);
+          const b = await run.look();
+          for (const name of ['panel', 'list', 'scrolled', 'field', 'send', 'messageBox', 'body', 'page']) {
+            if (JSON.stringify(after[name]) !== JSON.stringify(before[name])) {
+              return `once the keyboard went, ${name} is ${JSON.stringify(after[name])}, not ${JSON.stringify(before[name])} as before`;
+            }
+          }
+          const moved = Case.moved(a, b);
+          if (moved !== 0) return `once the keyboard went, the transcript's lines moved ${moved}`;
+          // (Neither field may offer to fill in a contact's details or an
+          // address. Safari ignores autocomplete="off", so the answer field's
+          // name has "search" in it.)
+          const offers = await run.evaluate(`[...document.querySelectorAll('section.answers .answers-other, .compose textarea')]
+            .filter((field) => field.autocomplete !== 'off' || (field.matches('.answers-other') && !field.name.includes('search')))
+            .map((field) => field.outerHTML.slice(0, 120))`);
+          if (offers.length) return `fields offer autofill: ${offers.join(', ')}`;
+          return null;
+        });
+      }
+    }
     // A row whose words and spinner leave little room still shows its
     // button whole, on one line, inside the row, and its words give way,
     // with at least 8 characters' room. A Quiet row of several calls says

@@ -6,14 +6,29 @@
 //! sits on the keyboard. Where the browser makes the page shorter for its
 //! keyboard (`interactive-widget=resizes-content`), the two viewports agree
 //! and nothing changes.
+//!
+//! What sizes itself by the screen's height takes the page's instead
+//! (`--page-height` in app.css), so the answer panel and the other boxes
+//! over the message box fit the page above the keyboard. The field the
+//! keyboard is for stays in sight as the page shrinks, in a box that
+//! scrolls, such as the panel's list of questions, and those boxes go back
+//! to where they stood once the keyboard goes.
+
+use std::cell::RefCell;
 
 use leptos::prelude::{document, window};
-use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 
 /// How much shorter than the layout viewport the visual one is with a
 /// keyboard up (CSS px), more than a browser's bars take.
 const KEYBOARD_PX: f64 = 120.0;
+
+thread_local! {
+    /// The boxes around the field with the focus, and where each stood
+    /// scrolled as the keyboard came.
+    static KEPT: RefCell<Vec<(web_sys::Element, f64)>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Whether a keyboard takes the bottom of the screen. A text field has
 /// the focus, the page isn't zoomed, and the visual viewport is shorter
@@ -22,9 +37,9 @@ pub fn keyboard_up(layout: f64, visual: f64, scale: f64, typing: bool) -> bool {
     typing && (scale - 1.0).abs() < 0.01 && layout - visual >= KEYBOARD_PX
 }
 
-/// Whether the focus is in a field that takes text.
-fn typing() -> bool {
-    document().active_element().is_some_and(|element| {
+/// The field that takes text and has the focus.
+fn typing() -> Option<web_sys::Element> {
+    document().active_element().filter(|element| {
         element.is_instance_of::<web_sys::HtmlTextAreaElement>()
             || element
                 .dyn_ref::<web_sys::HtmlInputElement>()
@@ -35,6 +50,31 @@ fn typing() -> bool {
                     )
                 })
     })
+}
+
+/// A box's scroll offset, unrounded (`Element::scroll_top` rounds it).
+fn scroll_top(element: &web_sys::Element) -> f64 {
+    js_sys::Reflect::get(element, &JsValue::from_str("scrollTop"))
+        .ok()
+        .and_then(|top| top.as_f64())
+        .unwrap_or(0.0)
+}
+
+/// The boxes between `field` and the page's body, and where each stands
+/// scrolled. (A box that can't scroll yet may once the page is shorter.)
+fn scrolled(field: &web_sys::Element) -> Vec<(web_sys::Element, f64)> {
+    let body = document().body().map(web_sys::Element::from);
+    let mut boxes = Vec::new();
+    let mut at = field.parent_element();
+    while let Some(element) = at {
+        if Some(&element) == body.as_ref() {
+            break;
+        }
+        let top = scroll_top(&element);
+        boxes.push((element.clone(), top));
+        at = element.parent_element();
+    }
+    boxes
 }
 
 /// Sizes the page to the visual viewport while a keyboard is up
@@ -57,14 +97,39 @@ fn fit() {
         .unwrap_or(0.0);
     let layout = inner.max(f64::from(root.client_height()));
     let style = root.style();
-    if keyboard_up(layout, viewport.height(), viewport.scale(), typing()) {
-        let _ = style.set_property("--app-height", &format!("{}px", viewport.height()));
+    let field = typing();
+    let was_up = root.class_list().contains("keyboard");
+    if keyboard_up(layout, viewport.height(), viewport.scale(), field.is_some()) {
+        let height = format!("{}px", viewport.height());
+        let resized =
+            style.get_property_value("--app-height").ok().as_deref() != Some(height.as_str());
+        if !was_up && let Some(field) = &field {
+            KEPT.set(scrolled(field));
+        }
+        let _ = style.set_property("--app-height", &height);
         let _ = style.set_property("--app-top", &format!("{}px", viewport.offset_top()));
         let _ = root.class_list().add_1("keyboard");
-    } else if root.class_list().contains("keyboard") {
+        // The page is shorter, so the field may have gone out of its box's
+        // sight. (A pan alone moves the whole page with it.)
+        if resized && let Some(field) = field {
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Nearest);
+            options.set_inline(web_sys::ScrollLogicalPosition::Nearest);
+            field.scroll_into_view_with_scroll_into_view_options(&options);
+        }
+    } else if was_up {
         let _ = style.remove_property("--app-height");
         let _ = style.remove_property("--app-top");
         let _ = root.class_list().remove_1("keyboard");
+        for (element, top) in KEPT.take() {
+            if element.is_connected() {
+                let _ = js_sys::Reflect::set(
+                    &element,
+                    &JsValue::from_str("scrollTop"),
+                    &JsValue::from_f64(top),
+                );
+            }
+        }
     }
 }
 
@@ -79,9 +144,18 @@ pub fn attach() {
     let _ = viewport.add_event_listener_with_callback("resize", listen);
     let _ = viewport.add_event_listener_with_callback("scroll", listen);
     let _ = document().add_event_listener_with_callback("focusin", listen);
-    let _ = document().add_event_listener_with_callback("focusout", listen);
-    // (It lives as long as the page.)
+    // A focus that leaves a field may be on its way to another, which keeps
+    // the keyboard, so the page fits itself once the focus has settled.
+    // (Sized for a moment as if the keyboard went, the transcript would lose
+    // its place.)
+    let on_leave = Closure::<dyn FnMut()>::new(|| {
+        let _ = window().set_timeout_with_callback(&Closure::once_into_js(fit).unchecked_into());
+    });
+    let _ =
+        document().add_event_listener_with_callback("focusout", on_leave.as_ref().unchecked_ref());
+    // (They live as long as the page.)
     on_change.forget();
+    on_leave.forget();
 }
 
 #[cfg(test)]
