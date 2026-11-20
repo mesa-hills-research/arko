@@ -2823,6 +2823,58 @@ async function pixelCases(cdp, agent) {
         return problems[0] ?? null;
       }, view);
     }
+    // A wait for workers can move to the background too (its tool's mode is
+    // Own), so its line keeps the room of Move to background from the start.
+    // As the button comes, the line says the same words with the same
+    // marker, and its words, its spinner and the line itself stand where
+    // they stood, on a phone and on a wider one.
+    for (const view of ['quiet', 'full']) {
+      for (const width of [320, 390]) {
+        await play(ratio, `touch: a running wait for workers keeps its line as Move to background comes (${view}, ${width})`, async (run) => {
+          await run.metrics(width, 844);
+          await run.fill(4);
+          await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+          const measure = `(() => {
+            const line = [...document.querySelectorAll('#rows .call-line')].pop();
+            if (!line) return null;
+            const box = (selector) => {
+              const each = selector ? line.querySelector(selector) : line;
+              if (!each) return null;
+              const r = each.getBoundingClientRect();
+              return [r.left, r.top, r.width, r.height].map((n) => Math.round(n * 100) / 100).join(' ');
+            };
+            return {
+              text: (line.querySelector('.said') || line).textContent,
+              mark: (line.querySelector('.mark') || line).textContent,
+              line: box(null),
+              words: box('.what'),
+              spinner: box('.spinner'),
+              row: line.closest('.row').getBoundingClientRect().height,
+              button: !!line.querySelector('.call-action:not(.kept)'),
+            };
+          })()`;
+          const { call } = await run.feed({ do: 'call', tool: 'wait_for_agents', parameters: {} });
+          await run.settle(null);
+          const before = await run.evaluate(measure);
+          await run.feed({ do: 'movable' });
+          let after = before;
+          for (let at = 0; at < 40 && !(after && after.button); at++) {
+            await run.settle(null);
+            after = await run.evaluate(measure);
+            if (!(after && after.button)) await sleep(100);
+          }
+          await run.feed({ do: 'result', call, tool: 'wait_for_agents', output: 'r1 finished.' });
+          await run.feed({ do: 'movable' });
+          await run.settle(null);
+          if (!before || !after || !after.button) return 'no Move to background';
+          if (before.button) return 'Move to background showed before the status offered it';
+          for (const key of ['text', 'mark', 'line', 'words', 'spinner', 'row']) {
+            if (before[key] !== after[key]) return `${key} went from ${JSON.stringify(before[key])} to ${JSON.stringify(after[key])} as Move to background came`;
+          }
+          return null;
+        }, view);
+      }
+    }
     // A fold above a running call opens, the call ends meanwhile, and the
     // fold closes. No line is lower than before, and no blank is left.
     for (const view of ['quiet', 'full']) {

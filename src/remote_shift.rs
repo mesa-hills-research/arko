@@ -105,6 +105,9 @@ fn answer_actions(feed: Feed, mut actions: mpsc::UnboundedReceiver<Action>) {
 /// Starts a session, served on a port of its own.
 fn start(root: &Path) -> Session {
     let feed = Feed::new("main");
+    // The calls that can move to the background, as a session's tools say.
+    let modes = crate::tool_modes::SessionToolModes::for_a_session(&root.join("tools"));
+    feed.set_tool_modes(&modes, true);
     let still = Arc::new(Still {
         movable: std::sync::Mutex::default(),
         feed: feed.clone(),

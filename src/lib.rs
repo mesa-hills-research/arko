@@ -114,6 +114,7 @@ mod term;
 mod terminal;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod tool_modes;
 #[cfg(feature = "tui")]
 mod tui;
 mod ui;

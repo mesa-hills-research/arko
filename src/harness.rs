@@ -30,6 +30,7 @@ use crate::sending::{Admitted, Phase, Read, Reply, joined};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
+use crate::tool_modes::SessionToolModes;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
     agents, commands, conversations, crew, details, glyphs, handover, index, kept_notes, keys, mcp,
@@ -674,6 +675,12 @@ pub(crate) struct Harness {
     /// monitors with -p). A saved run offered one gets a stand-in with its
     /// definition.
     pub(crate) withheld: Vec<Arc<dyn Tool>>,
+    /// The background mode of each tool the agents were given at the last
+    /// open, by name ([`SessionToolModes`]).
+    pub(crate) tool_modes: SessionToolModes,
+    /// Hooks a test adds to the workflow each open builds.
+    #[cfg(test)]
+    pub(crate) test_hooks: Vec<(HookPoint, arko_workflows::hooks::HookCallback)>,
     /// Arko's folder.
     pub(crate) root: PathBuf,
     /// The MCP servers started, and what was left out and why.
@@ -889,7 +896,11 @@ impl Harness {
         {
             builder = builder.notes_reply_hint(MAIN, hint);
         }
+        // Each tool's own background mode, by name, for the calls that can move
+        // to the background (`Act::moves`).
+        let mut modes = SessionToolModes::framework();
         for tool in &self.tools {
+            modes.main.note(tool);
             builder = builder.agent_tool(MAIN, tool.clone());
         }
         // The MCP servers are `mcp`, offered to the conversations whose
@@ -900,8 +911,11 @@ impl Harness {
         // that its run may reach the server, as `mcp` does.
         let access: Arc<dyn arko_agents::mcp::McpAccess> =
             Arc::new(mcp::Access::new(self.crew.as_ref()));
-        builder = builder.resume_only_agent_tool(MAIN, self.mcp.lead_tool(access.clone()));
+        let lead_tool = self.mcp.lead_tool(access.clone());
+        modes.main.note(&lead_tool);
+        builder = builder.resume_only_agent_tool(MAIN, lead_tool);
         let direct = self.mcp.servers.hub.direct_tools(access.clone());
+        modes.main.note(&self.run_code);
         builder = builder.resume_only_agent_tool(MAIN, self.run_code.clone());
         let mut registered: std::collections::HashSet<String> =
             self.tools.iter().map(|tool| tool.name()).collect();
@@ -919,6 +933,7 @@ impl Harness {
         }
         for tool in direct {
             registered.insert(tool.name());
+            modes.main.note(&tool);
             builder = builder.resume_only_agent_tool(MAIN, tool);
         }
         // The main agent's new conversations are offered a tool their
@@ -951,6 +966,7 @@ impl Harness {
         )));
         registered.insert(crate::earlier::TOOL_NAME.to_string());
         for tool in own {
+            modes.main.note(&tool);
             builder = if offers(&tool) {
                 builder.agent_tool(MAIN, tool)
             } else {
@@ -980,7 +996,9 @@ impl Harness {
                 .copied()
                 .chain([RUN_WORKFLOW_AGENT_TOOL_NAME])
             {
-                builder = builder.agent_tool(MAIN, Arc::new(crew::LegacyTool(name)));
+                let tool: Arc<dyn Tool> = Arc::new(crew::LegacyTool(name));
+                modes.main.note(&tool);
+                builder = builder.agent_tool(MAIN, tool);
             }
         }
         if self.settings.max_workers > 0 {
@@ -990,21 +1008,30 @@ impl Harness {
                 // The workers' size the user set, for every worker run.
                 .agent_handover_threshold(WORKER, self.handover.workers_threshold());
             for tool in &self.tools {
+                modes.worker.note(tool);
                 builder = builder.agent_tool(WORKER, tool.clone());
             }
+            modes.worker.note(&self.run_code);
             builder = builder.resume_only_agent_tool(WORKER, self.run_code.clone());
             // A worker answers the user who writes to it (a worker saved
             // before workers had it isn't offered it).
-            builder = builder.agent_tool(WORKER, Arc::new(message::MessageUser { worker: true }));
-            builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access.clone()));
+            let message: Arc<dyn Tool> = Arc::new(message::MessageUser { worker: true });
+            modes.worker.note(&message);
+            builder = builder.agent_tool(WORKER, message);
+            let worker_tool = self.mcp.worker_tool(access.clone());
+            modes.worker.note(&worker_tool);
+            builder = builder.resume_only_agent_tool(WORKER, worker_tool);
             // A worker's call of a server's own tool also needs a server
             // workers may reach.
             for tool in self.mcp.servers.hub.worker_direct_tools(access) {
+                modes.worker.note(&tool);
                 builder = builder.resume_only_agent_tool(WORKER, tool);
             }
             if legacy {
                 for name in crew::LEGACY_TOOL_NAMES {
-                    builder = builder.agent_tool(WORKER, Arc::new(crew::LegacyTool(name)));
+                    let tool: Arc<dyn Tool> = Arc::new(crew::LegacyTool(name));
+                    modes.worker.note(&tool);
+                    builder = builder.agent_tool(WORKER, tool);
                 }
             }
         }
@@ -1019,6 +1046,7 @@ impl Harness {
                 self.asker.clone(),
                 self.handover.clone(),
             ) {
+                modes.main.note(&tool);
                 builder = builder.agent_tool(MAIN, tool);
             }
             let weak = Arc::downgrade(crew);
@@ -1102,13 +1130,22 @@ impl Harness {
                     } else {
                         mcp::UnstartedTool::not_running(name.clone())
                     };
-                    let stand_in = stand_in.offered_as(definitions.get(name).cloned());
-                    builder = builder.resume_only_agent_tool(*agent, Arc::new(stand_in));
+                    let stand_in: Arc<dyn Tool> =
+                        Arc::new(stand_in.offered_as(definitions.get(name).cloned()));
+                    match *agent {
+                        MAIN => modes.main.note(&stand_in),
+                        _ => modes.worker.note(&stand_in),
+                    }
+                    builder = builder.resume_only_agent_tool(*agent, stand_in);
                 }
             }
         }
         // After the crew's hook, so a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
+        #[cfg(test)]
+        for (point, hook) in &self.test_hooks {
+            builder = builder.hook(point.clone(), hook.clone());
+        }
         // The images the tools return, for the transcript.
         builder = builder.tool_image_sink(Arc::new(crate::images::ToolImages {
             feed: self.feed.clone(),
@@ -1154,6 +1191,12 @@ impl Harness {
         {
             return failed(self, error.to_string());
         }
+        // The calls that can move to the background while they run, where
+        // any can, as their tools' own modes say, with the workflow they
+        // run in.
+        let moves = !self.one_shot && self.background.manager().is_some();
+        self.feed.set_tool_modes(&modes, moves);
+        self.tool_modes = modes;
         self.unoffered = unoffered;
         // New conversations start on the configuration it was built with.
         self.main_reconfigured = false;
@@ -7140,6 +7183,8 @@ pub(crate) mod tests {
                 crate::code_mode::file_tool_definitions(),
             )),
             withheld: Vec::new(),
+            tool_modes: SessionToolModes::default(),
+            test_hooks: Vec::new(),
             root,
             mcp: Default::default(),
             skill_folders: Vec::new(),

@@ -11,7 +11,7 @@
 //! [`WorkerSummary`] per worker says how it is doing. The feed doesn't
 //! know about views. Each client makes its views from these.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -1484,6 +1484,13 @@ struct State {
     main: Lane,
     workers_lane: Lane,
     next_id: u64,
+    /// The tools whose calls can move to the background while they run, by
+    /// name, the main agent's and the workers' ([`Feed::set_tool_modes`]).
+    moving_tools: (BTreeSet<String>, BTreeSet<String>),
+    /// Every tool with a mode, by name, the main agent's and the workers',
+    /// for tests that check each tool an agent is offered has one.
+    #[cfg(test)]
+    known_tools: (BTreeSet<String>, BTreeSet<String>),
     /// The item each agent's next chunk continues, if its kind is the
     /// chunk's, meaning its text, or its thinking.
     open_text: HashMap<String, (Kind, u64)>,
@@ -2407,6 +2414,14 @@ impl Feed {
                 if call {
                     item.status = Some(CallStatus::Running);
                 }
+                // Whether it can move while it runs, as its tool says.
+                let moving = match main {
+                    true => &state.moving_tools.0,
+                    false => &state.moving_tools.1,
+                };
+                if let Some(act) = item.act.as_mut() {
+                    act.moves = moving.contains(tool_name);
+                }
                 // Images its tool returned before its event came.
                 if let Some(at) = state
                     .early_images
@@ -2945,6 +2960,19 @@ impl Feed {
         lane.find(item).map(|item| item.text.clone())
     }
 
+    /// The act of the call `call` (one of the latest), as its item has it.
+    #[cfg(all(test, unix))]
+    pub(crate) fn call_act(&self, call: Uuid) -> Option<Act> {
+        let mut state = self.lock();
+        let (_, agent, item) = state
+            .call_items
+            .iter()
+            .find(|(id, ..)| *id == call)
+            .cloned()?;
+        let (lane, _) = state.lane(&agent);
+        lane.find(item).and_then(|item| item.act.clone())
+    }
+
     /// The call item `item` of a call still running, giving its call's ID.
     pub(crate) fn running_call(&self, item: u64) -> Option<Uuid> {
         self.lock()
@@ -3360,6 +3388,36 @@ impl Feed {
     /// error that carries it).
     pub(crate) fn unrepeated(&self, message: &str) -> String {
         self.lock().unrepeated(MAIN_AGENT, message)
+    }
+
+    /// The background mode of each tool the main agent and the workers may
+    /// call (`modes`), as their tools' own mode says. Where anything can
+    /// move (`moves`), a call of a tool whose mode isn't `Never` keeps the
+    /// room of Move to background on its line from the start ([`Act::moves`]).
+    pub(crate) fn set_tool_modes(&self, modes: &crate::tool_modes::SessionToolModes, moves: bool) {
+        let moving = |modes: &crate::tool_modes::ToolModes| match moves {
+            true => modes.moving(),
+            false => BTreeSet::new(),
+        };
+        let mut state = self.lock();
+        state.moving_tools = (moving(&modes.main), moving(&modes.worker));
+        #[cfg(test)]
+        {
+            state.known_tools = (modes.main.names(), modes.worker.names());
+        }
+    }
+
+    /// The tools whose calls can move, the main agent's and the workers'
+    /// ([`Feed::set_tool_modes`]).
+    #[cfg(test)]
+    pub(crate) fn moving_tools(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+        self.lock().moving_tools.clone()
+    }
+
+    /// Every tool with a mode, the main agent's and the workers'.
+    #[cfg(test)]
+    pub(crate) fn known_tools(&self) -> (BTreeSet<String>, BTreeSet<String>) {
+        self.lock().known_tools.clone()
     }
 
     /// What Arko says about the session.

@@ -1088,6 +1088,9 @@ impl Engine {
             tools,
             run_code,
             withheld,
+            tool_modes: Default::default(),
+            #[cfg(test)]
+            test_hooks: Vec::new(),
             root: root.clone(),
             mcp,
             skill_folders,

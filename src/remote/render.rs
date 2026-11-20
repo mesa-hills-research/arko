@@ -75,8 +75,7 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
-        let mut act = act(tool, parameters, lead);
-        act.moves = can_move(tool);
+        let act = act(tool, parameters, lead);
         if tool == crew::START_AGENT {
             // A start with no task says the call's own words ("Start a worker").
             let title = worker_title(text(parameters, "task"));
@@ -99,17 +98,6 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
         item.act = Some(act);
     }
     Some(item)
-}
-
-/// Whether a call of `tool` can move to the background while it runs, as
-/// its tool's `background_mode` allows (the shell's commands, an index's
-/// build or embedding, and an MCP server's calls). Its line keeps Move to
-/// background's room from the start ([`Act::moves`]).
-pub fn can_move(tool: &str) -> bool {
-    tool == SHELL_TOOL_NAME
-        || tool == crate::mcp::MCP_TOOL_NAME
-        || matches!(tool, "index_create" | "index_manage")
-        || crate::mcp::split_tool_name(tool).is_some()
 }
 
 /// The code a code run runs, as the block its row opens to from the start,
@@ -2359,12 +2347,7 @@ mod tests {
             };
             // (Its result comes before the item 2.)
             item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
-            // (Whether it can move goes by its tool, `can_move`.)
-            let act = Act {
-                moves: can_move(fixture.tool),
-                ..fixture.act.clone()
-            };
-            assert_eq!(item.act.as_ref(), Some(&act), "{name}");
+            assert_eq!(item.act.as_ref(), Some(&fixture.act), "{name}");
             assert_eq!(item.ended, fixture.ended, "{name}");
             assert_eq!(outcome.status, fixture.status, "{name}");
             assert_eq!(
@@ -3759,57 +3742,6 @@ mod tests {
         // An act saved without it has no job that runs.
         let saved: Act = serde_json::from_str(r#"{"kind": "other"}"#).unwrap();
         assert!(!saved.job_runs);
-    }
-
-    /// A call's first item says whether it can move to the background while
-    /// it runs, as its tool's own `background_mode` does, for every tool of
-    /// the session's shell, terminals, monitors and indexes, and for an MCP
-    /// server's calls (whose tools are always `Detach` in arko_agents).
-    #[test]
-    fn a_calls_item_says_whether_it_can_move_as_its_tool_does() {
-        use arko_agents::ToolBackground;
-        use arko_agents::terminal::{MonitorTool, TerminalConfig, TerminalTool};
-        let temp = tempfile::tempdir().unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _entered = runtime.enter();
-        let shell = crate::shell::Shell::detect(crate::shell::WindowsShell::Cmd);
-        let mut config = TerminalConfig::new(temp.path().join("jobs"));
-        config.shell = shell.program.clone();
-        config.shell_args = shell.job_args.clone();
-        let jobs = terminal::TerminalManager::new(config).unwrap();
-        let background = crate::shell::Background::new(0, &jobs);
-        let mut tools: Vec<Arc<dyn arko_agents::Tool>> = vec![Arc::new(
-            crate::shell::ShellTool::new(jobs.clone(), shell, background),
-        )];
-        for tool in TerminalTool::all(jobs.clone()) {
-            tools.push(Arc::new(tool));
-        }
-        for tool in MonitorTool::all(jobs.clone()) {
-            tools.push(Arc::new(tool));
-        }
-        let indexes =
-            crate::index::Indexes::open(&temp.path().join("indexes"), temp.path(), None, false)
-                .unwrap();
-        tools.extend(indexes.tools());
-        let mut moving = Vec::new();
-        for tool in &tools {
-            let name = tool.definition().name;
-            let moves = tool.background_mode() != ToolBackground::Never;
-            assert_eq!(can_move(&name), moves, "{name}");
-            if let Some(item) =
-                super::call(&name, &params(&[]), "main").filter(|item| item.kind == Kind::Call)
-            {
-                assert_eq!(item.act.map(|act| act.moves), Some(moves), "{name}");
-            }
-            if moves {
-                moving.push(name);
-            }
-        }
-        assert_eq!(moving, [SHELL_TOOL_NAME, "index_create", "index_manage"]);
-        for name in [crate::mcp::MCP_TOOL_NAME, "mcp__github__create_issue"] {
-            assert!(can_move(name), "{name}");
-        }
-        assert!(!can_move(READ_FILE_TOOL_NAME));
     }
 
     /// A command's words are its whole first line, however long, since each

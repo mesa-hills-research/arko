@@ -297,9 +297,9 @@ pub struct Act {
     /// before its words do ([`quiet::WORDS_KEEP_RUNNING`](super::quiet::WORDS_KEEP_RUNNING)).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub job_runs: bool,
-    /// While it runs it can move to the background (a command, an index
-    /// build, an MCP server's call), so its line keeps the room of Move to
-    /// background from the start, before the button comes.
+    /// While it runs it can move to the background, as its tool's own mode
+    /// says (a command, a wait for workers, an index build, an MCP call), so
+    /// its line keeps the room of Move to background from the start.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub moves: bool,
     /// What the row's words cut that the reader may need, whole, as one

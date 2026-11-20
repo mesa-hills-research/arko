@@ -39,6 +39,23 @@ fn offered(body: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Every tool the requests in `bodies` offer has a mode in `seam`'s
+/// session, from its tool, the main agent's for its requests and the
+/// workers' for theirs, so the feed knows of each call whether it can move
+/// to the background.
+fn each_offered_tool_has_a_mode(seam: &Seam, bodies: &[String]) {
+    let (main, workers) = seam.feed.known_tools();
+    for body in bodies {
+        let known = match body.contains("You are agent run r") {
+            true => &workers,
+            false => &main,
+        };
+        for tool in offered(body) {
+            assert!(known.contains(&tool), "{tool} has no mode: {known:?}");
+        }
+    }
+}
+
 /// The parts of a request the prompt cache keeps, meaning its tools and its
 /// instructions, as sent.
 fn cached_parts(body: &str) -> (String, String) {
@@ -403,6 +420,11 @@ async fn a_resumed_conversation_keeps_its_direct_tools() {
     let id = seam.session.id.clone();
     let tools = offered(&ask(&seam, "First.").await);
     assert!(tools.contains(&"mcp".to_string()) && !tools.contains(&ping.to_string()));
+    each_offered_tool_has_a_mode(&seam, &bodies.lock().unwrap());
+    // (Its `mcp` and the workers' reach a server, so a call of either can
+    // move to the background while it runs, as their tools say.)
+    let (main, workers) = seam.feed.moving_tools();
+    assert!(main.contains("mcp") && workers.contains("mcp"), "{main:?} {workers:?}");
     quit(seam, ended).await;
     to_direct_tools(&Session::open(&root, &id).unwrap().dir, ping);
     let branched = crate::sessions::branch(&root, &id).unwrap();
@@ -423,10 +445,13 @@ async fn a_resumed_conversation_keeps_its_direct_tools() {
         assert!(tools.contains(&ping.to_string()), "{tools:?}");
         assert!(!tools.contains(&"mcp".to_string()), "{tools:?}");
         assert!(!tools.contains(&"add_skill".to_string()), "{tools:?}");
-        // Its call goes through the hub.
+        // Its call goes through the hub. A call of it can move to the
+        // background while it runs, as the server's tool says.
+        assert!(seam.feed.moving_tools().0.contains(ping));
         let called = ask(&seam, "Call ping.").await;
         assert!(called.contains("pong"), "{called}");
         assert_eq!(cached_parts(&called), cached_parts(&again));
+        each_offered_tool_has_a_mode(&seam, &bodies.lock().unwrap());
         // The next conversation reaches the server through `mcp`, and saves
         // skills.
         seam.input
@@ -543,6 +568,11 @@ async fn workers_offered(
     })
     .await
     .unwrap();
+    // (Each tool a worker was offered has a mode.)
+    let known = seam.feed.known_tools().1;
+    for tool in workers.lock().unwrap().values().flatten() {
+        assert!(known.contains(tool), "{tool} has no mode: {known:?}");
+    }
     idle(&seam).await;
     quit(seam, running.ended).await;
     workers.lock().unwrap().clone()
@@ -784,6 +814,9 @@ async fn resumed_workers_keep_their_tools_and_their_limits() {
     })
     .await
     .unwrap();
+    // Each tool the main agent and the workers were offered, the resumed
+    // worker's server tool among them, has a mode.
+    each_offered_tool_has_a_mode(&seam, &bodies.lock().unwrap());
     idle(&seam).await;
     quit(seam, ended).await;
 }
@@ -877,9 +910,12 @@ async fn a_server_that_no_longer_starts_keeps_its_tools_definitions() {
     let running = cached_parts(&ask(&seam, "Again.").await).0;
     assert!(running.contains("Answers pong."), "{running}");
     quit(seam, ended).await;
-    // Resumed without it, with the same tools, byte for byte.
+    // Resumed without it, with the same tools, byte for byte. Its stand-in
+    // can't move, as its own mode says.
     let (seam, ended) = open(SessionChoice::Resume(id), Vec::new()).await;
+    assert!(!seam.feed.moving_tools().0.contains(ping));
     assert_eq!(cached_parts(&ask(&seam, "Again.").await).0, running);
+    each_offered_tool_has_a_mode(&seam, &bodies.lock().unwrap());
     let called = ask(&seam, "Call ping.").await;
     assert!(
         called.contains("The MCP server stub isn't running."),

@@ -1990,3 +1990,214 @@ async fn jobs_lists_and_stops_a_monitor() {
     assert!(status.is_ok(), "the monitor stopped");
     managers.shutdown().await;
 }
+
+/// The tool's name and the ID of a call a test watched, whether the runtime
+/// offered it to move (`jobs::movable`), and whether its line said it can.
+type Held = (String, uuid::Uuid, bool, bool);
+
+/// Each call's line says whether it can move to the background as the
+/// runtime offers it to (`jobs::movable`), sampled after the call ran while
+/// the runtime still holds a call it can move. Every subagent tool, whose
+/// tools Arko never holds, makes one. And every tool the main agent and a
+/// worker are offered has a mode, from its tool, so the feed knows of every
+/// call whether its line keeps the room of Move to background.
+#[cfg(unix)]
+#[tokio::test]
+async fn every_offered_tool_moves_as_the_runtime_offers_it() {
+    use arko_workflows::subagents::SUBAGENT_TOOL_NAMES;
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |index, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("You are agent run r") {
+                    return complete(&format!("w{index}"), "Counted.");
+                }
+                let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let done = parsed["input"]
+                    .as_array()
+                    .map_or(0, |input| {
+                        input
+                            .iter()
+                            .filter(|item| item["type"] == "function_call_output")
+                            .count()
+                    });
+                match SUBAGENT_TOOL_NAMES.get(done) {
+                    // A worker runs, and each other call may fail. Its
+                    // tool runs all the same.
+                    Some(&name) if name == crew::START_AGENT => tool_call(
+                        &format!("m{index}"),
+                        name,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    ),
+                    Some(&name) => tool_call(&format!("m{index}"), name, serde_json::json!({})),
+                    None => complete(&format!("m{index}"), "Done."),
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    // The search index's tools, and `run_code` beside the classic tools, for
+    // both agents.
+    let indexes = crate::index::Indexes::open(
+        &temp.path().join("indexes"),
+        &harness.settings.workspace,
+        None,
+        false,
+    )
+    .unwrap();
+    harness.tools.extend(indexes.tools());
+    // And Arko's built-in skills, so `load_skill` comes too.
+    harness.settings.builtin_skills = crate::builtin_skills::BuiltinSkills {
+        none: false,
+        off: Vec::new(),
+    };
+    let setup = providers::Setup::new(harness.settings.openai_auth);
+    let settings = AgentSettings {
+        index_tools: crate::index::TOOL_NAMES,
+        tools: crate::code_mode::Tools::Both,
+        ..AgentSettings::for_session(&harness.settings, &setup)
+    };
+    harness.main_config = agents::main_config(&settings).unwrap();
+    harness.worker_config = agents::worker_config(&settings).unwrap();
+    // A feed of the calls alone, which takes each as its call starts (as the
+    // session's feed takes it from the events), and the session's modes. Each
+    // call's line there says whether it can move, and `jobs::movable` says,
+    // after the call ran and while the runtime still holds it, whether the
+    // runtime offers it to.
+    let probe = remote::Feed::new(MAIN);
+    let held: Arc<Mutex<Vec<Held>>> = Arc::default();
+    harness.test_hooks.push((
+        HookPoint::PreToolExecution,
+        Arc::new({
+            let probe = probe.clone();
+            move |hook: &arko_workflows::hooks::context::HookContext| {
+                if let (Some(name), Some(call)) = (&hook.tool_name, hook.tool_call_id) {
+                    let event = arko_agents::AgentEvent::ToolCallFormatted {
+                        tool_call_id: call,
+                        tool_name: name.clone(),
+                        parameters: hook.tool_params.clone().unwrap_or_default(),
+                    };
+                    probe.event(
+                        &WorkflowEvent {
+                            timestamp: chrono::Utc::now(),
+                            workflow_run_id: uuid::Uuid::nil(),
+                            agent_name: hook.agent_name.clone().unwrap_or_default(),
+                            agent_run_id: uuid::Uuid::nil(),
+                            event,
+                        },
+                        None,
+                    );
+                }
+                HookResult::Continue
+            }
+        }),
+    ));
+    harness.test_hooks.push((
+        HookPoint::PostToolExecution,
+        Arc::new({
+            let (probe, held, jobs) = (probe.clone(), held.clone(), managers.jobs.clone());
+            move |hook: &arko_workflows::hooks::context::HookContext| {
+                if let (Some(name), Some(call)) = (&hook.tool_name, hook.tool_call_id)
+                    && let Some(item) = probe.running_call_item(call)
+                {
+                    let offered = crate::jobs::movable(&probe, &jobs).contains(&item);
+                    let moves = probe.call_act(call).is_some_and(|act| act.moves);
+                    held.lock().unwrap().push((name.clone(), call, offered, moves));
+                }
+                HookResult::Continue
+            }
+        }),
+    ));
+    harness.open(false).unwrap();
+    probe.set_tool_modes(&harness.tool_modes, true);
+    harness.start_new_workers();
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Count the files with a worker.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let _ = tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
+    // The tools each was offered.
+    let offered = |worker: bool| -> std::collections::BTreeSet<String> {
+        bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|body| body.contains("You are agent run r") == worker)
+            .flat_map(|body| {
+                let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                body["tools"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let (main_tools, worker_tools) = (offered(false), offered(true));
+    // Each way the session gives a tool gave one (the shell's, the
+    // terminals', the monitors', the index's, `run_code`, `mcp`, Arko's own,
+    // the workers' tools, the framework's and its skills').
+    for name in [
+        SHELL_TOOL,
+        "terminal_start",
+        "monitor_start",
+        "index_search",
+        "run_code",
+        "mcp",
+        "message_user",
+        "keep_note",
+        crew::WORKER_OPTIONS,
+        crew::START_AGENT,
+        crew::WAIT_FOR_AGENTS,
+        "read_file",
+        "load_skill",
+    ] {
+        assert!(main_tools.contains(name), "main: {name} in {main_tools:?}");
+    }
+    for name in [
+        SHELL_TOOL,
+        "index_search",
+        "run_code",
+        "message_user",
+        crew::WAIT_FOR_AGENTS,
+        "read_file",
+    ] {
+        assert!(worker_tools.contains(name), "worker: {name} in {worker_tools:?}");
+    }
+    for name in &main_tools {
+        assert!(harness.tool_modes.main.mode(name).is_some(), "main: {name}");
+    }
+    for name in &worker_tools {
+        assert!(harness.tool_modes.worker.mode(name).is_some(), "worker: {name}");
+    }
+    // Each call's line says it can move exactly where the runtime offered
+    // it to, every subagent tool the main agent was offered among them, and
+    // the session's feed says the same of its own line.
+    let held = held.lock().unwrap().clone();
+    for (name, call, offered, moves) in &held {
+        assert_eq!(moves, offered, "{name}: its line says it can move");
+        if let Some(act) = harness.feed.call_act(*call) {
+            assert_eq!(act.moves, *moves, "{name}: the session's line");
+        }
+    }
+    for name in SUBAGENT_TOOL_NAMES {
+        assert!(main_tools.contains(*name), "main: {name} in {main_tools:?}");
+        assert!(held.iter().any(|(held, ..)| held == name), "{name} ran: {held:?}");
+    }
+    assert!(
+        held.iter()
+            .any(|(name, _, offered, _)| name == crew::WAIT_FOR_AGENTS && *offered),
+        "{held:?}"
+    );
+    harness.crew.clone().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
