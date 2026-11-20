@@ -756,63 +756,42 @@ pre.block {
 /* (The live line has a call row's line metrics, 13 px on a 20 px line, so
    one taking the other's place at the end keeps the end where it was.) */
 .row.working { display: flex; gap: 6px; color: var(--muted); font: 13px/20px var(--sans); }
-/* One line, its end cut, as a folded thought's, whatever the call it names. */
-.row.working > .what { flex: 1 1 auto; white-space: nowrap; text-overflow: ellipsis; }
-/* A copy of the label in the text color lies on the label, with the
-   label's box and font, so it matches even when the label wraps or is
-   clipped. The copy stays put and only its mask, a band 60% of the label
-   wide, moves. The browser paints the mask from the label's box each frame,
-   so no compositor has to work out a layer's move, which Safari on the
-   iPhone got wrong when two layers moved against each other. The band has
-   a layer of its own, so a frame paints only the band and not the
-   transcript around it. */
+/* One line as wide as its words, its end cut where the row is too narrow,
+   whatever the call it names. (A label as wide as the row would take the
+   band, a share of the label's width, past its words in a moment.) */
+.row.working > .what { flex: 0 1 auto; white-space: nowrap; text-overflow: ellipsis; }
+/* A label as wide as its words, cut with "…" where its box is narrower. */
 .shimmer-label {
-  position: relative;
   display: inline-grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
 }
-.shimmer-text, .shine, .shine-text {
-  font: inherit;
-  letter-spacing: inherit;
-  word-spacing: inherit;
-  white-space: inherit;
-  text-overflow: inherit;
-}
-.shimmer-text, .shine-text { overflow: hidden; }
+.shimmer-text { overflow: hidden; text-overflow: inherit; }
 .shimmer { color: var(--muted); }
-.shine { display: none; }
-.shimmer > .shine {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  pointer-events: none;
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
-  -webkit-mask-size: 60% 100%;
-  mask-size: 60% 100%;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-position: -200% 0;
-  mask-position: -200% 0;
-  will-change: transform;
-  animation: shine 2s linear infinite;
+/* While it shimmers, a band of the text color, 60% of the label wide,
+   sweeps across the label. The words' own glyphs draw it, as they show the
+   label's background (background-clip: text), which is the label's color
+   under the band's gradient. With no second copy of the words, nothing can
+   stand off them, wherever the label stands and however a browser
+   composites it. The band's middle sweeps from half a label before to half
+   after. A position of p% puts the band's left edge p% of the label's
+   other 40% in, so -200% puts it 0.8 of a label before the label and 300%
+   1.2 after. With reduced motion or forced colors, the label is plain
+   text. */
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .shimmer > .shimmer-text {
+    background: linear-gradient(90deg, transparent, var(--text) 50%, transparent) -200% 0 / 60% 100% no-repeat currentColor;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shine 2s linear infinite;
+  }
+  /* (A selection shows the words in the label's color.) */
+  .shimmer > .shimmer-text::selection { -webkit-text-fill-color: var(--muted); }
 }
-.shine-text {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  color: var(--text);
-}
-/* The band's middle sweeps from half a label before to half after. A
-   position of p% puts the band's left edge p% of the label's other 40% in,
-   so -200% puts it 0.8 of a label before the label and 300% 1.2 after. */
-@keyframes shine { to { -webkit-mask-position: 300% 0; mask-position: 300% 0; } }
+@keyframes shine { to { background-position: 300% 0; } }
 @keyframes spin { to { --turn: 1turn; } }
 
 .row.turn, .row.conversation {
@@ -1577,6 +1556,5 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, 0.6); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   /* A still label is plain text, in the color the label has. */
-  .shine { display: none !important; }
   .state .shimmer { color: var(--text); }
 }

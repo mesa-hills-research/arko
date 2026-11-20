@@ -2,10 +2,10 @@
 
 use leptos::prelude::*;
 
-/// The label, and over it a copy in the text color seen through a band that
-/// sweeps across. The copy stays where the label is and only the band's mask
-/// moves (`.shine` in app.css), so the copy is on the label at any width,
-/// whichever browser draws it.
+/// The label, which while `active` shows a band of the text color sweeping
+/// across it (`.shimmer` in app.css). The label's own glyphs draw the band,
+/// so there's one copy of its words, which a reader selects, copies and
+/// hears once, and the band is on them wherever the label stands.
 #[component]
 pub fn Shimmer(
     text: impl Fn() -> String + Send + Sync + 'static,
@@ -16,9 +16,6 @@ pub fn Shimmer(
     view! {
         <span class=format!("shimmer-label {class}") class:shimmer=active>
             <span class="shimmer-text">{move || text.get()}</span>
-            <span class="shine" aria-hidden="true">
-                <span class="shine-text">{move || text.get()}</span>
-            </span>
         </span>
     }
 }
@@ -28,7 +25,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn both_layers_use_the_current_label() {
+    fn the_label_holds_its_words_once() {
         let owner = Owner::new();
         owner.with(|| {
             let text = RwSignal::new("r123 working".to_string());
@@ -41,9 +38,9 @@ mod tests {
                 text.set(label.to_string());
                 let html = render();
                 let escaped = label.replace('&', "&amp;");
-                assert_eq!(html.matches(&escaped).count(), 2, "{html}");
-                assert!(html.contains("aria-hidden=\"true\""), "{html}");
-                assert!(!html.contains("data-text"), "{html}");
+                assert_eq!(html.matches(&escaped).count(), 1, "{html}");
+                assert!(!html.contains("aria-hidden"), "{html}");
+                assert!(html.contains("shimmer-label state-label shimmer"), "{html}");
             }
             active.set(false);
             let html = render();

@@ -34,6 +34,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inflateSync } from 'node:zlib';
 
 const argv = process.argv.slice(2);
 const arg = (name) => {
@@ -829,6 +830,28 @@ class Run {
   async beginFrame() {
     this.frameTime += 1000 / 60;
     await this.cdp.send('HeadlessExperimental.beginFrame', { frameTimeTicks: this.frameTime, interval: 1000 / 60, noDisplayUpdates: false }, this.session);
+  }
+
+  /// The page as drawn, in device pixels, as a PNG. Frames are drawn first,
+  /// so what the page just changed is painted, and while the screenshot
+  /// waits for its frame. (A frame's own screenshot is at the window's
+  /// scale, not the emulated pixel ratio.)
+  async capture() {
+    for (let at = 0; at < 3; at++) await this.beginFrame();
+    let done = false;
+    const shot = this.cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }, this.session)
+      .finally(() => { done = true; });
+    for (let at = 0; at < 100 && !done; at++) {
+      await this.beginFrame();
+      await sleep(5);
+    }
+    const png = Buffer.from((await shot).data, 'base64');
+    const [width, height] = [png.readUInt32BE(16), png.readUInt32BE(20)];
+    const [wanted, high] = [Math.round(this.width * this.size.dpr), Math.round(this.height * this.size.dpr)];
+    if (Math.abs(width - wanted) > 1 || Math.abs(height - high) > 1) {
+      throw new Error(`a screenshot of ${width}×${height} device px, not ${wanted}×${high}`);
+    }
+    return png;
   }
 
   /// Draws a frame and counts how its lines moved from the last one's,
@@ -1823,6 +1846,165 @@ const LAST_GAP = `(() => {
   const standard = table.PX[table.step(own, table.nextOf(own))] + 2 * metrics(last).lead;
   return { kind, under: divider - emBottom(last), standard, pair, dpr: devicePixelRatio };
 })()`;
+
+/// Every shimmering label on the page, with where it stands (the header or
+/// the live line), its words, how many text nodes draw them, the box its
+/// words' glyphs take (CSS px), the part of it its box shows, and the boxes
+/// of the elements in it that run an animation, which sweep its band.
+const SHIMMERS = `(() => {
+  const box = (rect) => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom });
+  return [...document.querySelectorAll('.shimmer-label.shimmer')].filter((label) => label.getClientRects().length).map((label) => {
+    const texts = [];
+    const walk = document.createTreeWalker(label, NodeFilter.SHOW_TEXT);
+    for (let node = walk.nextNode(); node; node = walk.nextNode()) if (node.data.trim()) texts.push(node);
+    const range = document.createRange();
+    if (texts.length) range.selectNodeContents(texts[0]);
+    const glyphs = box(range.getBoundingClientRect());
+    const own = box(label.getBoundingClientRect());
+    const shown = { left: Math.max(glyphs.left, own.left), right: Math.min(glyphs.right, own.right), top: glyphs.top, bottom: glyphs.bottom };
+    const bands = [label, ...label.querySelectorAll('*')]
+      .filter((each) => getComputedStyle(each).animationName !== 'none' && each.getClientRects().length)
+      .map((each) => box(each.getBoundingClientRect()));
+    return { where: label.closest('#rows') ? 'live line' : 'header', text: texts[0]?.data ?? '', copies: texts.length, glyphs, own, shown, bands };
+  });
+})()`;
+
+/// What's wrong with a shimmering label as SHIMMERS measured it at the
+/// pixel ratio `ratio`, its words drawn more than once or a band whose box
+/// doesn't start and end where its words show, within half a device pixel.
+function shimmerProblems(label, ratio) {
+  const problems = [];
+  const half = 0.5 / ratio;
+  if (label.copies !== 1) problems.push(`its words are drawn ${label.copies} times`);
+  if (!label.bands.length) problems.push('it has no band');
+  for (const band of label.bands) {
+    if (Math.abs(band.left - label.shown.left) > half || Math.abs(band.right - label.shown.right) > half) {
+      problems.push(`its band sweeps ${band.left.toFixed(2)}–${band.right.toFixed(2)} px, and its words show at ${label.shown.left.toFixed(2)}–${label.shown.right.toFixed(2)} px`);
+    }
+  }
+  return problems;
+}
+
+/// The pixels of a PNG with 8 bits a channel (RGB or RGBA, not
+/// interlaced), as Chromium's screenshots are, and its size.
+function pixels(png) {
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  const [depth, type, , , laced] = png.subarray(24, 29);
+  if (depth !== 8 || (type !== 2 && type !== 6) || laced) throw new Error(`a PNG of depth ${depth}, type ${type}, interlace ${laced}`);
+  const channels = type === 6 ? 4 : 3;
+  const chunks = [];
+  for (let at = 8; at < png.length;) {
+    const length = png.readUInt32BE(at);
+    if (png.toString('latin1', at + 4, at + 8) === 'IDAT') chunks.push(png.subarray(at + 8, at + 8 + length));
+    at += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(chunks));
+  const stride = width * channels;
+  const out = Buffer.alloc(height * stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let x = 0; x < stride; x++) {
+      const left = x >= channels ? out[y * stride + x - channels] : 0;
+      const up = y > 0 ? out[(y - 1) * stride + x] : 0;
+      const corner = x >= channels && y > 0 ? out[(y - 1) * stride + x - channels] : 0;
+      let add = 0;
+      if (filter === 1) add = left;
+      else if (filter === 2) add = up;
+      else if (filter === 3) add = (left + up) >> 1;
+      else if (filter === 4) {
+        const p = left + up - corner;
+        const [a, b, c] = [Math.abs(p - left), Math.abs(p - up), Math.abs(p - corner)];
+        add = a <= b && a <= c ? left : b <= c ? up : corner;
+      }
+      out[y * stride + x] = (line[x] + add) & 255;
+    }
+  }
+  return { width, height, channels, data: out };
+}
+
+/// The ink of the device pixels of `image` in `rect` (CSS px at `ratio`):
+/// each pixel's share of the way from the background, the region's most
+/// common gray, to `ink`, the gray of its words. Its centroid, in device px.
+function inkOf(image, rect, ratio, ink) {
+  const x0 = Math.max(0, Math.floor(rect.left * ratio) - 2);
+  const x1 = Math.min(image.width, Math.ceil(rect.right * ratio) + 2);
+  const y0 = Math.max(0, Math.floor(rect.top * ratio) - 2);
+  const y1 = Math.min(image.height, Math.ceil(rect.bottom * ratio) + 2);
+  const gray = (x, y) => {
+    const at = (y * image.width + x) * image.channels;
+    return (image.data[at] + image.data[at + 1] + image.data[at + 2]) / 3;
+  };
+  const counts = new Map();
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const value = Math.round(gray(x, y));
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  const background = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+  let [sum, sx, sy] = [0, 0, 0];
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    const share = Math.min(1, Math.max(0, (gray(x, y) - background) / (ink - background)));
+    sum += share;
+    sx += share * x;
+    sy += share * y;
+  }
+  return sum ? { sum, x: sx / sum, y: sy / sum } : { sum, x: 0, y: 0 };
+}
+
+/// Whether the ink of every shimmering label, drawn with its band halfway
+/// across it, stands where the label's ink stands at rest, within half a
+/// device pixel. Both are drawn in one color, the one that stands out most
+/// from the page's background, so what differs is only where they stand.
+async function inkProblems(run, ratio) {
+  const labels = await run.evaluate(SHIMMERS);
+  // (The page's policy lets no <style> in, so the colors come in a sheet
+  // its script makes. The band stops halfway through its sweep.)
+  const ink = await run.evaluate(`(() => {
+    const [r, g, b] = getComputedStyle(document.body).backgroundColor.match(/[\\d.]+/g).map(Number);
+    const ink = (r + g + b) / 3 > 127 ? 0 : 255;
+    const color = 'rgb(' + [ink, ink, ink].join(', ') + ')';
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync('.shimmer-label { --text: ' + color + ' !important; --muted: ' + color + ' !important; color: ' + color + ' !important; }');
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    window.__meterInk = sheet;
+    for (const animation of document.getAnimations()) {
+      if (!animation.effect?.target?.closest?.('.shimmer-label')) continue;
+      animation.pause();
+      animation.currentTime = animation.effect.getComputedTiming().duration / 2;
+    }
+    return ink;
+  })()`);
+  const set = await run.evaluate(`(() => {
+    const bands = document.getAnimations().filter((animation) => animation.effect?.target?.closest?.('.shimmer-label.shimmer'));
+    return bands.length > 0
+      && bands.every((animation) => animation.playState === 'paused' && Math.abs(animation.currentTime - animation.effect.getComputedTiming().duration / 2) < 1)
+      && [...document.querySelectorAll('.shimmer-label.shimmer, .shimmer-label.shimmer *')].every((each) => getComputedStyle(each).color === 'rgb(${ink}, ${ink}, ${ink})');
+  })()`);
+  const shimmering = set ? pixels(await run.capture()) : null;
+  await run.evaluate(`(() => { for (const label of document.querySelectorAll('.shimmer-label.shimmer')) { label.classList.remove('shimmer'); label.dataset.meterShimmer = '1'; } return true; })()`);
+  const rest = set ? pixels(await run.capture()) : null;
+  await run.evaluate(`(() => {
+    for (const label of document.querySelectorAll('[data-meter-shimmer]')) { label.classList.add('shimmer'); delete label.dataset.meterShimmer; }
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter((sheet) => sheet !== window.__meterInk);
+    return true;
+  })()`);
+  if (!set) return ["the labels' colors and band couldn't be set to compare their ink"];
+  const problems = [];
+  for (const label of labels) {
+    const rect = { left: label.own.left, right: label.own.right, top: Math.min(label.own.top, label.glyphs.top), bottom: Math.max(label.own.bottom, label.glyphs.bottom) };
+    const [a, b] = [inkOf(shimmering, rect, ratio, ink), inkOf(rest, rect, ratio, ink)];
+    if (!a.sum || !b.sum) {
+      problems.push(`${label.where} "${label.text}": no ink ${a.sum ? 'at rest' : 'while it shimmers'}`);
+      continue;
+    }
+    const [dx, dy] = [a.x - b.x, a.y - b.y];
+    if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+      problems.push(`${label.where} "${label.text}": its ink while it shimmers stands ${dx.toFixed(2)}, ${dy.toFixed(2)} device px off its ink at rest`);
+    }
+  }
+  return problems;
+}
 
 /// A command whose line is longer than a phone's, as a push and a look at
 /// its CI run make.
@@ -3276,6 +3458,49 @@ async function pixelCases(cdp, agent) {
     const by = shift(from, to);
     return by === 1 && run.meter.shifted() === shifted + 1 ? null : `a span closed as its row moved a device pixel, and the meter measured ${by} in ${run.meter.shifted() - shifted} frames`;
   });
+  // Every shimmering label, the header's state and the live line, with
+  // "Working…" and with a long call's words cut to fit (Messages), draws its
+  // words once, and its band is on them. The box the band sweeps starts and
+  // ends where its words show, and its ink with the band halfway across
+  // stands where its ink at rest does, within half a device pixel, at a
+  // phone's width and a desktop's.
+  for (const [width, ratios] of [[390, [2, 3]], [1000, [1, 1.5, 2]]]) {
+    for (const ratio of ratios) {
+      for (const view of ['quiet', 'messages']) {
+        await play(ratio, `${width < 720 ? 'touch: ' : ''}a shimmering label's band is on its words at ${width} px (${view})`, async (run) => {
+          await run.metrics(width, width < 720 ? 844 : 700);
+          await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+          await run.settle(null);
+          const problems = [];
+          const look = async (state) => {
+            // (Until the live line comes, as the page shows it a moment
+            // after the step that brings it.)
+            for (let at = 0; at < 100 && !(await run.evaluate(`!!document.querySelector('#rows > .working .shimmer-label.shimmer')`)); at++) {
+              await run.frame();
+              await sleep(20);
+            }
+            const labels = await run.evaluate(SHIMMERS);
+            const where = labels.map((label) => label.where).sort().join(', ');
+            if (where !== 'header, live line') problems.push(`${state}: the labels that shimmer are ${where || 'none'}`);
+            for (const label of labels) {
+              for (const problem of shimmerProblems(label, ratio)) problems.push(`${state}, ${label.where} "${label.text}": ${problem}`);
+            }
+            for (const problem of await inkProblems(run, ratio)) problems.push(`${state}, ${problem}`);
+            return labels;
+          };
+          await look('Working…');
+          if (view === 'messages') {
+            await run.feed({ do: 'call', tool: 'shell', parameters: { command: LONG_COMMAND } });
+            await run.settle(null);
+            const labels = await look('a long command runs');
+            const live = labels.find((label) => label.where === 'live line');
+            if (live && live.glyphs.right <= live.own.right) problems.push(`a long command runs: the live line "${live.text}" isn't cut`);
+          }
+          return problems.length ? problems.join('; ') : null;
+        }, view);
+      }
+    }
+  }
   return { failures, count, skipped };
 }
 
