@@ -650,6 +650,26 @@ mod tests {
         }
     }
 
+    /// A command whose words open with a long subshell keeps as much of it
+    /// as fits, cut where one of its words ends, as the terminal does.
+    #[test]
+    fn a_long_subshell_gives_way_at_its_words() {
+        let words = "Ran (git worktree list | grep -q row-m0-render || git worktree add -q --detach ../wt/row-m0-render 4f7a2c1e) && git worktree list | grep row-m0-render in demo_kit";
+        let fitted = line(words, 0.0, &[], 40.0 * 8.0, M);
+        assert_eq!(fitted.words, "Ran (git worktree list | grep -q…");
+        // (The widest word, a space and the ellipsis.)
+        let most = "../wt/row-m0-render".len() + 2;
+        let mut last = 0;
+        for columns in 8..words.len() {
+            let shown = line(words, 0.0, &[], columns as f64 * 8.0, M).words;
+            let kept = shown.trim_end_matches('…');
+            assert!(words.starts_with(kept), "{columns}: {shown}");
+            assert!(columns - kept.len() <= most, "{columns}: {shown}");
+            assert!(kept.len() >= last, "{columns}: {shown}");
+            last = kept.len();
+        }
+    }
+
     /// A file's line keeps its name, and its folders show from where a
     /// folder starts.
     #[test]

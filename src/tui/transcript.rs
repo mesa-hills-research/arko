@@ -1790,6 +1790,23 @@ impl Transcript {
             .flatten()
             .and_then(|call| self.item(call))
             .and_then(|call| call.act.as_ref()?.calls.clone());
+        // (A call's content touches the call as it comes.)
+        let held = !fresh && item.kind == Kind::Call && {
+            let content = self
+                .contents
+                .contains(&item.id)
+                .then(|| {
+                    self.entries.range(index + 1..).find(|entry| {
+                        entry.item.kind == Kind::Result && entry.item.call == Some(item.id)
+                    })
+                })
+                .flatten();
+            holds_call(
+                item,
+                item.detail.as_deref(),
+                content.map(|entry| &entry.item),
+            )
+        };
         let entry = &mut self.entries[index];
         if !fresh {
             entry.cache = None;
@@ -1803,6 +1820,7 @@ impl Transcript {
                 worker: face.worker.as_ref(),
                 calls: calls.as_ref(),
                 whole: &face.whole,
+                held,
             };
             Cached {
                 width,
@@ -2251,12 +2269,14 @@ impl Transcript {
                         calls = item.act.as_ref().and_then(|act| act.calls.as_ref());
                         let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
                         // What its line left out, each once. Where it cut its
-                        // words, the call as written, unless the detail is
-                        // the whole command or query, and where it left out
-                        // its news or note, them, after its words whole where
-                        // it cut those too.
+                        // words, the call as written, unless its detail or
+                        // content holds it, and where it left out its news or
+                        // note, them, after its words whole where it cut
+                        // those too.
                         let fit = quiet_fit(&row.words, width, 0, None);
-                        let words = fit.words_cut && !detail_is_whole(item);
+                        let contents = row.members.iter().map(|at| &self.entries[*at].item);
+                        let held = holds_call(item, Some(detail), contents);
+                        let words = fit.words_cut && !held;
                         let whole = if fit.left_out {
                             let steady = steady_words(&row.words);
                             steady
@@ -2325,7 +2345,9 @@ impl Transcript {
                         call_line(item, theme, inner, true, None, folds.then_some(open), true);
                     rail(&mut lines, line, 0);
                     if open {
-                        if let Some(whole) = shown_whole(item, inner, false, true) {
+                        let contents = results.iter().map(|at| &self.entries[*at].item);
+                        let held = holds_call(item, item.detail.as_deref(), contents);
+                        if let Some(whole) = shown_whole(item, inner, false, true, held) {
                             rail(&mut lines, detail_lines(&whole, theme, room), MARGIN);
                         }
                         if let Some(detail) = &item.detail {
@@ -4491,6 +4513,8 @@ struct Look<'a> {
     calls: Option<&'a Calls>,
     /// The questions of a question card shown whole, by id.
     whole: &'a [String],
+    /// What a call opens to holds its call as written ([`holds_call`]).
+    held: bool,
 }
 
 /// What a code run's calls did, after its code in its open Quiet row, one
@@ -5250,12 +5274,19 @@ fn worker_spans(face: &WorkerFace, theme: &Theme, room: usize) -> Vec<Span<'stat
     fit_spans(spans, room)
 }
 
-/// Whether `item` is a command or a search whose detail is the whole
-/// command or query, which says all its line does.
-fn detail_is_whole(item: &Item) -> bool {
-    item.act.as_ref().is_some_and(|act| {
-        matches!(act.kind, ActKind::Command | ActKind::Search) && !act.detail.is_empty()
-    })
+/// Whether what the call `call` opens to, `detail` and its content among
+/// `items`, holds its call as written ([`quiet::holds_call`]).
+fn holds_call<'a>(
+    call: &Item,
+    detail: Option<&str>,
+    items: impl IntoIterator<Item = &'a Item>,
+) -> bool {
+    let contents = items
+        .into_iter()
+        .filter(|item| item.kind == Kind::Result && item.call == Some(call.id))
+        .map(|item| item.whole.as_deref().unwrap_or(&item.text));
+    let held: Vec<&str> = detail.into_iter().chain(contents).collect();
+    quiet::holds_call(&call.text, &held)
 }
 
 /// A call's words as its Full line says them, the call as written, on one
@@ -5325,13 +5356,13 @@ fn call_cut(item: &Item, width: usize, who: bool, in_row: bool) -> bool {
 
 /// What an open call shows over its detail of what its line at `width`
 /// left out, each once. Where the line cut its words, its words whole,
-/// unless the detail is the whole command or query. Where it left out its
-/// outcome's words, them, after its words whole where they show, and alone
-/// where the line shows its words. Never its mark, which its line shows.
-fn shown_whole(item: &Item, width: usize, who: bool, in_row: bool) -> Option<String> {
+/// unless what it opens to holds them (`held`, [`holds_call`]). Where it
+/// left out its outcome's words, them, after its words whole where they
+/// show, and alone where the line shows its words. Never its mark, which
+/// its line shows.
+fn shown_whole(item: &Item, width: usize, who: bool, in_row: bool, held: bool) -> Option<String> {
     let fit = call_fit(item, width, who, None, in_row);
-    let words = (fit.words_cut && !(item.detail.is_some() && detail_is_whole(item)))
-        .then(|| call_words(item));
+    let words = (fit.words_cut && !held).then(|| call_words(item));
     let outcome = ended_outcome(item).filter(|_| fit.left_out);
     quiet::call_left_out(words.as_deref(), outcome).map(rendered)
 }
@@ -5647,9 +5678,10 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             let fold = folds.then_some(open);
             let mut lines = call_line(item, theme, width, own, clock, fold, false);
             if folds && open {
-                // (A command's detail is the whole command, so its line's
-                // words don't show twice.)
-                if let Some(whole) = shown_whole(item, width, !(item.is_main() || own), false) {
+                // (Where its detail or content holds its call as written,
+                // that doesn't show twice.)
+                let who = !(item.is_main() || own);
+                if let Some(whole) = shown_whole(item, width, who, false, look.held) {
                     lines.extend(railed(detail_lines(&whole, theme, inner), theme));
                 }
                 if let Some(detail) = &item.detail {
@@ -7963,7 +7995,7 @@ mod tests {
                 let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
                 assert!(MARGIN + text_width(&fit.words) + text_width(&tail) <= width);
                 assert_eq!(tail.contains(said), width >= least, "{found:?} {width}");
-                let whole = shown_whole(&wait, width, false, false).unwrap_or_default();
+                let whole = shown_whole(&wait, width, false, false, false).unwrap_or_default();
                 assert!(!whole.contains('✓') && !whole.contains('✗'), "{whole}");
                 match (fit.words_cut, fit.left_out) {
                     (true, false) => assert_eq!(whole, "waiting for job 4d2c1a9b"),
@@ -8039,7 +8071,7 @@ mod tests {
             }
             // The line opens to what it left out, each once, never its mark.
             assert_eq!(cut, shown != words || !outcome, "{width}");
-            let whole = shown_whole(&call, width, false, false);
+            let whole = shown_whole(&call, width, false, false, false);
             let expected = match (shown != words, outcome) {
                 (true, false) => Some(format!("{words} · 41.0 s")),
                 (false, false) => Some("41.0 s".to_string()),
@@ -8056,7 +8088,7 @@ mod tests {
         let fit = call_fit(&short, 30, false, None, false);
         assert!(fit.left_out && !fit.words_cut);
         assert_eq!(
-            shown_whole(&short, 30, false, false).as_deref(),
+            shown_whole(&short, 30, false, false, false).as_deref(),
             Some("No such file or directory (os error 2)")
         );
         // A Quiet row's note goes whole the same way, and the row opens.
@@ -8220,6 +8252,209 @@ mod tests {
                 "{width}: {shown}"
             );
         }
+    }
+
+    /// A command whose words open with a long subshell keeps as much of it
+    /// as fits, cut where one of its words ends, on its Quiet row and its
+    /// Full line, at every width.
+    #[test]
+    fn a_long_subshell_gives_way_at_its_words() {
+        let command = "cd ~/work/repos/demo_kit && (git worktree list | grep -q row-m0-render || git worktree add -q --detach ../wt/row-m0-render 4f7a2c1e) && git worktree list | grep row-m0-render";
+        let output =
+            "exit code 0, 0.1 s\n/home/ada/work/repos/wt/row-m0-render  4f7a2c1e (detached HEAD)";
+        let parameters = serde_json::json!({ "command": command });
+        let feed = played(&[("shell", parameters, Some(output))]);
+        let mut t = Transcript::new();
+        t.reset(feed.subscribe().0);
+        let quiet = Filter::Main(View::Quiet);
+        let line =
+            |t: &mut Transcript, filter: &Filter, width: u16| rows(t, filter, width, 40).remove(0);
+        for (width, shown) in [
+            (30, "▸ Ran (git worktree list |…"),
+            (40, "▸ Ran (git worktree list | grep -q…"),
+            (
+                60,
+                "▸ Ran (git worktree list | grep -q row-m0-render || git…",
+            ),
+            (
+                100,
+                "▸ Ran (git worktree list | grep -q row-m0-render || git worktree add -q --detach…",
+            ),
+        ] {
+            assert_eq!(line(&mut t, &quiet, width), shown);
+        }
+        assert_eq!(
+            line(&mut t, &full(), 60),
+            "▾ $ cd ~/work/repos/demo_kit && (git worktree… · ✓ 0.1 s"
+        );
+        assert_eq!(
+            line(&mut t, &full(), 100),
+            "▾ $ cd ~/work/repos/demo_kit && (git worktree list | grep -q row-m0-render || git… · ✓ 0.1 s"
+        );
+        // A wider line never keeps less.
+        for filter in [quiet, full()] {
+            let mut last = 0;
+            for width in 24..=180 {
+                let shown = line(&mut t, &filter, width);
+                let kept = shown.split_once(' ').unwrap().1.trim_end_matches('…');
+                assert!(kept.len() >= last, "{width}: {shown}");
+                last = kept.len();
+            }
+        }
+    }
+
+    /// A feed of `calls`, each a tool, its parameters and its result (none
+    /// while it runs), as the feed makes them.
+    fn played(calls: &[(&str, serde_json::Value, Option<&str>)]) -> crate::remote::Feed {
+        let feed = crate::remote::Feed::new(MAIN_AGENT);
+        for (tool, parameters, output) in calls {
+            let call = uuid::Uuid::new_v4();
+            let parameters = parameters
+                .as_object()
+                .unwrap()
+                .clone()
+                .into_iter()
+                .collect();
+            feed.event(&agent_event(call_formatted(call, tool, parameters)), None);
+            if let Some(output) = output {
+                feed.event(&agent_event(call_result(call, tool, output)), None);
+            }
+        }
+        feed
+    }
+
+    fn agent_event(event: arko_agents::AgentEvent) -> arko_workflows::WorkflowEvent {
+        arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: MAIN_AGENT.into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        }
+    }
+
+    fn call_formatted(
+        call: uuid::Uuid,
+        tool: &str,
+        parameters: HashMap<String, serde_json::Value>,
+    ) -> arko_agents::AgentEvent {
+        arko_agents::AgentEvent::ToolCallFormatted {
+            tool_call_id: call,
+            tool_name: tool.into(),
+            parameters,
+        }
+    }
+
+    fn call_result(call: uuid::Uuid, tool: &str, output: &str) -> arko_agents::AgentEvent {
+        arko_agents::AgentEvent::ToolResult {
+            tool_call_id: call,
+            tool_name: tool.into(),
+            output: output.into(),
+            receipt: None,
+        }
+    }
+
+    /// `rows` as one text, without the rail and the indent before each, so
+    /// a phrase a row wrapped reads whole.
+    fn joined(rows: &[String]) -> String {
+        rows.iter()
+            .map(|row| row.trim_start_matches(['│', ' ']))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The ID of the first call in `t`.
+    fn first_call(t: &Transcript) -> u64 {
+        let call = t.entries.iter().find(|entry| entry.item.kind == Kind::Call);
+        call.unwrap().item.id
+    }
+
+    /// A message's body shows once when its call opens, in a Quiet row of
+    /// several and in Full, at any width, since the body holds its call as
+    /// written. Its outcome shows where its line left it out. The same goes
+    /// for a body of several lines with quotes and backslashes.
+    #[test]
+    fn a_messages_body_shows_once_when_it_opens() {
+        let theme = Theme::terminal();
+        let plain = "On activation reflow, apply the rule to every row kind: a row keeps its line where it is while it opens, and nothing above it moves. Check it through every surface, Full and Quiet, at 320 and 390, and send crops.";
+        let quoted = "Two things.\n\n1. The \"Ran\" row of C:\\Users\\ada\\notes.md cuts at “a word”, and nothing above it moves.\n2. Send crops before the commit, at 320 and 390 and at 60 and 100 columns.";
+        for body in [plain, quoted] {
+            let first = serde_json::json!({ "to": "r5", "message": body });
+            let second =
+                serde_json::json!({ "to": "r10", "message": "Review the reflow as it lands." });
+            let feed = played(&[
+                ("message_agent", first, Some("Sent to r5.")),
+                ("message_agent", second, Some("Sent to r10.")),
+            ]);
+            let quiet = Filter::Main(View::Quiet);
+            for width in [30, 60, 100] {
+                // In Quiet, the row open, then its first call.
+                let mut t = Transcript::new();
+                t.reset(feed.subscribe().0);
+                let call = first_call(&t);
+                rows(&mut t, &quiet, width, 60);
+                t.toggle(call, 0, &quiet, &theme);
+                rows(&mut t, &quiet, width, 60);
+                t.toggle(call, 1, &quiet, &theme);
+                let open = rows(&mut t, &quiet, width, 60);
+                assert!(open[1].starts_with("│ ▾ message r5"), "{width}: {open:#?}");
+                let next = open.iter().position(|row| row.contains("message r10"));
+                let said = joined(&open[2..next.unwrap()]);
+                let once = said.matches("nothing above it moves").count() == 1;
+                assert!(once, "{width}: {open:#?}");
+                let outcome = open[1].contains("sent");
+                assert_eq!(said.contains("sent"), !outcome, "{width}: {open:#?}");
+                // In Full.
+                let mut t = Transcript::new();
+                t.reset(feed.subscribe().0);
+                let call = first_call(&t);
+                rows(&mut t, &full(), width, 60);
+                t.toggle(call, 0, &full(), &theme);
+                let open = rows(&mut t, &full(), width, 60);
+                assert!(open[0].starts_with("▾ message r5"), "{width}: {open:#?}");
+                let next = open.iter().position(|row| row.contains("message r10"));
+                let said = joined(&open[1..next.unwrap()]);
+                let once = said.matches("nothing above it moves").count() == 1;
+                assert!(once, "{width}: {open:#?}");
+                let outcome = open[0].contains("sent");
+                assert_eq!(said.contains("sent"), !outcome, "{width}: {open:#?}");
+            }
+        }
+    }
+
+    /// A call opened while it runs shows its call as written, which its
+    /// line cut, until the content that holds it comes.
+    #[test]
+    fn a_call_open_while_it_runs_says_its_words_until_its_content_holds_them() {
+        let theme = Theme::terminal();
+        let body =
+            "Check the callers of the parser, then the docs' links, and report what changed.";
+        let feed = crate::remote::Feed::new(MAIN_AGENT);
+        let (snapshot, mut updates) = feed.subscribe();
+        let mut t = Transcript::new();
+        t.reset(snapshot);
+        let call = uuid::Uuid::new_v4();
+        let parameters = [
+            ("to".to_string(), serde_json::json!("r5")),
+            ("message".to_string(), serde_json::json!(body)),
+        ];
+        let formatted = call_formatted(call, "message_agent", parameters.into());
+        feed.event(&agent_event(formatted), None);
+        let mut draw = |t: &mut Transcript| {
+            while let Ok(update) = updates.try_recv() {
+                t.apply(update);
+            }
+            joined(&rows(t, &full(), 40, 30)[1..])
+        };
+        draw(&mut t);
+        t.toggle(first_call(&t), 0, &full(), &theme);
+        let said = draw(&mut t);
+        assert_eq!(said.matches("docs' links").count(), 1, "{said}");
+        let result = call_result(call, "message_agent", "Sent to r5.");
+        feed.event(&agent_event(result), None);
+        let said = draw(&mut t);
+        assert_eq!(said.matches("docs' links").count(), 1, "{said}");
+        assert!(!said.contains("message r5"), "{said}");
     }
 
     /// The rows of `lines` as drawn.

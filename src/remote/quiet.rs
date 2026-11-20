@@ -253,15 +253,61 @@ pub fn ended(status: Option<CallStatus>, outcome: Option<&str>) -> Option<&str> 
 }
 
 /// What an open call shows of what its line left out, each once. That is
-/// its `words` whole where the line cut them (and its detail isn't the
-/// whole command), then its `outcome`'s words where the line left them out,
-/// alone where the line shows its words. Never its mark, which its line
-/// shows.
+/// its `words` whole where the line cut them (and what it opens to doesn't
+/// hold them, [`holds_call`]), then its `outcome`'s words where the line
+/// left them out, alone where the line shows its words. Never its mark,
+/// which its line shows.
 pub fn call_left_out(words: Option<&str>, outcome: Option<&str>) -> Option<String> {
     match (words, outcome) {
         (Some(words), Some(outcome)) => Some(format!("{words} · {outcome}")),
         (words, outcome) => words.or(outcome).map(str::to_string),
     }
+}
+
+/// Whether what an open call shows under its line (`held`, its detail and
+/// its content) holds what its call as written (`line`) says past its verb
+/// and target, so the call as written would only say it again. That is the
+/// line from its first "“" or "$ " (a message, a task, a query, a command),
+/// else after its first word (a path), without the line's own marks of
+/// what it left out (its ellipsis, "(3 more lines)"). Spaces and line
+/// breaks count alike.
+pub fn holds_call(line: &str, held: &[&str]) -> bool {
+    let line = line.trim();
+    // (Each where a word starts, so not one inside a path.)
+    let start = ["“", "$ "]
+        .iter()
+        .filter_map(|mark| {
+            line.match_indices(mark)
+                .map(|(at, _)| at)
+                .find(|at| {
+                    line[..*at]
+                        .chars()
+                        .next_back()
+                        .is_none_or(char::is_whitespace)
+                })
+                .map(|at| at + mark.len())
+        })
+        .min()
+        .or_else(|| line.find(char::is_whitespace));
+    let Some(start) = start else {
+        return false;
+    };
+    let mut says = line[start..].trim();
+    if let Some(at) = says.rfind("  (")
+        && says.ends_with(')')
+        && says[at + 3..].split_once(' ').is_some_and(|(count, rest)| {
+            count.chars().all(|c| c.is_ascii_digit()) && rest.starts_with("more line")
+        })
+    {
+        says = &says[..at];
+    }
+    let says = one_line(says.trim_end_matches('”').trim_end_matches('…'));
+    !says.is_empty() && held.iter().any(|held| one_line(held).contains(&says))
+}
+
+/// `text` with each run of spaces and line breaks one space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Whether a look at a job or a wait on it found its job failed, which its
@@ -1619,22 +1665,22 @@ pub fn fit(words: usize, fixed: usize, parts: &[Part], room: usize) -> Fit {
 
 /// How many of a line's words' `clusters` (its characters, each with its
 /// width) show in `room`, which leaves out the ellipsis after them. The cut
-/// falls where a word ends, and a group in parentheses ("(7 more lines)")
-/// shows whole or not at all. Only a word wider than `long` (a path, an ID,
-/// in the unit the widths are in) is cut inside, where the last word that
-/// ends keeps less than half the room, and then a space before it goes. So
-/// is a first word that doesn't fit, where nothing ends before it.
+/// falls where a word ends. A group in parentheses no wider than twice
+/// `long` ("(7 more lines)") shows whole or not at all, and a wider one (a
+/// long command's subshell) is cut at its words as any words are, though a
+/// short group inside it still goes whole. Only a word wider than `long` (a
+/// path, an ID, in the unit the widths are in) is cut inside, where the last
+/// word that ends keeps less than half the room, and then a space before it
+/// goes. So is a first word that doesn't fit, where nothing ends before it.
 pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize, long: usize) -> usize {
     let space = |at: usize| clusters[at].0.as_ref().chars().all(char::is_whitespace);
+    let group = whole_groups(clusters, long.saturating_mul(2));
     let mut used = 0;
-    let mut depth = 0usize;
-    // Where the group in parentheses the cut would fall in starts.
-    let mut group = 0;
     // The end of the last whole word that fits, and the room it takes.
     let mut word = (0, 0);
     let mut inside = clusters.len();
-    for (at, (cluster, width)) in clusters.iter().enumerate() {
-        if at > 0 && depth == 0 && space(at) && !space(at - 1) {
+    for (at, (_, width)) in clusters.iter().enumerate() {
+        if at > 0 && group[at].is_none() && space(at) && !space(at - 1) {
             word = (at, used);
         }
         if used + width > room {
@@ -1642,18 +1688,6 @@ pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize, long: us
             break;
         }
         used += width;
-        for c in cluster.as_ref().chars() {
-            match c {
-                '(' => {
-                    if depth == 0 {
-                        group = at;
-                    }
-                    depth += 1;
-                }
-                ')' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
     }
     if inside == clusters.len() {
         return inside;
@@ -1675,12 +1709,40 @@ pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize, long: us
     if word.0 > 0 && (word.1 * 2 >= room || cut_word() <= long) {
         return word.0;
     }
-    // (Never inside a group, which goes whole.)
-    let mut kept = if depth > 0 { group } else { inside };
+    // (Never inside a group that goes whole.)
+    let mut kept = group[inside].unwrap_or(inside);
     while kept > 0 && space(kept - 1) {
         kept -= 1;
     }
     kept
+}
+
+/// Where the group in parentheses no wider than `widest` that each of
+/// `clusters` is in starts, the outermost where one holds another.
+/// Parentheses pair as written, in quotes or not, and one without a pair
+/// starts or ends none.
+fn whole_groups<S: AsRef<str>>(clusters: &[(S, usize)], widest: usize) -> Vec<Option<usize>> {
+    let mut group = vec![None; clusters.len()];
+    // Each open group's "(" and the width before it.
+    let mut open = Vec::new();
+    let mut used = 0;
+    for (at, (cluster, width)) in clusters.iter().enumerate() {
+        for c in cluster.as_ref().chars() {
+            match c {
+                '(' => open.push((at, used)),
+                ')' => {
+                    if let Some((start, before)) = open.pop()
+                        && used + width - before <= widest
+                    {
+                        group[start..=at].fill(Some(start));
+                    }
+                }
+                _ => {}
+            }
+        }
+        used += width;
+    }
+    group
 }
 
 /// Where a path's `folders` (characters with their widths, each folder
@@ -3528,11 +3590,40 @@ mod tests {
             cut("Running cargo build --release -p arko", 22),
             "Running cargo build"
         );
-        // A group in parentheses goes whole.
+        // A group in parentheses of up to 24 columns goes whole, even where
+        // nothing comes before it.
         let heredoc = "$ cat > docs/release-notes.md <<'EOF'  (7 more lines)";
         assert_eq!(cut(heredoc, 48), "$ cat > docs/release-notes.md <<'EOF'");
         assert_eq!(cut("$ cat (7 more lines)", 13), "$ cat");
         assert_eq!(cut("(7 more lines)", 8), "");
+        assert_eq!(cut("x (a (b c) d) y", 9), "x");
+        // A wider one, a subshell, is cut at its words, though a short group
+        // inside it still goes whole.
+        let subshell = "Ran (git worktree list | grep -q row-m0-render || git worktree add -q --detach ../wt/row-m0-render 4f7a2c1e) && git worktree list | grep row-m0-render in demo_kit";
+        assert_eq!(cut(subshell, 30), "Ran (git worktree list | grep");
+        assert_eq!(
+            cut(subshell, 100),
+            "Ran (git worktree list | grep -q row-m0-render || git worktree add -q --detach ../wt/row-m0-render"
+        );
+        let nested = "Ran (cd web && (npm ci --silent) && npm run build -- --mode production)";
+        assert_eq!(cut(nested, 25), "Ran (cd web &&");
+        assert_eq!(cut(nested, 38), "Ran (cd web && (npm ci --silent) &&");
+        // So the words keep as much as fits at any width, at most the room a
+        // word takes short of it, and more as the room grows.
+        let words: Vec<&str> = subshell.split(' ').collect();
+        let widest = words.iter().map(|word| word.len()).max().unwrap();
+        let mut last = 0;
+        for room in 4..subshell.len() {
+            let kept = cut(subshell, room).len();
+            assert!(room - kept <= widest + 1, "{room}: {}", cut(subshell, room));
+            assert!(kept >= last, "{room}: {}", cut(subshell, room));
+            last = kept;
+        }
+        // A "(" or ")" without its pair (in quotes) is no group.
+        let quoted = "Ran grep -c '(' notes.md && git status --short";
+        assert_eq!(cut(quoted, 30), "Ran grep -c '(' notes.md &&");
+        let quoted = "Ran grep -c ')' notes.md && git status --short";
+        assert_eq!(cut(quoted, 30), "Ran grep -c ')' notes.md &&");
         // Inside a word only where the last that ends keeps under half.
         assert_eq!(
             cut("$ ./target/release/arko-something", 19),
@@ -3540,6 +3631,80 @@ mod tests {
         );
         assert_eq!(cut("abcdefghij", 4), "abcd");
         assert_eq!(cut("short", 9), "short");
+    }
+
+    /// What a call opens to holds its call as written where its detail or
+    /// content holds what the call says past its verb and target, whatever
+    /// its tool, and not where the call says more.
+    #[test]
+    fn what_a_call_opens_to_holds_its_call_as_written() {
+        let body = "On activation reflow, apply the rule to every row kind.\n\nCheck it through every surface.";
+        let cut = format!("message r5 “{}…”", &one_line(body)[..60]);
+        let quoted =
+            "Two things.\n\n1. The \"Ran\" row of C:\\Users\\ada\\notes.md cuts at “a word”.";
+        let quoted_line = format!("message r5 “{}”", one_line(quoted));
+        let held = [
+            (cut.as_str(), body),
+            (quoted_line.as_str(), quoted),
+            (
+                "start worker (opus) “Check the docs' links”",
+                "Check the docs' links",
+            ),
+            (
+                "index search “branched message index”",
+                "branched message index",
+            ),
+            (
+                "$ cd web && cargo build --release",
+                "cd web && cargo build --release",
+            ),
+            (
+                "(in src/work) $ printf one  (1 more line)",
+                "printf one\nprintf two",
+            ),
+            // (A tool Arko doesn't know, by its line's form alone.)
+            (
+                "publish post “Release notes for 0.24”",
+                "Release notes for 0.24\n",
+            ),
+            (
+                "archive notes/2026/november.md",
+                "Archived notes/2026/november.md",
+            ),
+        ];
+        for (line, detail) in held {
+            assert!(holds_call(line, &["", detail]), "{line}");
+        }
+        let not = [
+            // A near match, part of it, or more than it.
+            (
+                cut.as_str(),
+                "On activation reflow, apply the rule to every row.",
+            ),
+            ("grep “TODO” in src/remote", "TODO"),
+            ("$ cargo build --release", "cargo build\nCompiling arko"),
+            ("publish post “Release notes for 0.24”", "Release notes"),
+            (
+                "archive notes/2026/november.md --keep",
+                "Archived notes/2026/november.md",
+            ),
+            // (A quote or a "$ " inside a path starts nothing.)
+            ("archive notes/“draft”.md", "Archived other/“draft”.md"),
+            ("archive notes/a$ b.md", "Archived other/a$ b.md"),
+            (
+                "create_issue (github) {\"title\":\"Rows\"}",
+                "{\n  \"title\": \"Rows\"\n}",
+            ),
+            (
+                "read /home/ada/notes/NOTES.md:120-139",
+                "120\t- Quiet rows carry no ✓.",
+            ),
+            ("message r5 “Push it.”", ""),
+            ("list", "list"),
+        ];
+        for (line, detail) in not {
+            assert!(!holds_call(line, &[detail]), "{line}");
+        }
     }
 
     /// An open row or call shows each thing its line left out once, its

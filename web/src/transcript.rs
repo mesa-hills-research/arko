@@ -306,12 +306,14 @@ fn handler_element(event: &web_sys::Event) -> Option<web_sys::Element> {
     event.current_target()?.dyn_into::<web_sys::Element>().ok()
 }
 
-/// Whether `item` is a command or a search whose detail is the whole
-/// command or query, which says all its line does.
-fn detail_is_whole(item: &ItemData) -> bool {
-    item.act.as_ref().is_some_and(|act| {
-        matches!(act.kind, ActKind::Command | ActKind::Search) && !act.detail.is_empty()
-    })
+/// Whether what the call `item` opens to, `detail` and its content (once
+/// it came), holds its call as written ([`quiet::holds_call`]).
+fn holds_call(item: &ItemData, detail: Option<&str>) -> bool {
+    let content = crate::app::content_of(item.id)
+        .and_then(crate::app::cell)
+        .map(|cell| cell.text.get());
+    let held: Vec<&str> = detail.into_iter().chain(content.as_deref()).collect();
+    quiet::holds_call(&item.text, &held)
 }
 
 /// Calls in a few words (Quiet), by the first one's ID. The row keeps its
@@ -426,9 +428,9 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         })
     };
     // A row of one call opens to what its line left out, each once. Where
-    // the line cut its words, the call as written, unless its detail is the
-    // whole command or query, and where it left out its news or note, them,
-    // after its words whole where it cut those too.
+    // the line cut its words, the call as written, unless its detail or
+    // content holds it, and where it left out its news or note, them, after
+    // its words whole where it cut those too.
     let whole = move || {
         if data.with(|row| row.merged) {
             return None;
@@ -440,9 +442,10 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         })?;
         let cell = members().first().copied().and_then(cell);
         let words_cut = words_cut
-            && !cell
-                .as_ref()
-                .is_some_and(|cell| cell.data.with(detail_is_whole));
+            && !cell.as_ref().is_some_and(|cell| {
+                cell.data
+                    .with(|item| holds_call(item, item.act.as_ref().map(|act| act.detail.as_str())))
+            });
         if left_out() {
             let steady = steady_words();
             let text = steady.left_out(words_cut.then_some(steady.text.as_str()), parts)?;
@@ -635,8 +638,8 @@ fn quiet_member(
         })
         .map(|detail| view! { <pre class="held">{detail}</pre> })
     };
-    // (Where its detail is the whole command, its line's words don't show
-    // twice.)
+    // (Where its detail or content holds its call as written, that doesn't
+    // show twice.)
     let whole = move || {
         merged()
             .then(|| data.with(|item| shown_whole(item, cut.get())))
@@ -1403,11 +1406,12 @@ impl LineCut {
 
 /// What an open call shows over its detail of what its line left out
 /// (`cut`), each once ([`quiet::call_left_out`]). Where the line cut its
-/// words, the call as written, unless the detail is the whole command or
-/// query. Where it left out its outcome's words, them. Never its mark.
+/// words, the call as written, unless its detail or content holds it
+/// ([`holds_call`]). Where it left out its outcome's words, them. Never its
+/// mark.
 fn shown_whole(item: &ItemData, cut: LineCut) -> Option<String> {
-    let words = (cut.words_cut && !(item.detail.is_some() && detail_is_whole(item)))
-        .then_some(item.text.as_str());
+    let words =
+        (cut.words_cut && !holds_call(item, item.detail.as_deref())).then_some(item.text.as_str());
     let outcome = quiet::ended(item.status, item.outcome.as_deref()).filter(|_| cut.left_out);
     quiet::call_left_out(words, outcome)
 }
@@ -1496,8 +1500,8 @@ fn call_row(cell: RowCell) -> AnyView {
     let mark = move || if folds() { "▸" } else { STILL };
     let detail = move || {
         open().then(|| {
-            // (A command's detail is the whole command, so its line's words
-            // don't show twice.)
+            // (Where its detail or content holds its call as written, that
+            // doesn't show twice.)
             let whole = data
                 .with(|item| shown_whole(item, cut.get()))
                 .map(|whole| view! { <pre class="held">{whole}</pre> });
