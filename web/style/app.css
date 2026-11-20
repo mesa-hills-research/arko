@@ -788,8 +788,6 @@ pre.block {
     -webkit-text-fill-color: transparent;
     animation: shine 2s linear infinite;
   }
-  /* (A selection shows the words in the label's color.) */
-  .shimmer > .shimmer-text::selection { -webkit-text-fill-color: var(--muted); }
 }
 @keyframes shine { to { background-position: 300% 0; } }
 @keyframes spin { to { --turn: 1turn; } }
