@@ -1518,6 +1518,65 @@ mod tests {
         }
     }
 
+    /// A new terminal of 80x24, its master side and its slave side.
+    #[cfg(target_os = "linux")]
+    fn a_pty() -> (std::fs::File, std::os::fd::OwnedFd) {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let (mut master, mut slave) = (0, 0);
+        let size = libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // SAFETY: two descriptors and a size for a new terminal.
+        let made = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &size,
+            )
+        };
+        assert_eq!(made, 0);
+        // SAFETY: the descriptors `openpty` just opened, owned here.
+        unsafe {
+            (
+                std::fs::File::from(OwnedFd::from_raw_fd(master)),
+                OwnedFd::from_raw_fd(slave),
+            )
+        }
+    }
+
+    /// Runs this test binary again for the test `test` alone, with `var`
+    /// set to `value`, in the terminal `slave` (its controlling terminal).
+    #[cfg(target_os = "linux")]
+    fn run_in(slave: &std::os::fd::OwnedFd, test: &str, var: &str, value: &str) -> Killed {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+            .env_clear()
+            .env("TERM", "xterm-256color")
+            .env(var, value)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap());
+        // SAFETY: only calls that are safe between fork and exec.
+        Killed(
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    libc::ioctl(0, libc::TIOCSCTTY, 0);
+                    Ok(())
+                })
+            }
+            .spawn()
+            .unwrap(),
+        )
+    }
+
     /// Runs [`follow_the_themes`] for `case` in a terminal of its own that
     /// answers as [`terminal_answer`] does, its background set over the
     /// default with `over_default`, and calls `step` with what it wrote so
@@ -1529,63 +1588,29 @@ mod tests {
         over_default: bool,
         mut step: impl FnMut(&str, &std::process::Child),
     ) -> (String, bool) {
+        let test = "tui::tests::the_terminals_background_follows_the_theme";
+        let answer = |asked| terminal_answer(asked, over_default);
+        in_a_pty(test, (FOLLOWING, case), answer, |shown, child, _| {
+            step(shown, child);
+        })
+    }
+
+    /// Runs the test `test` alone, with the variable `var` set, in a
+    /// terminal of its own that answers its question number `n` with
+    /// `answer(n)`, and calls `step` with what it wrote so far, its process
+    /// and the terminal's side, to type in, at each turn, until it ends.
+    /// Returns what it wrote, and whether it succeeded.
+    #[cfg(target_os = "linux")]
+    fn in_a_pty(
+        test: &str,
+        (var, case): (&str, &str),
+        answer: impl Fn(usize) -> &'static str,
+        mut step: impl FnMut(&str, &std::process::Child, &mut std::fs::File),
+    ) -> (String, bool) {
         use std::io::{Read, Write};
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-        use std::os::unix::process::CommandExt;
-        let (mut master, slave) = {
-            let (mut master, mut slave) = (0, 0);
-            let size = libc::winsize {
-                ws_row: 24,
-                ws_col: 80,
-                ws_xpixel: 0,
-                ws_ypixel: 0,
-            };
-            // SAFETY: two descriptors and a size for a new terminal.
-            let made = unsafe {
-                libc::openpty(
-                    &mut master,
-                    &mut slave,
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    &size,
-                )
-            };
-            assert_eq!(made, 0);
-            // SAFETY: the descriptors `openpty` just opened, owned here.
-            unsafe {
-                (
-                    std::fs::File::from(OwnedFd::from_raw_fd(master)),
-                    OwnedFd::from_raw_fd(slave),
-                )
-            }
-        };
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "--exact",
-                "tui::tests::the_terminals_background_follows_the_theme",
-                "--nocapture",
-                "--test-threads",
-                "1",
-            ])
-            .env_clear()
-            .env("TERM", "xterm-256color")
-            .env(FOLLOWING, case)
-            .stdin(slave.try_clone().unwrap())
-            .stdout(slave.try_clone().unwrap())
-            .stderr(slave.try_clone().unwrap());
-        // SAFETY: only calls that are safe between fork and exec.
-        let mut child = Killed(
-            unsafe {
-                command.pre_exec(|| {
-                    libc::setsid();
-                    libc::ioctl(0, libc::TIOCSCTTY, 0);
-                    Ok(())
-                })
-            }
-            .spawn()
-            .unwrap(),
-        );
+        use std::os::fd::AsRawFd;
+        let (mut master, slave) = a_pty();
+        let mut child = run_in(&slave, test, var, case);
         let started = std::time::Instant::now();
         let mut output = Vec::new();
         let (mut answered, mut ended) = (0, None);
@@ -1611,11 +1636,10 @@ mod tests {
             }
             // (Each question ends with the device's attributes.)
             while answered < shown.matches("\x1b[c").count() {
-                let answer = terminal_answer(answered, over_default);
-                master.write_all(answer.as_bytes()).unwrap();
+                master.write_all(answer(answered).as_bytes()).unwrap();
                 answered += 1;
             }
-            step(&shown, &child.0);
+            step(&shown, &child.0, &mut master);
             if ended.is_none() {
                 ended = child.0.try_wait().unwrap();
             }
@@ -1728,5 +1752,85 @@ mod tests {
                 after(&shown, went_back, "the view broke");
             }
         }
+    }
+
+    /// The variable that makes this test binary the view of
+    /// [`a_lone_escape_closes_the_web_pages_qr_code`].
+    #[cfg(target_os = "linux")]
+    const ESCAPING: &str = "ARKO_TEST_LONE_ESCAPE";
+
+    /// Shows the web page's QR code in the terminal as the view opens it,
+    /// and takes the keys as the view's loop does, until the code closes or
+    /// 5 seconds pass. Its bell says it waits for keys, and what it writes
+    /// after closing says whether the code closed.
+    #[cfg(target_os = "linux")]
+    fn wait_for_an_escape() {
+        let mut terminal = open().unwrap();
+        let mut app = app::tests::app();
+        let session = tempfile::tempdir().unwrap();
+        std::fs::write(
+            session.path().join(remote::KEY_FILE),
+            "Kq3xv9TnWb2LmzR8cYd5Hs\n",
+        )
+        .unwrap();
+        app.info.session_dir = session.path().to_path_buf();
+        app.reading.page = Some(remote::Page {
+            addr: "127.0.0.1:8765".parse().unwrap(),
+            links: Vec::new(),
+            note: None,
+        });
+        app.overlay = Some(overlay::Overlay::Remote {
+            link: 0,
+            since: Instant::now(),
+        });
+        draw(&mut terminal, &mut app);
+        terminal.bell().unwrap();
+        written(&terminal);
+        let mut events = terminal.events();
+        let (mut enter, mut burst) = (None, None);
+        let until = Instant::now() + Duration::from_secs(5);
+        while app.overlay.is_some() && Instant::now() < until {
+            if let Ok(Some(event)) = events.next_timeout(Duration::from_millis(50)) {
+                let mut batch = vec![event];
+                batch.extend(events.batch());
+                handle(&mut app, batch, &mut enter, &mut burst);
+            }
+        }
+        let said: &[u8] = if app.overlay.is_none() {
+            b"<closed>"
+        } else {
+            b"<still open>"
+        };
+        terminal.close_with_tail(said).unwrap();
+    }
+
+    /// An Esc typed alone, with nothing after it, closes the web page's QR
+    /// code in a terminal without the kitty keyboard protocol, where the Esc
+    /// key sends a lone ESC. The byte goes through the terminal as the view
+    /// opens it, its reader, and the view's handling of the keys that came
+    /// together.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_lone_escape_closes_the_web_pages_qr_code() {
+        if std::env::var(ESCAPING).is_ok() {
+            return wait_for_an_escape();
+        }
+        let test = "tui::tests::a_lone_escape_closes_the_web_pages_qr_code";
+        // (The background and the device's attributes, with no keyboard
+        // protocol.)
+        let answer = |_| terminal_answer(1, false);
+        let mut typed = false;
+        let (shown, succeeded) = in_a_pty(test, (ESCAPING, "1"), answer, |shown, _, terminal| {
+            if !typed && shown.contains('\x07') {
+                use std::io::Write;
+                terminal.write_all(b"\x1b").unwrap();
+                typed = true;
+            }
+        });
+        let rung = after(&shown, 0, "\x07");
+        // (The code's modules were on the screen.)
+        assert!(shown[..rung].contains('█'), "{shown:?}");
+        assert!(succeeded, "{shown:?}");
+        after(&shown, rung, "<closed>");
     }
 }
