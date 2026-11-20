@@ -668,6 +668,7 @@ fn quiet_member(
             };
             view! {
                 <button type="button" class="member-line"
+                    aria-expanded=move || (folds() || cut.get().cut()).then(|| open().to_string())
                     on:click=move |_| {
                         if !page.calls_open.contains_untracked(id)
                             && !folds()
@@ -763,9 +764,16 @@ fn thought_row(
                 aria-expanded=move || open.get().to_string()
                 on:click=move |event| toggle(&event)
                 on:keydown=move |event| {
+                    // (Enter and Space click it, as a button's do, so the
+                    // transcript keeps its line in place as for a click.)
                     if matches!(event.key().as_str(), "Enter" | " ") {
+                        use wasm_bindgen::JsCast;
                         event.prevent_default();
-                        toggle(&event);
+                        if let Some(thought) = handler_element(&event)
+                            .and_then(|thought| thought.dyn_into::<web_sys::HtmlElement>().ok())
+                        {
+                            thought.click();
+                        }
                     }
                 }>
                 {words}

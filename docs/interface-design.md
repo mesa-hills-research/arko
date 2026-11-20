@@ -144,10 +144,10 @@ of single lines under it.
   the step above it comes from the row above. Lines of work stack. What is said and cards stand
   apart from their neighbours, and so does what follows anything open, also on a rail. An exchange
   starts with the user's message and ends with the line after a turn, so a turn stands before the
-  one and after the other. Opening a row never changes
-  the space above it, so opening or closing a fold leaves every line above it where it was, in all
-  three interfaces. The item and what follows it grow downward, as a file tree does, and so does
-  what opens by itself (a command's output in the Full view, a thought shown whole as it streams).
+  one and after the other. Opening a row never changes the space above it, so opening or closing a
+  fold leaves the gaps above it as they were, in all three interfaces. The item and what follows it
+  grow downward, as a file tree does, and so does what opens by itself (a command's output in the
+  Full view, a thought shown whole as it streams).
   A rail never starts or ends with a gap. The line the reader opened stays where it is on screen.
   A command that ends with nothing to show, or a thought that ends on its one line, stacks again,
   and the gap below it goes.
@@ -177,18 +177,22 @@ of single lines under it.
   The view follows when the reader chose to, nothing holds it and the end shows. In the terminal
   that is the end down to its blank row, and the marker goes by the end's last line, so a fold
   opened at the end whose last line reaches the last row waits with no marker and the clicked line
-  on its row. Following, nothing above moves down. The one exception is an open call's content as it
-  comes. A command's output in Full, and a code run's calls and its result wherever the run is open,
-  go in under the call, and rows that came after it go down by as many rows. When the end gets
-  shorter (Working… giving way to a shorter row, a closing mark re-wrapping a line, a fold closing),
+  on its row. Following, nothing above moves down as the agent works. The one exception is an open
+  call's content as it comes. A command's output in Full, and a code run's calls and its result
+  wherever the run is open, go in under the call, and rows that came after it go down by as many
+  rows. A fold closed, by a follower or a reader, leaves no blank below the end while rows are
+  hidden above. Every line comes down by the blank it would leave, so the end is on the last row,
+  as before the fold opened, and that is the one time the clicked line moves. When the end gets
+  shorter otherwise (Working… giving way to a shorter row, a closing mark re-wrapping a line),
   blank rows stand below it until more comes, and only End, the marker, sending, another width or
   another view close them. A scroll down stops where the end reaches the last row, so at the end it
   moves nothing. A panel below the transcript that opens and closes again puts every line back on
-  its row, and a taller window adds blank rows. Reading, the row at the top keeps its text through
-  streaming, folds elsewhere, another width and another view, and output fills the blank rows. Once
-  it passes the bottom row, the marker counts the new rows below the last row. A fold opened or
-  closed, with a click or a key, keeps its line on its row, and a follower follows from there where
-  the end shows. A plain click while output takes a follower's end off the screen catches up to it.
+  its row, unless a fold closed meanwhile over blank rows the panel left, and a taller window adds
+  blank rows. Reading, the row at the top keeps its text through streaming, folds elsewhere,
+  another width and another view, and output fills the blank rows. Once it passes the bottom row,
+  the marker counts the new rows below the last row. A fold opened or closed, with a click or a
+  key, otherwise keeps its line on its row, and a follower follows from there where the end shows.
+  A plain click while output takes a follower's end off the screen catches up to it.
   The page reads these rules in device pixels. It applies the wheel, a touchpad and the keys that
   scroll the transcript itself, in the frame they come, with no glide and no bounce at either end,
   and its marker counts lines of body text.

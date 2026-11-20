@@ -3,9 +3,11 @@
 //! follows when the choice is follow, nothing holds the view and the end
 //! shows. Following never moves a line down. What comes fills the blank
 //! below the end first and then moves the lines up, and an end that gets
-//! shorter leaves blank below it. A scroll up that moves a line reads, and
-//! a scroll down after which the end shows, End, Esc, the marker and
-//! sending follow. Nothing else changes the choice.
+//! shorter leaves blank below it. A fold the reader closes leaves none
+//! where lines are hidden above, as the end comes down to the bottom edge
+//! with every line. A scroll up that moves a line reads, and a scroll down
+//! after which the end shows, End, Esc, the marker and sending follow.
+//! Nothing else changes the choice.
 //!
 //! Three movers change the position. Every position this module writes is
 //! the page's own, on whole device pixels. A change the browser makes after
@@ -85,6 +87,19 @@ fn end_shows(end: f64, bottom: f64, ratio: f64) -> bool {
 /// below the end holds the view at, whichever is lower.
 fn within(top: f64, end: f64, height: f64, floor: f64) -> f64 {
     top.clamp(0.0, (end - height).max(floor).max(0.0))
+}
+
+/// Where a fold closed puts the view's top, `top` where the line clicked
+/// keeps its place. Where the end, its bottom edge at `end`, would then
+/// stand above the bottom edge of a view `height` tall with lines hidden
+/// above, every line comes down so the end is on the edge, or the start on
+/// the top one.
+fn closed(top: f64, end: f64, height: f64) -> f64 {
+    if top > 0.0 && exact(end) < exact(top + height) {
+        (end - height).max(0.0)
+    } else {
+        top
+    }
 }
 
 /// The choice after a scroll by the reader that moved the lines `moved`
@@ -269,13 +284,16 @@ struct Top {
 /// its top is below its row's and below the view's top. A content's door
 /// after it, by its place among its row's doors and how far it is below the
 /// view's top, keeps its own place instead where the line's would put it
-/// above the view, as when a long content closes from its end.
+/// above the view, as when a long content closes from its end. A fold that
+/// `closes` and would leave blank below the end with lines hidden above
+/// brings the end down to the bottom edge instead, every line with it.
 struct Clicked {
     line: Element,
     row: Option<String>,
     inner: f64,
     offset: f64,
     door: Option<(u32, f64)>,
+    closes: bool,
 }
 
 /// What the marker counts from, the last frame drawn following. The row
@@ -1099,6 +1117,11 @@ impl State {
                         top += up / geometry.ratio;
                     }
                 }
+                // A fold closed leaves no blank below the end where lines
+                // are hidden above.
+                if clicked.as_ref().is_some_and(|clicked| clicked.closes) {
+                    top = closed(top, geometry.end, geometry.height);
+                }
                 // Following, the end that would go below the bottom edge comes
                 // to it, and blank that would fill the whole view brings the
                 // end to the bottom edge.
@@ -1173,9 +1196,10 @@ impl State {
     }
 
     /// `line`, and the door after it, keep their places at the next frame,
-    /// where the line shows. It's an action of the reader's, which lets go
-    /// of the block they left for another view.
-    fn keep(&mut self, line: Element, door: Option<&Element>) {
+    /// where the line shows, as a fold opens or, where it `closes`, as it
+    /// closes. It's an action of the reader's, which lets go of the block
+    /// they left for another view.
+    fn keep(&mut self, line: Element, door: Option<&Element>, closes: bool) {
         self.kept = None;
         let Some(geometry) = self.geometry() else {
             return;
@@ -1199,6 +1223,7 @@ impl State {
             offset: at - geometry.top,
             line,
             door,
+            closes,
         });
     }
 
@@ -1375,17 +1400,31 @@ fn on_click(event: web_sys::Event) {
         .ok()
         .flatten()
         .unwrap_or(target);
-    STATE.with(|state| state.borrow_mut().keep(line, None));
+    let closes = closes_fold(&line);
+    STATE.with(|state| state.borrow_mut().keep(line, None, closes));
     changed();
 }
 
-/// A content's door opens or closes now, and the content's first lines,
-/// `lines`, keep their place at the next frame, also when its whole came a
-/// while after the click. Closing from its end keeps the door in its place
-/// instead, where none of the first lines would show. Lines off the screen
-/// keep nothing, and the top line keeps its place as for any change.
-pub fn door_toggles(lines: &Element, door: &Element) {
-    STATE.with(|state| state.borrow_mut().keep(lines.clone(), Some(door)));
+/// Whether a click on `line` closes a fold, the summary of an open details
+/// or a control that says it's expanded. (The click comes here before the
+/// fold's own handler, so they say how it was.)
+fn closes_fold(line: &Element) -> bool {
+    if line.tag_name().eq_ignore_ascii_case("summary") {
+        return line
+            .parent_element()
+            .is_some_and(|details| details.has_attribute("open"));
+    }
+    line.get_attribute("aria-expanded").as_deref() == Some("true")
+}
+
+/// A content's door opens or, where it `closes`, closes now, and the
+/// content's first lines, `lines`, keep their place at the next frame, also
+/// when its whole came a while after the click. Closing from its end keeps
+/// the door in its place instead, where none of the first lines would show.
+/// Lines off the screen keep nothing, and the top line keeps its place as
+/// for any change.
+pub fn door_toggles(lines: &Element, door: &Element, closes: bool) {
+    STATE.with(|state| state.borrow_mut().keep(lines.clone(), Some(door), closes));
     changed();
 }
 
@@ -1751,6 +1790,24 @@ mod tests {
         // With blank below the end, the range ends where the view stands.
         assert_eq!(within(420.0, 900.0, 600.0, 400.0), 400.0);
         assert_eq!(within(250.0, 900.0, 600.0, 400.0), 250.0);
+    }
+
+    #[test]
+    fn a_fold_closed_brings_the_end_down_to_the_edge_only_over_blank() {
+        // The end 100 px above the bottom edge of a view 600 tall comes down
+        // to it, and every line with it.
+        assert_eq!(closed(500.0, 1000.0, 600.0), 400.0);
+        // On the edge or below it, nothing moves.
+        assert_eq!(closed(500.0, 1100.0, 600.0), 500.0);
+        assert_eq!(closed(500.0, 1300.0, 600.0), 500.0);
+        // Float noise from sums of heights is no blank.
+        assert_eq!(closed(500.0, 1099.999_999_9, 600.0), 500.0);
+        // A transcript shorter than the view shows from its start.
+        assert_eq!(closed(50.0, 500.0, 600.0), 0.0);
+        // With nothing hidden above, there's nothing to bring down.
+        assert_eq!(closed(0.0, 400.0, 600.0), 0.0);
+        // A fraction of a pixel stays a fraction, as the page places it.
+        assert_eq!(closed(500.25, 1000.5, 600.0), 400.5);
     }
 
     #[test]

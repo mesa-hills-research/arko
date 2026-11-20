@@ -6,7 +6,11 @@
 //
 // Following, a line may move up as what comes at the end pushes it, and
 // never down. Scrolled up, no line moves. A fold the reader opens or closes
-// moves no line above it, up or down. The moves the rules allow are the
+// moves no line above it, up or down, but a fold closed leaves no blank
+// below the end where lines are hidden above: there every line goes down by
+// that blank, and the end comes to the bottom edge (or the start to the top
+// one). The sessions' reader now and then scrolls down to read a fold they
+// opened and closes it there. The moves the rules allow are the
 // reader's own (a scroll, End, the marker, sending, another view or width),
 // "Working…" and a note waiting at the end going down into the blank below
 // the end as what comes above them takes it, and a taller view giving back
@@ -374,6 +378,10 @@ const INSTRUMENT = `(() => {
       tail,
       tailEnd,
       bottomRaw: bottom * dpr,
+      // (The view's own bottom edge, where the page puts the end, which a
+      // view of a fractional height has between the whole pixels its
+      // client height rounds to.)
+      edgeRaw: box.bottom * dpr,
       endZone: endZone === null ? null : Math.round(endZone * dpr),
       start: children.length ? Math.round(children[0].getBoundingClientRect().top * dpr) >= Math.round(top * dpr) : true,
       dpr,
@@ -636,8 +644,6 @@ const BLANK_STEPS = new Set([
   'result → reply',
   'thought → reply',
   'Working… → reply goes on',
-  // The reader closes a fold.
-  'fold closes near the end',
   // The last item shrinks or goes (row 25): a note read, a worker's row as
   // the worker starts and ends, "Working…" as the turn ends.
   'waiting message read',
@@ -645,6 +651,29 @@ const BLANK_STEPS = new Set([
   'worker ends',
   'turn ends',
 ]);
+
+/// The device pixels a fold closed on the device pixel row `below` brought
+/// every line on it and above it down by, from `before` to `after`, where
+/// that's the move the meter allows for a close. They all went down alike,
+/// and after it the end is on the bottom edge, or the whole of a transcript
+/// shorter than the view shows, so the move is the blank the close would
+/// have left and no more.
+function closedDown(before, after, below) {
+  if (after.endRaw === null) return null;
+  const blank = Math.round(after.edgeRaw - after.endRaw);
+  if (blank !== 0 && !(after.start && blank > 0)) return null;
+  let down = null;
+  for (const [id, was] of before.ids) {
+    const now = after.ids.get(id);
+    if (was.y > below || !now || now.text !== was.text) continue;
+    const by = shift(was, now);
+    if (by <= 0 || (down !== null && by !== down)) return null;
+    down = by;
+  }
+  return down;
+}
+
+const CLOSES = 'fold closes near the end';
 
 /// Whether the one change at the end between two frames is that "Working…"
 /// went: the last rows of `before` are those of `after` and "Working…" after
@@ -701,6 +730,9 @@ class Run {
     // plays, so the rest of the session makes the choices it would make
     // without them.
     this.runs = new Rng(seed * 7919 + 1);
+    // The numbers for the reader who scrolls down to read a fold they
+    // opened and closes it there, so the rest plays as it would without.
+    this.reads = new Rng(seed * 104729 + 5);
     this.word = 0;
     this.last = null;
     this.calls = [];
@@ -1031,13 +1063,21 @@ class Run {
       const grew = Math.round(blankOf(after) - blankOf(before));
       if (grew > 0) {
         this.meter.tally(this.meter.blanks, `${step}|${this.view}`).add(grew);
-        if (!blankAllowed(step) && !onlyWorkingWent(before, after)) {
+        // (A fold closed in a transcript shorter than the view leaves the
+        // blank under its end.)
+        if (!blankAllowed(step) && !onlyWorkingWent(before, after) && !(step === CLOSES && after.start)) {
           const tail = (shot) => (shot.tail ?? []).map(([key, top, bottom]) => `${key} ${top}-${bottom}`).join(', ');
           this.failures.push(`${grew} device px of blank came below the end at "${step}" (${this.view}); the last rows were ${tail(before)}, then ${tail(after)}`);
         }
       }
     }
     const key = (kind) => `${kind}|${step}|${this.view}`;
+    // A fold closed brings every line down by the blank it would leave.
+    if (rows > 0 && below !== null && step === CLOSES && closedDown(before, after, below) !== null) {
+      this.meter.tally(this.meter.allowed, key('a fold closed brings the end to the bottom')).add(rows);
+      rows = 0;
+      line = null;
+    }
     if (room > 0) this.meter.tally(this.meter.allowed, key('the end makes room')).add(room);
     if (pushed > 0) this.meter.tally(this.meter.allowed, key('below a change on the screen')).add(pushed);
     // While following, a shorter view moves the lines up, and a taller one
@@ -1241,13 +1281,31 @@ class Run {
     })()`);
     if (!fold) return;
     if (!opened) this.opened = fold.row;
-    const step = fold.open ? 'fold closes near the end' : 'fold opens near the end';
+    const step = fold.open ? CLOSES : 'fold opens near the end';
     // (The clicked line is the summary's first line, its words above its
     // bottom.)
     this.begin(step, { below: fold.bottom - 1 });
     await this.click(fold.x, fold.y);
     await this.settle();
+    if (step === CLOSES) this.closedClean();
+    // Now and then the reader scrolls down to read what they opened, and
+    // closes it there.
+    if (!opened && !fold.open && this.reads.chance(50)) {
+      await this.wheel(((1 + this.reads.below(12)) * this.lineHeight) / this.size.dpr);
+      await this.settle(null);
+      await this.toggle();
+      return;
+    }
     await this.scrollUp();
+  }
+
+  /// A fold closed left no blank below the end, unless the whole of a
+  /// transcript shorter than the view shows.
+  closedClean() {
+    const shot = this.last;
+    if (!shot || shot.endRaw === null) return;
+    const blank = Math.round(shot.edgeRaw - shot.endRaw);
+    if (blank > 0 && !shot.start) this.failures.push(`a fold closed and left ${blank} device px of blank below the end (${this.view}, ${this.size.name}, ${shot.choice})`);
   }
 
   /// The reader shows the cut line of the question card `row` whole, or
@@ -1265,9 +1323,10 @@ class Run {
       return { open: line.getAttribute('aria-expanded') === 'true', bottom: Math.round(rect.bottom * devicePixelRatio) };
     })()`);
     if (!line) return;
-    this.begin(line.open ? 'fold closes near the end' : 'fold opens near the end', { below: line.bottom - 1 });
+    this.begin(line.open ? CLOSES : 'fold opens near the end', { below: line.bottom - 1 });
     await this.key(key, key === ' ' ? 'Space' : key);
     await this.settle();
+    if (line.open) this.closedClean();
     await this.scrollUp();
   }
 
@@ -2144,6 +2203,34 @@ async function pixelCases(cdp, agent) {
     if (onlyWorkingWent(before, short)) failures.push('pixel case the blank guard: a device pixel more blank passed');
     if (onlyWorkingWent(before, moved)) failures.push('pixel case the blank guard: a row that moved passed');
   }
+  // The close rule's own case, on frames made up: every line on the
+  // clicked row and above it 30 device px lower and the end on the bottom
+  // edge passes, and so does a short transcript's start on the top row.
+  // Lines down by unequal pixels, up or not at all, blank left with lines
+  // hidden above, and the end below the edge fail.
+  count++;
+  {
+    const frame = (lines, end, start = false) => ({
+      ids: new Map(lines.map(([id, y]) => [id, { y, raw: y, base: y, font: 'f', text: id }])),
+      endRaw: end,
+      edgeRaw: 700,
+      start,
+    });
+    const before = frame([['a', 100], ['b', 200], ['c', 300], ['d', 400]], 640);
+    const cases = [
+      ['down alike, the end on the edge', frame([['a', 130], ['b', 230], ['c', 330], ['d', 380]], 700), 30],
+      ['a short transcript', frame([['a', 130], ['b', 230], ['c', 330]], 690, true), 30],
+      ['down unequally', frame([['a', 130], ['b', 231], ['c', 330]], 700), null],
+      ['up', frame([['a', 70], ['b', 170], ['c', 270]], 700), null],
+      ['not at all', frame([['a', 100], ['b', 200], ['c', 300]], 700), null],
+      ['blank left with lines hidden above', frame([['a', 130], ['b', 230], ['c', 330]], 690), null],
+      ['the end below the edge', frame([['a', 130], ['b', 230], ['c', 330]], 760), null],
+    ];
+    for (const [name, after, want] of cases) {
+      const got = closedDown(before, after, 300);
+      if (got !== want) failures.push(`pixel case the close rule: ${name} gave ${got}, not ${want}`);
+    }
+  }
   const follows = (shot) => shot.choice === 'follow' && shot.following;
   const blankOf = (shot) => shot.bottom - shot.end;
   // (Unrounded, so a change is rounded once, as a line's move is.)
@@ -2468,8 +2555,12 @@ async function pixelCases(cdp, agent) {
           const below = still(ready, closed, reached.top, Infinity);
           return below ? `closing: ${below}` : null;
         }
+        // (Its lines keep their place, or where closing would leave blank
+        // below the end, they come down by it with every line above.)
+        const left = Math.round(rawBlank(closed));
+        if (left > 0) return `closing left ${left} device px of blank below the end`;
         const back = still(ready, closed, -Infinity, reached.top);
-        return back ? `closing: ${back}` : null;
+        return back && closedDown(ready, closed, reached.top) === null ? `closing: ${back}` : null;
       });
     }
     // A follower opens a fold that takes the end off the screen, and goes
@@ -2514,6 +2605,118 @@ async function pixelCases(cdp, agent) {
       }
       return null;
     };
+    // A follower opens a fold near the end, which takes the end off the
+    // screen, scrolls down to read it and closes it there: a call by the
+    // mouse or by Enter, a thought by Enter, and a call in a merged Quiet
+    // row by its own line. The end comes back to the bottom edge, every line
+    // on the pixel it had before the fold opened, and the view follows. A
+    // reader who scrolled back up a little before closing keeps reading, and
+    // what comes next moves no line. A view taller in the frame of the
+    // close, which gives back what a shorter one took, leaves no blank
+    // either.
+    const folds = {
+      following: { view: 'full', fold: 'summary' },
+      reading: { view: 'full', fold: 'summary' },
+      'by Enter': { view: 'full', fold: 'summary', key: true },
+      taller: { view: 'full', fold: 'summary' },
+      'a thought by Enter': { view: 'full', fold: '.thought', key: true, thought: true },
+      "a merged row's call": { view: 'quiet', fold: '.member-line', merged: true },
+    };
+    for (const [how, kind] of Object.entries(folds)) {
+      await play(ratio, `a fold opened near the end, read below and closed puts the end back on the bottom edge (${how})`, async (run) => {
+        await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+        for (let at = 0; at < 24; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+        if (kind.thought) {
+          await run.feed({ do: 'think', text: Array.from({ length: 16 }, () => run.some(6, 4)).join('\n') });
+          await run.feed({ do: 'text', text: run.some(6, 4) });
+        } else {
+          for (let at = 0; at < (kind.merged ? 2 : 3); at++) {
+            const { call } = await run.feed({ do: 'call', tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+            await run.feed({ do: 'result', call, tool: 'read_file', output: Array.from({ length: 12 }, (_, n) => `${n + 1}\t${run.some(3, 3)}`).join('\n') });
+          }
+        }
+        await run.feed({ do: 'end' });
+        await run.settle(null);
+        const last = (selector) => `(() => {
+          const log = document.getElementById('log').getBoundingClientRect();
+          const all = [...document.querySelectorAll('#rows ${selector}')].filter((s) => { const r = s.getBoundingClientRect(); return r.height > 0 && r.top >= log.top && r.bottom <= log.bottom; });
+          const s = all[all.length - 1];
+          if (!s) return null;
+          const r = s.getBoundingClientRect();
+          return { x: r.left + Math.min(30, r.width / 2), y: r.top + Math.min(r.height / 2, 10), row: s.closest('[data-row]').getAttribute('data-row') };
+        })()`;
+        if (kind.merged) {
+          // (The row opens to its calls' lines first, and the reader goes
+          // down to its end.)
+          const row = await run.evaluate(last('.row.quiet summary'));
+          if (!row) return 'no Quiet row';
+          await run.click(row.x, row.y);
+          await run.settle(null);
+          const shown = await run.look();
+          if (shown.end > shown.bottom) await run.roll(shown.end - shown.bottom + 40, 200);
+        }
+        if (how === 'taller') {
+          // (A shorter view while following moves the lines up, which a
+          // taller one gives back.)
+          await run.metrics(run.width, run.height - 120);
+          await run.settle(null);
+        }
+        const before = await run.look();
+        if (!follows(before) || Math.round(rawBlank(before)) !== 0) return `not following at the end before the open (${before.choice})`;
+        const fold = await run.evaluate(last(kind.fold));
+        if (!fold) return 'no fold on the screen';
+        await run.click(fold.x, fold.y);
+        await run.settle(null);
+        const opened = await run.look();
+        if (opened.end <= opened.bottom) return 'the fold opened with the end still on the screen';
+        // Down to the end, to read it.
+        await run.roll(opened.end - opened.bottom + 40, 400);
+        if (how === 'reading') await run.roll(-2 * run.lineHeight, 800);
+        const ready = await run.look();
+        if (how === 'reading' ? ready.choice !== 'read' : !follows(ready)) return `ready to close: ${ready.choice}, following ${ready.following}`;
+        const line = `[...document.querySelectorAll('#rows [data-row="${fold.row}"] ${kind.fold}')].pop()`;
+        const again = await run.evaluate(`(() => {
+          const s = ${line};
+          const log = document.getElementById('log').getBoundingClientRect();
+          const r = s && s.getBoundingClientRect();
+          return r && r.top >= log.top && r.top + 10 <= log.bottom ? { x: r.left + Math.min(30, r.width / 2), y: r.top + Math.min(r.height / 2, 10), open: s.getAttribute('aria-expanded') ?? String(!!s.closest('details[open]')) } : null;
+        })()`);
+        if (!again) return 'the fold\'s line left the screen';
+        if (again.open !== 'true') return `the fold didn't open (${again.open})`;
+        if (kind.key) {
+          await run.evaluate(`${line}.focus({ preventScroll: true })`);
+          await run.key('Enter', 'Enter', '\r');
+        } else if (how === 'taller') {
+          await run.metrics(run.width, run.height + 120);
+          await run.evaluate(`${line}.click()`);
+        } else {
+          await run.click(again.x, again.y);
+        }
+        await run.settle(null);
+        const closed = await run.look();
+        const shut = await run.evaluate(`(() => { const s = ${line}; return s.getAttribute('aria-expanded') ?? String(!!s.closest('details[open]')); })()`);
+        if (shut !== 'false') return `the fold didn't close (${shut})`;
+        const left = Math.round(rawBlank(closed));
+        if (left !== 0) return `${left} device px of blank below the end`;
+        if (how === 'reading') {
+          if (closed.choice !== 'read') return `closed: ${closed.choice}`;
+        } else if (!follows(closed)) {
+          return `closed: ${closed.choice}, following ${closed.following}`;
+        }
+        if (how !== 'taller') {
+          const back = sameLines(before, closed);
+          if (back) return `against before the open: ${back}`;
+        }
+        if (how === 'reading') {
+          await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+          await run.settle(null);
+          const after = await run.look();
+          if (Case.moved(closed, after) !== 0) return `what came moved the lines ${Case.moved(closed, after)}`;
+          if (!after.marker) return 'no marker for what came';
+        }
+        return null;
+      }, kind.view);
+    }
     for (const view of ['full', 'quiet']) {
       await play(ratio, `the views and back put every line back after a fold took a follower's end off the screen (${view})`, async (run) => {
         const before = await offTheEnd(run);
@@ -3058,7 +3261,8 @@ async function pixelCases(cdp, agent) {
       }
     }
     // A fold above a running call opens, the call ends meanwhile, and the
-    // fold closes. No line is lower than before, and no blank is left.
+    // fold closes. No line is lower than before, and no blank is left. (Full
+    // shows a command's output from the start, so there it's closed first.)
     for (const view of ['quiet', 'full']) {
       await play(ratio, `touch: a fold above a running call, which ends while it's open (${view})`, async (run) => {
         await run.metrics(390, 844);
@@ -3075,16 +3279,21 @@ async function pixelCases(cdp, agent) {
           if (await run.evaluate(`!!document.querySelector('#rows .call-action:not(.kept)')`)) break;
           await sleep(100);
         }
-        const a = await run.look();
-        if (!follows(a)) return `the case began ${a.choice}`;
         const fold = `(() => {
           const line = [...document.querySelectorAll('#rows .call-line')].find((line) => /\\bls\\b/.test(line.textContent) && !line.querySelector('.call-action:not(.kept)'));
           if (!line) return null;
           const r = line.getBoundingClientRect();
-          return [r.left + 30, r.top + r.height / 2];
+          return [r.left + 30, r.top + r.height / 2, !!line.closest('details[open]')];
         })()`;
+        const shut = await run.evaluate(fold);
+        if (shut && shut[2]) {
+          await run.click(shut[0], shut[1]);
+          await run.settle(null);
+        }
+        const a = await run.look();
+        if (!follows(a)) return `the case began ${a.choice}`;
         const at = await run.evaluate(fold);
-        if (!at) return 'no fold above the running call';
+        if (!at || at[2]) return 'no closed fold above the running call';
         await run.click(at[0], at[1]);
         await run.settle(null);
         await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 9.0 s\nok' });

@@ -137,21 +137,21 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
             .and_then(|target| target.closest("button.door").ok().flatten());
-        let keep = move || {
+        let keep = move |closes: bool| {
             let door = door.as_ref().filter(|door| door.is_connected());
             if let Some((lines, door)) =
                 door.and_then(|door| Some((door.previous_element_sibling()?, door)))
             {
-                crate::scroll::door_toggles(&lines, door);
+                crate::scroll::door_toggles(&lines, door, closes);
             }
         };
         if open() {
-            keep();
+            keep(true);
             page.doors_open.set(id, false);
             return;
         }
         if whole(id).is_some() {
-            keep();
+            keep(false);
             page.doors_open.set(id, true);
             return;
         }
@@ -173,7 +173,7 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
                     WHOLES.with(|wholes| wholes.borrow_mut().keep(id, result.text));
                     // (Where the lines are now, which the reader may have
                     // scrolled meanwhile.)
-                    keep();
+                    keep(false);
                     state.set(None);
                     page.doors_open.set(id, true);
                 }
