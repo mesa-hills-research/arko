@@ -350,6 +350,21 @@ fn act(session: &mut Session, request: &Value) -> Value {
             }
             json!({})
         }
+        // A finished worker of the session from before the feed's history
+        // began, its report all the page has of it.
+        "restored" => {
+            feed.worker_restored(
+                &text(request, "id"),
+                &text(request, "task"),
+                crate::remote::WorkerState::Finished,
+                Some(&text(request, "text")),
+                None,
+                chrono::Utc::now().timestamp_millis(),
+                60_000,
+                12,
+            );
+            json!({})
+        }
         "job" => {
             // (By the ID a call's result named, where given.)
             let job = request["id"]

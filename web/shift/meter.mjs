@@ -675,6 +675,15 @@ function closedDown(before, after, below) {
 
 const CLOSES = 'fold closes near the end';
 
+/// Whether blank that came below the end from `before` to `after` in
+/// `step` may stand, as no line is hidden above to bring down. That's a
+/// transcript whose start shows in both frames, as when the first message
+/// takes the place of an empty view's note, or one a fold closed shows from
+/// its start.
+function blankStands(step, before, after) {
+  return (before.start && after.start) || (step === CLOSES && after.start);
+}
+
 /// Whether the one change at the end between two frames is that "Working…"
 /// went: the last rows of `before` are those of `after` and "Working…" after
 /// them, each other row in the same place and of the same size, to the
@@ -1063,9 +1072,7 @@ class Run {
       const grew = Math.round(blankOf(after) - blankOf(before));
       if (grew > 0) {
         this.meter.tally(this.meter.blanks, `${step}|${this.view}`).add(grew);
-        // (A fold closed in a transcript shorter than the view leaves the
-        // blank under its end.)
-        if (!blankAllowed(step) && !onlyWorkingWent(before, after) && !(step === CLOSES && after.start)) {
+        if (!blankAllowed(step) && !onlyWorkingWent(before, after) && !blankStands(step, before, after)) {
           const tail = (shot) => (shot.tail ?? []).map(([key, top, bottom]) => `${key} ${top}-${bottom}`).join(', ');
           this.failures.push(`${grew} device px of blank came below the end at "${step}" (${this.view}); the last rows were ${tail(before)}, then ${tail(after)}`);
         }
@@ -2203,6 +2210,19 @@ async function pixelCases(cdp, agent) {
     if (onlyWorkingWent(before, short)) failures.push('pixel case the blank guard: a device pixel more blank passed');
     if (onlyWorkingWent(before, moved)) failures.push('pixel case the blank guard: a row that moved passed');
   }
+  // The blank under a short transcript, on frames made up: it may stand
+  // where the start shows in both frames, or after a close where it shows
+  // then, and not where it shows in one frame only in another step.
+  count++;
+  for (const [name, step, was, now, want] of [
+    ['the start in both frames', 'call → its result', true, true, true],
+    ['the start before only', 'call → its result', true, false, false],
+    ['the start after only', 'call → its result', false, true, false],
+    ['the start in neither', 'call → its result', false, false, false],
+    ['a close with the start after only', CLOSES, false, true, true],
+  ]) {
+    if (blankStands(step, { start: was }, { start: now }) !== want) failures.push(`pixel case the blank under a short transcript: ${name} gave ${!want}`);
+  }
   // The close rule's own case, on frames made up: every line on the
   // clicked row and above it 30 device px lower and the end on the bottom
   // edge passes, and so does a short transcript's start on the top row.
@@ -3260,6 +3280,53 @@ async function pixelCases(cdp, agent) {
         }, view);
       }
     }
+    // A finished worker whose work came before the page's history began
+    // shows its report alone in its view, which opens at its end as every
+    // worker's view does. A finger drags it and lifts, and it stays where
+    // the finger left it. (It went back to its top, as the page measured
+    // only the rows and took the view for empty.)
+    await play(ratio, 'touch: a worker\'s view of its report alone stays where a finger leaves it', async (run) => {
+      await run.metrics(390, 844);
+      await run.fill(8);
+      await run.feed({ do: 'restored', id: 'r7', task: `Task ${run.words(4)}`, text: Array.from({ length: 30 }, () => run.some(12, 8)).join('\n\n') });
+      await run.settle(null);
+      await run.evaluate(`document.querySelector('.workers-button')?.click()`);
+      await run.settle(null);
+      const opened = await run.evaluate(`(() => {
+        const card = document.querySelector('dialog .wcard:not(.main)');
+        if (!card) return false;
+        card.click();
+        return true;
+      })()`);
+      if (!opened) return "no worker's card in the workers sheet";
+      await run.settle(null);
+      const a = await run.look();
+      if (!(await run.evaluate(`/It reported/.test(document.getElementById('log').textContent)`))) return 'the view shows no report';
+      // (Where the note stands, in device pixels, and the view.)
+      const note = `Math.round(document.querySelector('#log .empty').getBoundingClientRect().top * devicePixelRatio)`;
+      const from = await run.evaluate(note);
+      const at = await run.evaluate(`document.getElementById('log').scrollTop`);
+      // (Up from its end, or down from its top where it opened there.)
+      const by = at > 300 ? -300 : 300;
+      const box = await run.evaluate(`(() => { const r = document.getElementById('log').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      await run.during(() => run.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box[0], y: box[1] }] }, run.session));
+      await run.evaluate(`document.getElementById('log').scrollBy({ top: ${by}, behavior: 'instant' })`);
+      await run.settle(null);
+      const dragged = await run.evaluate(note);
+      if (dragged - from !== Math.round(-by * ratio)) return `the drag moved the note ${dragged - from} device px, not ${Math.round(-by * ratio)}`;
+      await run.during(() => run.cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, run.session));
+      await run.settle(null);
+      // (The browser's bars a pixel taller and back, as Safari's go as the
+      // page scrolls, which the page settles.)
+      for (const height of [843, 844]) {
+        await run.metrics(390, height);
+        await run.settle(null);
+        const left = await run.evaluate(note);
+        if (left !== dragged) return `the note went ${left - dragged} device px once the finger lifted, the view ${height} tall (it opened at ${at})`;
+      }
+      const edge = a.endRaw === null ? null : Math.round(a.edgeRaw - a.endRaw);
+      return edge === 0 ? null : `it opened with the end ${edge} device px above the bottom edge`;
+    });
     // A fold above a running call opens, the call ends meanwhile, and the
     // fold closes. No line is lower than before, and no blank is left. (Full
     // shows a command's output from the start, so there it's closed first.)

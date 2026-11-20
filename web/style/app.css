@@ -369,8 +369,8 @@ button.cache { padding: 0; border: 0; background: none; }
    gets shorter leaves blank below it. */
 .log > .floor { position: absolute; left: 0; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
 
-.empty { max-width: 520px; margin: 30vh auto 0; padding: 0 var(--gutter); color: var(--muted); text-align: center; white-space: pre-wrap; }
-.empty:empty { display: none; }
+/* (In the rows' column, which keeps the gutter.) */
+.empty { max-width: calc(520px - 2 * var(--gutter)); margin: 30vh auto 0; color: var(--muted); text-align: center; white-space: pre-wrap; }
 
 /* The space between the rows comes from one table, which the terminal
    follows too (src/remote/spacing.rs). Lines of one list of work

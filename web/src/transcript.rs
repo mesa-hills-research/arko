@@ -119,6 +119,8 @@ pub fn Transcript() -> impl IntoView {
     view! {
         <div class="stage">
             <main id="log" class="log" class:following=move || page.scroll.follows.get() aria-label="Transcript" node_ref=log>
+                // (The note of a view with no rows is in the rows, where the
+                // page measures what the view holds.)
                 <div id="rows" class="column rows">
                     <For
                         each=move || {
@@ -128,8 +130,8 @@ pub fn Transcript() -> impl IntoView {
                         key=|(feed, row)| row_key(*feed, row)
                         children=move |(_, row)| row_view(row, thinking)
                     />
+                    {move || empty().map(|text| view! { <p class="empty">{text}</p> })}
                 </div>
-                <p class="empty">{empty}</p>
             </main>
             <button
                 type="button"
