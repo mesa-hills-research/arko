@@ -116,6 +116,20 @@ impl Run {
         self.mouse(MouseEventKind::Up(MouseButton::Left), y);
     }
 
+    /// A click on the row `y` at the transcript's column `x`, which isn't a
+    /// double click with one in another column just before it.
+    fn click_in(&mut self, x: u16, y: usize) {
+        let area = self.s.app.transcript.drawn.area;
+        let y = area.y + u16::try_from(y).unwrap();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            self.app()
+                .mouse(MouseEvent::new(kind, area.x + x, y, KeyModifiers::NONE));
+        }
+    }
+
     fn steps(&mut self, kind: MouseEventKind, n: usize) {
         for _ in 0..n {
             wheel(&mut self.s.app, kind);
@@ -229,6 +243,10 @@ enum Moves {
     AtMost(i64),
     /// The clicked line kept its row, and every line above it.
     Kept,
+    /// The clicked line went down this many rows, and every line above it
+    /// with it, as a fold closed that would have left as many blank rows
+    /// below the end. 0 is [`Moves::Kept`].
+    Closed(i64),
     /// The top line's first word is still on the top row.
     TopKept,
     Any,
@@ -254,17 +272,23 @@ fn check_moves(moves: Moves, before: &[String], after: &[String], y: Option<usiz
             "{}",
             show()
         ),
-        Moves::Kept => {
+        Moves::Kept => check_moves(Moves::Closed(0), before, after, y, what),
+        Moves::Closed(n) => {
             let y = y.expect("the clicked row");
             let words = before[y]
                 .trim_start_matches(['▸', '▾', ' '])
                 .split(" · ")
                 .next()
                 .unwrap_or("");
-            assert!(after[y].contains(words), "{}", show());
-            // (And no line above it moved, up or down.)
+            let to = usize::try_from(y as i64 + n).expect("a row");
+            assert!(
+                after.get(to).is_some_and(|row| row.contains(words)),
+                "{}",
+                show()
+            );
+            // (And every line above it went down as far, or none moved.)
             let above = moved(&before[..y], after);
-            assert!(above.iter().all(|d| *d == 0), "{}", show());
+            assert!(above.iter().all(|d| *d == n), "{}", show());
         }
         Moves::TopKept => {
             let word = before[0].split_whitespace().find(|w| w.starts_with('w'));
@@ -533,6 +557,12 @@ impl Input {
             (Rv, CtrlG) => (true, false, Moves::Any, false),
             (_, CtrlG) => (reading, false, Moves::Same, false),
             (_, ClickText) => (reading, false, Moves::Same, false),
+            // (The command is open, so the fold closes, 3 rows shorter, and
+            // where that leaves blank rows below the end the lines come down
+            // by them.)
+            (F0, ClickFold | KeyFold) => (false, false, Moves::Closed(3), true),
+            (F4, ClickFold | KeyFold) => (false, false, Moves::Closed(7), true),
+            (Rv, ClickFold | KeyFold) => (true, false, Moves::Closed(9), false),
             (_, ClickFold | KeyFold) => (reading, false, Moves::Kept, false),
             (_, Press) => (reading, true, Moves::Same, false),
             (HF | HR, Release | DragRelease) => (reading, false, Moves::Same, false),
@@ -589,6 +619,9 @@ fn every_input_from_every_state() {
                 // so does a scroll down to the rows it brought.)
                 let down = matches!(input, Input::Down(_) | Input::ShiftDown | Input::PageDown);
                 let moves = match moves {
+                    // (Output in the frame of a close fills 3 of its blank
+                    // rows.)
+                    Moves::Closed(n) if with_output => Moves::Closed((n - 3).max(0)),
                     Moves::Same if with_output && (run.following() || down) => Moves::AtMost(0),
                     Moves::Down(n) if with_output && run.following() => Moves::AtMost(n),
                     Moves::Up(n) if with_output && (run.following() || down) => Moves::AtMost(-n),
@@ -668,7 +701,8 @@ impl Run {
 
 /// A reader who scrolled up with the end in sight and toggles a fold that
 /// leaves it in sight goes on reading, so what comes next doesn't move the
-/// lines they went back to.
+/// lines they went back to. The fold closes, and the lines come down by the
+/// blank rows it would leave below the end.
 #[test]
 fn a_fold_toggled_while_reading_keeps_the_reader_reading() {
     let mut run = Run::new(View::Full);
@@ -677,14 +711,16 @@ fn a_fold_toggled_while_reading_keeps_the_reader_reading() {
     run.draw();
     run.shorten_end(6);
     run.steps(MouseEventKind::ScrollUp, 1);
-    run.draw();
+    let before = run.draw();
     assert!(run.reading() && run.s.app.transcript.end_shows());
+    let blank = i64::from(run.gap()) + 3;
     let y = run.row_of(&fold).expect("the command shows");
     run.click(y);
     let toggled = run.draw();
     run.check("toggled");
     assert!(run.reading(), "{}", toggled.join("\n"));
-    assert!(toggled[y].contains(&fold));
+    check_moves(Moves::Closed(blank), &before, &toggled, Some(y), "toggled");
+    assert_eq!(run.gap(), 0, "{}", toggled.join("\n"));
     run.output(30);
     let after = run.draw();
     run.check("output");
@@ -1087,7 +1123,8 @@ fn a_slash_command_leaves_the_view_as_it_is() {
 
 /// In one frame, the last input that chooses wins. End and Esc drop a
 /// scroll before them, a scroll after Esc reads, and a fold toggled drops
-/// the frame's scroll.
+/// the frame's scroll. (It closes, so the lines come down by the 3 blank
+/// rows it would leave below the end.)
 #[test]
 fn the_last_input_of_a_frame_wins() {
     let mut run = State::F0.make(View::Full);
@@ -1107,13 +1144,14 @@ fn the_last_input_of_a_frame_wins() {
     assert!(run.reading());
     check_moves(Moves::Down(3), &before, &after, None, "Esc, step up");
     let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
     let y = run.fold_row().expect("the command");
     run.steps(MouseEventKind::ScrollUp, 1);
     run.click(y);
     let after = run.draw();
     run.check("step up, fold");
     assert!(!run.reading());
-    assert!(after[y].contains(&run.fold));
+    check_moves(Moves::Closed(3), &before, &after, Some(y), "step up, fold");
 }
 
 /// Two inputs in one frame: a press and its release, the wheel and a
@@ -1276,7 +1314,9 @@ fn a_scroll_down_from_reading_with_the_end_in_sight_moves_nothing() {
 
 /// A panel below the transcript opens and closes, and every line is back
 /// on its row, with 0 to 6 blank rows below the end, and with a click or a
-/// fold between. A taller window adds blank rows.
+/// fold opened and closed between. A taller window adds blank rows. A fold
+/// closed leaves no blank rows below the end, so where the panel left some,
+/// the lines come down by them.
 #[test]
 fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
     use crate::approvals::{Approval, ApprovalRequest, SkillApproval};
@@ -1340,11 +1380,20 @@ fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
             run.app().update(Update::Worker(worker), Activity::default);
         }),
     ];
+    let mut came_down = false;
     for (name, toggle) in panels {
         for blank in [0, 1, 2, 3, 6] {
             for between in ["nothing", "a click", "a fold"] {
                 let what = format!("{name}, {blank} blank rows, {between}");
                 let mut run = State::F0.make(View::Full);
+                // (The command closed first, so the fold between opens and
+                // closes.)
+                if between == "a fold"
+                    && let Some(y) = run.fold_row()
+                {
+                    run.click(y);
+                    run.draw();
+                }
                 if blank > 0 {
                     run.shorten_end(blank);
                 }
@@ -1353,6 +1402,7 @@ fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
                 toggle(&mut run, true);
                 run.draw();
                 run.check(&format!("{what}, open"));
+                let mut down = 0;
                 match between {
                     "a click" => {
                         if let Some(y) = run.plain_row() {
@@ -1362,9 +1412,10 @@ fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
                     }
                     "a fold" => {
                         if let Some(y) = run.fold_row() {
-                            run.click(y);
+                            down = run.gap();
+                            run.click_in(5, y);
                             run.draw();
-                            run.click(y);
+                            run.click_in(6, y);
                             run.draw();
                         }
                     }
@@ -1374,11 +1425,17 @@ fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
                 let after = run.draw();
                 run.check(&format!("{what}, closed"));
                 assert!(run.following(), "{what}");
-                check_moves(Moves::Same, &before, &after, None, &what);
-                assert_eq!(run.gap(), gap, "{what}: blank rows");
+                let moves = match down {
+                    0 => Moves::Same,
+                    down => Moves::Down(i64::from(down)),
+                };
+                check_moves(moves, &before, &after, None, &what);
+                assert_eq!(run.gap(), gap - down, "{what}: blank rows");
+                came_down |= down > 0;
             }
         }
     }
+    assert!(came_down, "no fold closed over blank rows the panel left");
     let mut run = State::F0.make(View::Full);
     let before = run.rows.clone();
     let size = run.term.size();

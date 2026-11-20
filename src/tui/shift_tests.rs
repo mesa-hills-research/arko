@@ -8,16 +8,19 @@
 //! Scrolled up, no line moves. A fold the reader opens or closes, by the
 //! mouse or the keyboard, moves no line above it, up, down or along its row.
 //! That goes for a long content's "N more lines" too, which opens the rest
-//! below its preview and closes it again. Two moves are allowed. "Working…"
-//! and the notes waiting at the end go down as what comes above them takes
-//! their rows, into the blank rows below the end, and while the reader reads
-//! on past the bottom row, and up as what stood above them goes. A note the
-//! agent reads in the frame where output comes above it goes down by that
-//! output's rows and no further. And rows that came after an open call go
-//! down by the rows its content grows by above them as it comes, a command's
-//! output in Full and a code run's calls and its result in any view where
-//! the run is open. A worker's start keeps its words in their columns as the
-//! worker's ID comes.
+//! below its preview and closes it again. Three moves are allowed. A fold
+//! closed leaves no blank rows below the end while rows are hidden above, as
+//! when the reader opened it, scrolled down to read it and closed it, so
+//! there every line goes down by those rows and the end comes to the last
+//! row (or the start to the top row). "Working…" and the notes waiting at
+//! the end go down as what comes above them takes their rows, into the blank
+//! rows below the end, and while the reader reads on past the bottom row,
+//! and up as what stood above them goes. A note the agent reads in the frame
+//! where output comes above it goes down by that output's rows and no
+//! further. And rows that came after an open call go down by the rows its
+//! content grows by above them as it comes, a command's output in Full and a
+//! code run's calls and its result in any view where the run is open. A
+//! worker's start keeps its words in their columns as the worker's ID comes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
 //! `SHIFT_METER_OUT` names a file for the tables of every step and view.
@@ -240,6 +243,11 @@ enum Allowed {
     /// in Full, and a code run's calls and its result in any view where the
     /// run is open.
     Arrived,
+    /// A fold closed, and every line on its row and above went down by the
+    /// same rows, after which the end is on the last row or the start on the
+    /// top row, so the rows are the blank the close would have left below
+    /// the end.
+    Closed,
 }
 
 /// What the sessions measured.
@@ -262,6 +270,9 @@ struct Meter {
     /// The folds toggled that moved a line above them along its row, with
     /// the rows before and after.
     aside: Vec<String>,
+    /// The folds closed that left blank rows below the end with rows hidden
+    /// above, with the rows before and after.
+    blank: Vec<String>,
     /// The frames that toggled a fold by the keyboard, by step.
     keyed: BTreeMap<Step, u32>,
 }
@@ -398,6 +409,7 @@ impl Meter {
             let kind = match kind {
                 Allowed::Room => "the end makes room",
                 Allowed::Arrived => "an open call's content comes above later rows",
+                Allowed::Closed => "a fold closed brings the end to the last row",
             };
             let _ = writeln!(out, "| {kind} | {} | {} |", step.name(), cells.join(" | "));
         }
@@ -501,6 +513,55 @@ fn columns(rows: &[String]) -> HashMap<String, usize> {
             Some((id, at))
         })
         .collect()
+}
+
+/// The rows every line on the row `below` and above it that `before` and
+/// `after` both show went down, where they all went down by the same rows.
+fn down_alike(before: &[String], after: &[String], below: usize) -> Option<usize> {
+    let now = lines(after);
+    let mut down = None;
+    for (id, from) in lines(before) {
+        let Some(&to) = now.get(&id).filter(|_| from <= below) else {
+            continue;
+        };
+        if to <= from || down.is_some_and(|down| down != to - from) {
+            return None;
+        }
+        down = Some(to - from);
+    }
+    down
+}
+
+/// How the end stood after a frame.
+#[derive(Debug, Clone, Copy)]
+struct Stood {
+    /// The blank rows below the end.
+    gap: u32,
+    /// The end shows, down to its blank row.
+    bottom: bool,
+    /// The transcript's start is on the top row.
+    start: bool,
+}
+
+/// The rows a fold closed on the row `below` in the frame `step` drew
+/// brought every line on that row and above it down by, from `before` to
+/// `after`, where that's the move [`Allowed::Closed`] allows. They all went
+/// down alike, and after it the end is on the last row, or the whole of a
+/// transcript shorter than the screen shows, so the rows are the blank the
+/// close would have left and no more.
+fn closed_down(
+    step: Step,
+    before: &[String],
+    after: &[String],
+    below: usize,
+    stood: Stood,
+) -> Option<usize> {
+    let closes = matches!(step, Step::FoldCloses | Step::DoorCloses);
+    let ends = stood.bottom && (stood.gap == 0 || stood.start);
+    if !closes || !ends {
+        return None;
+    }
+    down_alike(before, after, below)
 }
 
 /// The lines on the row `below` and above it that `before` and `after` both show,
@@ -677,6 +738,8 @@ struct Shot {
     following: bool,
     /// The blank rows below the end.
     gap: u32,
+    /// The end shows, down to its blank row.
+    bottom: bool,
     /// The transcript's start is on the top row.
     start: bool,
     /// The first row of "Working…", the notes waiting to be read and the
@@ -740,6 +803,11 @@ struct Run<'m> {
     /// Numbers for the questions the agent asks, so the rest of the session
     /// makes the choices it would make without them.
     asks: Rng,
+    /// Whether the reader now and then scrolls down to read a fold they
+    /// opened and closes it there, and the numbers for it, so the rest of
+    /// the session makes the choices it would make without them.
+    reads_folds: bool,
+    scrolls: Rng,
     id: u64,
     at: i64,
     word: u64,
@@ -821,6 +889,8 @@ impl<'m> Run<'m> {
             run_doors: Rng(seed.wrapping_mul(0x9FB2_1C65_1E98_DF25) | 1),
             code_runs: true,
             asks: Rng(seed.wrapping_mul(0xC2B2_AE3D_27D4_EB4F) | 1),
+            reads_folds: false,
+            scrolls: Rng(seed.wrapping_mul(0x8EBC_6AF0_9C88_C6E3) | 1),
             id: 0,
             at: chrono::Utc::now().timestamp_millis(),
             word: 0,
@@ -910,6 +980,7 @@ impl<'m> Run<'m> {
             rows: screen[area.y as usize..area.bottom() as usize].to_vec(),
             following: self.app.transcript.following(),
             gap: self.app.transcript.gap(),
+            bottom: self.app.transcript.bottom_shows(),
             start: self.app.transcript.shows_start(),
             end: self.app.transcript.end_starts(),
             keys: self.app.transcript.row_keys(),
@@ -944,7 +1015,7 @@ impl<'m> Run<'m> {
             // (Following, a line may go up as what comes at the end pushes
             // it, but not in the frame of a toggle.)
             let rises = following && below.is_none();
-            let moved = moves(
+            let mut moved = moves(
                 &last.rows,
                 &shot.rows,
                 rises,
@@ -952,6 +1023,46 @@ impl<'m> Run<'m> {
                 (last.end, shot.end),
                 call.as_ref().map(|(was, now)| (was, now)),
             );
+            // A fold closed leaves no blank rows below the end with rows
+            // hidden above, and every line above it goes down by the rows it
+            // would have left ([`Allowed::Closed`]).
+            if matches!(step, Step::FoldCloses | Step::DoorCloses)
+                && let Some(row) = below
+            {
+                if shot.gap > 0 && !shot.start {
+                    let rows: Vec<String> = last
+                        .rows
+                        .iter()
+                        .zip(&shot.rows)
+                        .map(|(a, b)| format!("{a:<width$} │ {b}", width = self.size.0 as usize))
+                        .collect();
+                    self.meter.blank.push(format!(
+                        "{}×{} {:?}, {}: {} blank rows below the end, the fold on row {row}\n{}",
+                        self.size.0,
+                        self.size.1,
+                        View::ALL[self.view],
+                        step.name(),
+                        shot.gap,
+                        rows.join("\n")
+                    ));
+                }
+                let stood = Stood {
+                    gap: shot.gap,
+                    bottom: shot.bottom,
+                    start: shot.start,
+                };
+                if moved.rows > 0
+                    && let Some(down) = closed_down(step, &last.rows, &shot.rows, row, stood)
+                {
+                    self.meter
+                        .allowed
+                        .entry((Allowed::Closed, step, self.view))
+                        .or_default()
+                        .add(down as u32);
+                    moved.rows = 0;
+                    moved.line = None;
+                }
+            }
             if let Some(row) = below {
                 for (id, from, to) in moved_aside(&last.rows, &shot.rows, row) {
                     let rows: Vec<String> = last
@@ -1188,21 +1299,42 @@ impl<'m> Run<'m> {
         let Some((y, fold)) = at else {
             return;
         };
-        // An open fold's line has ▾, and a thinking's has no marker. A
-        // content's door is its last line.
+        // An open fold's line has ▾, and a thinking's has no marker. Folded,
+        // a thinking is its first line and "…", and open it's its whole
+        // text. A content's door is its last line.
         let marker = rows[y].trim_start_matches(['│', ' ']).chars().next();
         let step = match (door_of(&rows[y]), marker) {
             (Some(step), _) => step,
             (_, Some('▾')) => Step::FoldCloses,
             (_, Some('▸')) => Step::FoldOpens,
-            _ if self.toggled.contains(&fold) => Step::FoldCloses,
-            _ => Step::FoldOpens,
+            _ if rows[y].trim_end().ends_with('…') => Step::FoldOpens,
+            _ => Step::FoldCloses,
         };
         if !self.toggled.remove(&fold) {
             self.toggled.insert(fold);
             self.opened = Some(fold);
         }
         self.press(y, step);
+        // Now and then the reader scrolls down to read what it opened, and
+        // closes it there.
+        if self.reads_folds
+            && step == Step::FoldOpens
+            && self.opened == Some(fold)
+            && self.scrolls.chance(50)
+        {
+            let by = 1 + self.scrolls.below(u64::from(self.size.1)) as i64;
+            self.app.transcript.scroll(by);
+            self.moved();
+            let rows = self
+                .last
+                .as_ref()
+                .map_or_else(Vec::new, |last| last.rows.clone());
+            if let Some(y) = (0..rows.len()).find(|y| self.fold_on(*y) == Some(fold)) {
+                self.toggled.remove(&fold);
+                self.opened = None;
+                self.press(y, Step::FoldCloses);
+            }
+        }
     }
 
     /// A thought streams, from what was live, which names the step.
@@ -1958,9 +2090,10 @@ const SIZES: [(u16, u16); 6] = [
 ];
 
 /// Plays sessions in every view, with the reader following and with the
-/// reader scrolled up, the agent's thinking shown folded and shown whole.
-/// `seeds` of them at every size, else one at each of the first three
-/// sizes, its thinking folded or whole by turns.
+/// reader scrolled up, each again with a reader who scrolls down to read the
+/// folds they open and closes them there, the agent's thinking shown folded
+/// and shown whole. `seeds` of them at every size, else one at each of the
+/// first three sizes, its thinking folded or whole by turns.
 fn measure(seeds: Option<u64>) -> Meter {
     measure_with(seeds, false)
 }
@@ -1981,16 +2114,26 @@ fn measure_with(seeds: Option<u64>, starts: bool) -> Meter {
                     None => vec![(at + view) % 2 == 1],
                 };
                 for thinking in whole {
-                    for scrolled in [false, true] {
+                    // (The reader who scrolls down to read the folds they
+                    // open plays sessions of their own, which the workers'
+                    // sessions leave out.)
+                    let reads = if starts { 1 } else { 2 };
+                    for (scrolled, reads_folds) in [false, true].into_iter().flat_map(|scrolled| {
+                        [(scrolled, false), (scrolled, true)]
+                            .into_iter()
+                            .take(reads)
+                    }) {
                         let seed = 1
                             + seed * 1000
                             + at as u64 * 20
                             + view as u64 * 4
                             + u64::from(thinking) * 2
-                            + u64::from(scrolled);
+                            + u64::from(scrolled)
+                            + u64::from(reads_folds) * 500;
                         let mut run = Run::new(seed, view, *size, scrolled, &mut meter);
                         run.starts = starts;
                         run.together = seeds.is_some();
+                        run.reads_folds = reads_folds;
                         // (The workers' sessions play as they did before
                         // code runs, which the main one plays.)
                         run.code_runs = !starts;
@@ -2024,7 +2167,7 @@ fn no_line_moves_down_as_an_agent_works() {
         meter.cause_table()
     );
     let table = format!(
-        "{table}\nThe moves the test allows. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Rows that came after an open call go down by the rows its content grows by above them as it comes, a command's output in Full and a code run's calls and its result in any view where the run is open. Each cell is frames · the most rows / all rows.\n\n{}",
+        "{table}\nThe moves the test allows. A fold closed brings every line down by the blank rows it would leave below the end, so the end is on the last row. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Rows that came after an open call go down by the rows its content grows by above them as it comes, a command's output in Full and a code run's calls and its result in any view where the run is open. Each cell is frames · the most rows / all rows.\n\n{}",
         meter.allowed_table()
     );
     if let Ok(path) = std::env::var("SHIFT_METER_OUT") {
@@ -2038,6 +2181,15 @@ fn no_line_moves_down_as_an_agent_works() {
     assert!(meter.frames() > 1500, "{} frames", meter.frames());
     assert_eq!(meter.shifted(), 0, "\n{table}\n{}", meter.examples());
     assert!(meter.aside.is_empty(), "{}", meter.aside.join("\n\n"));
+    assert!(meter.blank.is_empty(), "{}", meter.blank.join("\n\n"));
+    // Folds closed after a scroll down came down to the end.
+    assert!(
+        meter
+            .allowed
+            .keys()
+            .any(|key| (key.0, key.1) == (Allowed::Closed, Step::FoldCloses)),
+        "{table}"
+    );
     // Doors opened and closed, by the mouse and the keyboard, in Full and
     // inside open Quiet rows.
     for step in [Step::DoorOpens, Step::DoorCloses] {
@@ -2107,6 +2259,110 @@ fn a_read_note_goes_down_by_the_output_above_it_and_no_further() {
         let moved = moves(&before, &after(2), following, None, (4, 10), None);
         assert_eq!(moved.rows, 4, "following {following}");
     }
+}
+
+/// A fold closed on row 3 that brings every line on its row and above down
+/// by the same rows, with the end then on the last row, is the move the
+/// meter allows for a close, and only that. Opening, lines down by unequal
+/// rows or up, blank rows left below the end with rows hidden above and the
+/// end gone below the screen are not.
+#[test]
+fn a_close_may_bring_the_lines_down_only_by_the_blank_it_would_leave() {
+    let rows = |rows: &[&str]| -> Vec<String> { rows.iter().map(|row| row.to_string()).collect() };
+    let before = rows(&[
+        "w701 w702",
+        "",
+        "w703 w704",
+        "▾ w705 w706",
+        "│ w707",
+        "│ w708",
+        "",
+        "w709 w710",
+    ]);
+    // Closed, every line two rows lower, the end on the last row.
+    let after = rows(&[
+        "w650 w651",
+        "",
+        "w701 w702",
+        "",
+        "w703 w704",
+        "▸ w705 w706",
+        "",
+        "w709 w710",
+    ]);
+    let end = Stood {
+        gap: 0,
+        bottom: true,
+        start: false,
+    };
+    assert_eq!(
+        closed_down(Step::FoldCloses, &before, &after, 3, end),
+        Some(2)
+    );
+    assert_eq!(
+        closed_down(Step::DoorCloses, &before, &after, 3, end),
+        Some(2)
+    );
+    // The whole of a short transcript, its start on the top row.
+    let short = Stood {
+        gap: 3,
+        bottom: true,
+        start: true,
+    };
+    assert_eq!(
+        closed_down(Step::FoldCloses, &before, &after, 3, short),
+        Some(2)
+    );
+    // Opening, or another step.
+    for step in [Step::FoldOpens, Step::DoorOpens, Step::ReplyGrows] {
+        assert_eq!(closed_down(step, &before, &after, 3, end), None, "{step:?}");
+    }
+    // Blank rows left below the end with rows hidden above, or the end
+    // below the screen.
+    for stood in [
+        Stood {
+            gap: 1,
+            bottom: true,
+            start: false,
+        },
+        Stood {
+            gap: 0,
+            bottom: false,
+            start: false,
+        },
+        Stood {
+            gap: 0,
+            bottom: false,
+            start: true,
+        },
+    ] {
+        assert_eq!(
+            closed_down(Step::FoldCloses, &before, &after, 3, stood),
+            None,
+            "{stood:?}"
+        );
+    }
+    // A line above down by a row more than the others.
+    let unequal = rows(&[
+        "",
+        "",
+        "w701 w702",
+        "",
+        "",
+        "w703 w704",
+        "▸ w705 w706",
+        "w709 w710",
+    ]);
+    assert_eq!(
+        closed_down(Step::FoldCloses, &before, &unequal, 3, end),
+        None
+    );
+    // Lines up.
+    let up = rows(&["w703 w704", "▸ w705 w706", "", "w709 w710"]);
+    assert_eq!(closed_down(Step::FoldCloses, &before, &up, 3, end), None);
+    // Nothing moved is no move to allow.
+    let still = rows(&["w701 w702", "", "w703 w704", "▸ w705 w706", "", "w709 w710"]);
+    assert_eq!(closed_down(Step::FoldCloses, &before, &still, 3, end), None);
 }
 
 /// A row that came after an open call goes down by the rows the call's

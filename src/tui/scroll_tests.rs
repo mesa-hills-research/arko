@@ -401,26 +401,48 @@ pub(super) fn wheel(app: &mut App, kind: MouseEventKind) {
     ));
 }
 
-/// No line of `after` is lower than in `before`.
-pub(super) fn assert_none_lower(before: &[String], after: &[String], what: &str) {
+/// A thought the reader opened near the end and closed again, and the
+/// screens of the way there.
+struct Closed {
+    s: Session,
+    terminal: TestTerminal,
+    /// The screen before the thought opened, the one it was closed on, and
+    /// the one it closed to.
+    before: Vec<String>,
+    clicked: Vec<String>,
+    closed: Vec<String>,
+    /// The rows every line on the clicked row and above it went down.
+    down: usize,
+}
+
+/// How many rows every line of `before` on the row `y` or above it went
+/// down in `after`, the same for all of them. None went up.
+fn down_alike(before: &[String], after: &[String], y: usize, what: &str) -> usize {
     let now = unique(after);
+    let mut down = None;
     for (text, was) in unique(before) {
-        if let Some((_, y)) = now.iter().find(|(row, _)| *row == text) {
+        if was > y {
+            continue;
+        }
+        if let Some((_, to)) = now.iter().find(|(row, _)| *row == text) {
             assert!(
-                *y <= was,
-                "{what}: {text:?} went from row {was} to {y}\n{}\n----\n{}",
+                *to >= was && down.is_none_or(|down| down == to - was),
+                "{what}: {text:?} went from row {was} to {to}, the others {down:?}\n{}\n----\n{}",
                 before.join("\n"),
                 after.join("\n")
             );
+            down = Some(to - was);
         }
     }
+    down.unwrap_or(0)
 }
 
 /// Following in the Full view, the reader opens a thought of `lines` lines
-/// near the end, scrolls down by up to `notches` of the wheel, and closes it.
-/// Returns the session, its terminal and the screen it closed to, unless
-/// the thought's first line left the screen.
-fn closed_near_the_end(lines: u64, notches: usize) -> Option<(Session, TestTerminal, Vec<String>)> {
+/// near the end, scrolls down by up to `notches` of the wheel and back up by
+/// `up`, and closes it. Every line on the clicked row and above it goes down
+/// by the same rows, if any, the clicked line with them. None where the
+/// thought's first line left the screen.
+fn closed_near_the_end(lines: u64, notches: usize, up: usize) -> Option<Closed> {
     let mut s = Session::new(31, View::Full);
     let mut terminal = crate::tui::golden::terminal(70, 24);
     let mut quiet = |_: &mut App, _: &str| {};
@@ -433,11 +455,11 @@ fn closed_near_the_end(lines: u64, notches: usize) -> Option<(Session, TestTermi
     let words = s.words(3);
     let reply = s.item(Kind::Text, &words);
     s.add(reply);
-    let rows = frame(&mut terminal, &mut s.app);
+    let before = frame(&mut terminal, &mut s.app);
     assert!(s.app.transcript.following());
     let at = |rows: &[String]| rows.iter().position(|row| row.contains(&first));
-    // Open, and scroll down.
-    click(&mut s.app, at(&rows).unwrap());
+    // Open, scroll down and back up.
+    click(&mut s.app, at(&before).unwrap());
     let mut rows = frame(&mut terminal, &mut s.app);
     for _ in 0..notches {
         if s.app.transcript.following() {
@@ -446,35 +468,67 @@ fn closed_near_the_end(lines: u64, notches: usize) -> Option<(Session, TestTermi
         wheel(&mut s.app, MouseEventKind::ScrollDown);
         rows = frame(&mut terminal, &mut s.app);
     }
-    // Close. The line clicked stays, and no line moves down.
+    for _ in 0..up {
+        wheel(&mut s.app, MouseEventKind::ScrollUp);
+        rows = frame(&mut terminal, &mut s.app);
+    }
+    // Close.
     let y = at(&rows)?;
     click(&mut s.app, y);
     let closed = frame(&mut terminal, &mut s.app);
-    let what = format!("{lines} lines, {notches} notches");
-    assert!(closed[y].contains(&first), "{what}\n{}", closed.join("\n"));
-    assert_none_lower(&rows, &closed, &what);
-    Some((s, terminal, closed))
+    let what = format!("{lines} lines, {notches} notches down, {up} up");
+    let down = down_alike(&rows, &closed, y, &what);
+    assert!(
+        closed[y + down].contains(&first),
+        "{what}: the clicked line went down {down}\n{}",
+        closed.join("\n")
+    );
+    Some(Closed {
+        s,
+        terminal,
+        before,
+        clicked: rows,
+        closed,
+        down,
+    })
 }
 
 /// Following in the Full view, the reader opens a thought near the end,
-/// scrolls down (to the end, or part of the way), and closes it. The line
-/// clicked stays, blank rows stand below the end where its lines were, and
-/// the view follows on. A scroll down then moves no line, by the wheel's 3
-/// rows or by 1, with 0 to 3 blank rows and more, and End closes them.
+/// scrolls down (to the end, or part of the way) and closes it. Where it
+/// would leave blank rows below the end, every line goes down by them, so
+/// the end is on the last row and the screen is as it was before the
+/// thought opened, and the view follows. A scroll down then moves no line,
+/// by the wheel's 3 rows or by 1.
 #[test]
-fn a_scroll_down_after_a_fold_closed_near_the_end_moves_no_line() {
+fn a_fold_opened_near_the_end_scrolled_down_and_closed_leaves_no_blank_below_the_end() {
     let _full = choose_symbols(Symbols::Full);
-    let mut gaps = std::collections::BTreeSet::new();
+    let mut downs = std::collections::BTreeSet::new();
     for lines in [1, 2, 3, 4, 5, 8, 12] {
         for notches in [40, 1] {
             for step in [1, 3] {
                 let what = format!("{lines} lines, {notches} notches, a scroll of {step}");
-                let Some((mut s, mut terminal, closed)) = closed_near_the_end(lines, notches)
+                let Some(Closed {
+                    mut s,
+                    mut terminal,
+                    before,
+                    clicked,
+                    closed,
+                    down,
+                }) = closed_near_the_end(lines, notches, 0)
                 else {
                     continue;
                 };
-                assert!(s.app.transcript.following(), "{what}");
-                gaps.insert(s.app.transcript.gap());
+                downs.insert(down);
+                let t = &s.app.transcript;
+                assert!(
+                    t.gap() == 0 && t.bottom_shows(),
+                    "{what}: {} blank rows below the end\n{}\n----\n{}",
+                    t.gap(),
+                    clicked.join("\n"),
+                    closed.join("\n")
+                );
+                assert_eq!(closed, before, "{what}");
+                assert!(t.following(), "{what}");
                 for _ in 0..2 {
                     if step == 3 {
                         wheel(&mut s.app, MouseEventKind::ScrollDown);
@@ -485,46 +539,62 @@ fn a_scroll_down_after_a_fold_closed_near_the_end_moves_no_line() {
                     assert_eq!(after, closed, "{what}");
                     assert!(s.app.transcript.following(), "{what}");
                 }
-                // End closes the blank rows.
-                s.app.transcript.follow();
-                frame(&mut terminal, &mut s.app);
-                assert_eq!(s.app.transcript.gap(), 0, "{what}");
             }
         }
     }
-    for gap in [0, 1, 2, 3] {
-        assert!(
-            gaps.contains(&gap),
-            "no case left {gap} blank rows: {gaps:?}"
-        );
-    }
-    assert!(gaps.iter().any(|gap| *gap > 3), "{gaps:?}");
+    // Some closes moved the lines down, by one row and by more.
+    assert!(downs.contains(&1), "{downs:?}");
+    assert!(downs.iter().any(|down| *down > 3), "{downs:?}");
 }
 
-/// With blank rows below the end after a fold closed, a notch of the wheel
-/// up and one back down moves no line down, and the view follows again.
-/// Where the end shows after the notch up, the notch down moves nothing.
+/// The reader opens a thought near the end, scrolls down to the end and a
+/// notch back up, which reads, and closes it. Where it would leave blank
+/// rows below the end, every line goes down by them and the screen is as it
+/// was before the thought opened, but the reader reads on. What comes then
+/// moves no line, and the marker counts it.
 #[test]
-fn a_scroll_up_and_down_with_blank_rows_below_the_end_moves_no_line_down() {
+fn a_fold_closed_after_a_scroll_up_leaves_no_blank_and_the_reader_reads_on() {
     let _full = choose_symbols(Symbols::Full);
+    let mut moved = false;
     for lines in [2, 3, 4, 5, 8, 12] {
         let what = format!("{lines} lines");
-        let Some((mut s, mut terminal, closed)) = closed_near_the_end(lines, 40) else {
+        let Some(Closed {
+            mut s,
+            mut terminal,
+            before,
+            closed,
+            down,
+            ..
+        }) = closed_near_the_end(lines, 40, 1)
+        else {
             continue;
         };
-        let gap = s.app.transcript.gap();
-        wheel(&mut s.app, MouseEventKind::ScrollUp);
-        let up = frame(&mut terminal, &mut s.app);
-        assert!(!s.app.transcript.following(), "{what}");
-        assert_ne!(up, closed, "{what}");
-        wheel(&mut s.app, MouseEventKind::ScrollDown);
-        let down = frame(&mut terminal, &mut s.app);
-        assert_none_lower(&up, &down, &what);
-        assert!(s.app.transcript.following(), "{what}");
-        if gap > 3 {
-            assert_eq!(down, up, "{what}");
+        let t = &s.app.transcript;
+        assert!(t.reading() && !t.following(), "{what}");
+        if down > 0 {
+            moved = true;
+            assert!(
+                t.gap() == 0 && t.bottom_shows(),
+                "{what}: {} blank rows",
+                t.gap()
+            );
+            assert_eq!(closed, before, "{what}");
         }
+        let reply = s.item(Kind::Text, "");
+        let reply = s.add(reply);
+        let more = s.words(30);
+        s.append(reply, &more);
+        let after = frame(&mut terminal, &mut s.app);
+        let last = after.len() - 1;
+        assert_eq!(after[..last], closed[..last], "{what}");
+        assert!(
+            after[last].contains("new line"),
+            "{what}: {:?}",
+            after[last]
+        );
+        assert!(s.app.transcript.reading(), "{what}");
     }
+    assert!(moved, "no close moved the lines down");
 }
 
 /// Scrolled up into a reply as it streams, the screen stays as it is as

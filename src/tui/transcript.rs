@@ -19,7 +19,9 @@
 //! shorter the rows above stay where they are, with blank rows below it
 //! ([`GAP_LIMIT`]) until more comes. Once they scroll up the screen stays
 //! where it is, however much comes, goes or grows elsewhere, and a marker
-//! counts what is new below. Only their own scroll moves the view.
+//! counts what is new below. Only their own scroll moves the view, but for a
+//! fold they close that would leave blank rows below the end with rows
+//! hidden above. That brings the end down to the last row.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -222,7 +224,10 @@ struct QuietCached {
 }
 
 /// A line held on a row of the screen at the next draw, so a fold opened or
-/// closed moves none of the lines above it.
+/// closed moves none of the lines above it. A fold closed that would leave
+/// blank rows below the end with rows hidden above brings the end down to
+/// the last row instead, every line with it, as it was before the fold
+/// opened.
 #[derive(Debug, Clone, Copy)]
 struct Pin {
     /// The block it's in, and its line there.
@@ -230,6 +235,8 @@ struct Pin {
     line: usize,
     /// The row of the area it stays on, above the area when less than 0.
     row: i64,
+    /// The fold closed.
+    closes: bool,
 }
 
 impl Pin {
@@ -240,12 +247,15 @@ impl Pin {
     /// lines above that are the preview it shows either way. Opening holds the
     /// preview's last line, so the rest comes below it. Closing holds the
     /// preview's lines where any of them shows, else the door takes the row
-    /// clicked, so no line that stays on the screen moves.
-    fn held(was: Option<Fold>, now: Fold, row: i64) -> Self {
+    /// clicked, so no line that stays on the screen moves, unless the close
+    /// would leave blank rows below the end ([`Pin`]). `closes` says the
+    /// fold closed.
+    fn held(was: Option<Fold>, now: Fold, row: i64, closes: bool) -> Self {
         let at = |line: usize, row: i64| Self {
             key: now.block,
             line,
             row,
+            closes,
         };
         let Some(was) = was.filter(|was| was.block == now.block && was.line != now.line) else {
             return at(now.line, row);
@@ -1323,6 +1333,7 @@ impl Transcript {
                 key,
                 line: at.line,
                 row: row as i64,
+                closes: !self.counts_open.contains(&(key & !COUNT_KEY)),
             });
         }
     }
@@ -2499,12 +2510,19 @@ impl Transcript {
             }
         };
         // A fold opened or closed. The line clicked stays under the mouse,
-        // and the frame's scroll goes.
+        // and the frame's scroll goes. A fold closed that would leave blank
+        // rows below the end with rows hidden above brings the end down to
+        // the last row, every line with it.
         let mut pinned = None;
         if let Some(pin) = acted.pin
             && let Some((item, _)) = self.laid.slots.get(&pin.key).copied()
         {
-            feed.place(item, u32::try_from(pin.line).unwrap_or(u32::MAX), pin.row);
+            let line = u32::try_from(pin.line).unwrap_or(u32::MAX);
+            if pin.closes {
+                feed.place_settled(item, line, pin.row);
+            } else {
+                feed.place(item, line, pin.row);
+            }
             pinned = Some(pin.key);
             toward_end = None;
         }
@@ -3338,11 +3356,13 @@ impl Transcript {
                 .iter()
                 .position(|at| at.is_some_and(|at| (at.key, at.line) == (fold.block, fold.line)))
         });
-        if row {
-            if !self.quiet_open.remove(&item) {
+        let closes = if row {
+            let closes = self.quiet_open.remove(&item);
+            if !closes {
                 self.quiet_open.insert(item);
                 self.seal(item, filter, theme);
             }
+            closes
         } else {
             let quiet = self.shown_quiet(item, filter);
             let alone = self.shown_alone(item, filter, theme);
@@ -3360,25 +3380,28 @@ impl Transcript {
             // view.)
             let mut sealed = false;
             let worker_row = going(&entry.item).is_some();
-            if quiet
+            let open = if quiet
                 && owned
                 && !worker_row
                 && matches!(entry.item.kind, Kind::Thinking | Kind::Call)
             {
                 entry.open_quiet = !entry.open_quiet;
                 sealed = alone && entry.open_quiet && entry.item.kind == Kind::Thinking;
+                entry.open_quiet
             } else {
                 entry.open = !entry.open;
-            }
+                entry.open
+            };
             entry.touch();
             // A thinking the reader opened on a line of its own stays there.
             if sealed && self.quiet_sealed.insert(item) {
                 self.generation += 1;
             }
-        }
+            !open
+        };
         let fold = self.fold(item, inner, filter, theme)?;
         let row = shown_at.unwrap_or(y.saturating_sub(self.drawn.area.y) as usize);
-        self.acted.pin = Some(Pin::held(was, fold, row as i64));
+        self.acted.pin = Some(Pin::held(was, fold, row as i64, closes));
         Some(fold)
     }
 
@@ -3425,17 +3448,22 @@ impl Transcript {
         let Some(entry) = self.find_mut(hit.item) else {
             return;
         };
-        match entry.whole.iter().position(|id| *id == hit.id) {
+        let closes = match entry.whole.iter().position(|id| *id == hit.id) {
             Some(at) => {
                 entry.whole.remove(at);
+                true
             }
-            None => entry.whole.push(hit.id.clone()),
-        }
+            None => {
+                entry.whole.push(hit.id.clone());
+                false
+            }
+        };
         entry.touch();
         self.acted.pin = Some(Pin {
             key: hit.item,
             line: hit.line,
             row: hit.row,
+            closes,
         });
     }
 
@@ -3571,7 +3599,7 @@ impl Transcript {
             .then(|| self.fold(item, inner, filter, theme))
             .flatten();
         self.acted.reveal = true;
-        if self.open_target(focus, open, filter, theme)
+        if let Some(opened) = self.open_target(focus, open, filter, theme)
             && let Some(row) = held
         {
             self.acted.reveal = false;
@@ -3580,10 +3608,11 @@ impl Transcript {
                     key: at.key,
                     line: at.line,
                     row: row as i64,
+                    closes: !opened,
                 })
             } else {
                 self.fold(item, inner, filter, theme)
-                    .map(|fold| Pin::held(was, fold, row as i64))
+                    .map(|fold| Pin::held(was, fold, row as i64, !opened))
             };
         }
     }
@@ -3610,25 +3639,24 @@ impl Transcript {
         })
     }
 
-    /// Opens, closes or toggles `focus`, and returns whether it changed.
+    /// Opens, closes or toggles `focus`, and returns whether it's open now,
+    /// where it changed.
     fn open_target(
         &mut self,
         focus: Target,
         open: Option<bool>,
         filter: &Filter,
         theme: &Theme,
-    ) -> bool {
+    ) -> Option<bool> {
         let key = match focus {
             Target::Block(key) => key,
             // A call or a thinking inside a Quiet row opens there, a
             // content to its whole.
             Target::Inner { item, .. } => {
                 if !self.item(item).is_some_and(|item| self.folds_inside(item)) {
-                    return false;
+                    return None;
                 }
-                let Some(entry) = self.find_mut(item) else {
-                    return false;
-                };
+                let entry = self.find_mut(item)?;
                 let field = if matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
                     &mut entry.open_quiet
                 } else {
@@ -3636,13 +3664,15 @@ impl Transcript {
                 };
                 let was = *field;
                 *field = open.unwrap_or(!was);
-                let changed = *field != was;
+                let now = *field;
                 entry.touch();
-                return changed;
+                return (now != was).then_some(now);
             }
         };
         if is_count(key) {
-            return self.open_count(key, open);
+            return self
+                .open_count(key, open)
+                .then(|| self.counts_open.contains(&(key & !COUNT_KEY)));
         }
         if self.quiet_row(key, filter, theme).is_some() {
             let now = self.quiet_open.contains(&key);
@@ -3653,28 +3683,28 @@ impl Transcript {
             } else {
                 self.quiet_open.remove(&key);
             }
-            return want != now;
+            return (want != now).then_some(want);
         }
         let quiet = self.shown_quiet(key, filter);
         if !self
             .item(key)
             .is_some_and(|item| self.folds_in(item, filter))
         {
-            return false;
+            return None;
         }
         let owned = self.item(key).is_some_and(|item| filter.owns(item));
         let mut sealed = false;
-        let mut changed = false;
+        let mut changed = None;
         if let Some(entry) = self.find_mut(key) {
             if quiet && owned && matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
                 let was = entry.open_quiet;
                 entry.open_quiet = open.unwrap_or(!was);
-                changed = entry.open_quiet != was;
+                changed = (entry.open_quiet != was).then_some(entry.open_quiet);
                 sealed = entry.open_quiet && entry.item.kind == Kind::Thinking;
             } else {
                 let was = entry.open;
                 entry.open = open.unwrap_or(!was);
-                changed = entry.open != was;
+                changed = (entry.open != was).then_some(entry.open);
             }
             entry.touch();
         }
