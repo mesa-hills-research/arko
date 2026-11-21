@@ -516,7 +516,7 @@ impl Harness {
         if let Some(why) = unable(latest) {
             return (Err(Some(why.to_string())), false);
         }
-        let with_tool = config.handover.is_some() && !config.runs_in_claude_code();
+        let with_tool = config.handover.is_some() && !config.runs_in_cli();
         let request = report_request(with_tool, to);
         let workflow = self.workflow().clone();
         let run = latest.agent_run_id;

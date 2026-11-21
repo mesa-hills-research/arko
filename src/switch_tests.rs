@@ -1262,3 +1262,87 @@ async fn a_switch_dropped_during_the_report_ends_it() {
     );
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// Antigravity writes its report without a handover tool when the model changes.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_antigravity_lead_is_asked_for_a_report_it_can_give() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(reporting_model(bodies.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    let script = serde_json::json!([
+        [{"tool": "complete_task", "input": {"summary": "Made it."}}],
+        [{"text": "REPORT: made the file."}],
+        [{"text": "spare"}],
+    ]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let ready = crate::antigravity::test_offer("gemini-4-neon", "Gemini 4 Neon", &["low", "high"]);
+    const HELPER: &str = r#"
+import json, os, socket, sys, threading
+verb, path = sys.argv[1:]
+if verb != 'relay':
+    sys.exit(0)
+host, port = json.load(open(path))['address'].rsplit(':', 1)
+with socket.create_connection((host, int(port))) as conn:
+    conn.sendall((json.dumps({'token': os.environ['ARKO_AGY_RELAY_TOKEN']}) + '\n').encode())
+    def send():
+        for line in sys.stdin.buffer:
+            conn.sendall(line)
+        conn.shutdown(socket.SHUT_WR)
+    threading.Thread(target=send, daemon=True).start()
+    while data := conn.recv(65536):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+"#;
+    let python = std::env::var("ARKO_TEST_PYTHON").unwrap_or_else(|_| "python3".into());
+    let mut setup = providers::Setup::new(None);
+    setup.antigravity.cli_path = Some(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake_agy_agent.py").into(),
+    );
+    setup.antigravity.helper_command = Some(arko_ai::antigravity::HelperCommand {
+        program: python.into(),
+        args: vec!["-c".into(), HELPER.into()],
+    });
+    setup.antigravity.profile_root = Some(temp.path().join("profiles"));
+    for (name, file) in [
+        ("FAKE_AGY_SCRIPT", "script.json"),
+        ("FAKE_AGY_LOG", "log.jsonl"),
+        ("FAKE_AGY_STATE", "state"),
+    ] {
+        setup
+            .antigravity
+            .env
+            .insert(name.into(), fake.join(file).display().to_string());
+    }
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let agy = ModelSettings {
+        model: "agy:gemini-4-neon".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &agy, &agy, &setup);
+    crate::antigravity::TEST_STATUS.scope(ready, async {
+        say(&mut harness, &mut inputs, "Make a file.").await;
+        switch(&mut harness, &mut inputs, "/model luna").await;
+    }).await;
+    let log = std::fs::read_to_string(fake.join("log.jsonl")).unwrap_or_default();
+    let asked: Vec<String> = log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|entry| entry["event"] == "prompt")
+        .map(|entry| entry["text"].as_str().unwrap_or_default().to_string())
+        .collect();
+
+    let report = asked
+        .iter()
+        .find(|text| text.contains("report you write now"))
+        .unwrap_or_else(|| panic!("no report request: {asked:#?}\n{}", lines(&harness.feed)));
+    assert!(report.contains("Reply with it as plain text, without calling a tool."), "{report}");
+    assert!(!report.contains("Call `handover_report`"), "{report}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
