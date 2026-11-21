@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use arko_agents::TaskContext;
+use arko_agents::{ContextSignal, StopSignal, TaskContext};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -43,9 +43,26 @@ pub enum Answer {
     Approved { words: Option<String>, option: bool },
     /// Rejected, with what the message box held.
     Rejected { words: Option<String> },
+    /// A note or waking update arrived for the agent while it waited, so the
+    /// request left the tray for the agent to read it first. `note` is true
+    /// when a note waits.
+    Woken { note: bool },
     /// No answer came. The turn stopped, or no one can answer in this
     /// session.
     Unanswered,
+}
+
+impl Answer {
+    /// What a tool tells the agent when a note or update woke its wait for
+    /// approval before the user answered. `action` completes "waiting for
+    /// approval to {action}", `not_done` says what didn't happen, and
+    /// `retry` says how to try again.
+    pub(crate) fn woken_message(note: bool, action: &str, not_done: &str, retry: &str) -> String {
+        let what = if note { "A note" } else { "An update" };
+        format!(
+            "{what} arrived while waiting for approval to {action}, so {not_done}. Read it first, then {retry} if it's still needed."
+        )
+    }
 }
 
 /// Puts the agents' requests to the user and gives each tool its answer.
@@ -103,24 +120,69 @@ impl Approvals {
 
     /// Asks the user to approve `approval` for the tool call of `context`,
     /// and waits for the answer. The wait ends with [`Answer::Unanswered`]
-    /// when no one can answer, and the request leaves the tray when the call
-    /// stops waiting (its turn stopped).
+    /// when no one can answer or the run is stopping, and with
+    /// [`Answer::Woken`] when a note or waking update arrives for the agent.
+    /// In either case, the request leaves the tray.
     pub async fn request(&self, context: &TaskContext<'_>, approval: Approval) -> Answer {
-        self.request_for(context.task_id, context.call_id.clone(), approval)
-            .await
+        self.request_with_signal(
+            context.task_id,
+            context.call_id.clone(),
+            approval,
+            &context.stop,
+            &context.context_arrived,
+        )
+        .await
     }
 
     /// Asks the user to approve `approval` for run `run` (its call `call`,
     /// when known), and waits for the answer.
+    #[cfg(test)]
     pub(crate) async fn request_for(
         &self,
         run: Uuid,
         call: Option<String>,
         approval: Approval,
     ) -> Answer {
-        match self.ask(run, call, approval) {
-            Some(waiter) => waiter.answer().await,
-            None => Answer::Unanswered,
+        self.request_with_signal(
+            run,
+            call,
+            approval,
+            &StopSignal::never(),
+            &ContextSignal::never(),
+        )
+        .await
+    }
+
+    /// Asks the user to approve `approval` for run `run` (its call `call`,
+    /// when known), and waits for the answer, stopping on `stop` or waking
+    /// on `signal`. Dropping the internal waiter removes the request from
+    /// the tray on every exit path.
+    pub(crate) async fn request_with_signal(
+        &self,
+        run: Uuid,
+        call: Option<String>,
+        approval: Approval,
+        stop: &StopSignal,
+        signal: &ContextSignal,
+    ) -> Answer {
+        if !self.can_answer() || stop.is_stopping() {
+            return Answer::Unanswered;
+        }
+        if signal.has_arrived() {
+            return Answer::Woken {
+                note: signal.note_waits(),
+            };
+        }
+        let Some(mut waiter) = self.ask(run, call, approval) else {
+            return Answer::Unanswered;
+        };
+        tokio::select! {
+            biased;
+            answer = waiter.receiver() => answer.unwrap_or(Answer::Unanswered),
+            () = stop.stopping() => Answer::Unanswered,
+            () = signal.arrived() => Answer::Woken {
+                note: signal.note_waits(),
+            },
         }
     }
 
@@ -157,11 +219,6 @@ pub(crate) struct Waiter {
 }
 
 impl Waiter {
-    /// Waits for the answer.
-    pub(crate) async fn answer(mut self) -> Answer {
-        (&mut self.answer).await.unwrap_or(Answer::Unanswered)
-    }
-
     /// Where the answer comes, for a wait of the caller's own.
     pub(crate) fn receiver(&mut self) -> &mut oneshot::Receiver<Answer> {
         &mut self.answer

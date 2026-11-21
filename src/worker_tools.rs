@@ -612,6 +612,14 @@ impl Tool for SaveWorkerProfile {
                 .await;
             match answer {
                 Answer::Approved { words, .. } => approved_with = words,
+                Answer::Woken { note } => {
+                    return Ok(Answer::woken_message(
+                        note,
+                        &format!("save {}", profile.name),
+                        "it wasn't saved",
+                        "call save_worker_profile again",
+                    ));
+                }
                 Answer::Unanswered => {
                     return Ok(format!(
                         "The user didn't answer, so {} wasn't saved.",

@@ -1551,3 +1551,188 @@ async fn a_resumed_session_offers_start_agent_with_its_new_parameters() {
     assert!(last.iter().any(|(name, _)| name == "worker_options"));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// A note typed while `start_agent` waits for worker billing approval ends the
+/// wait immediately, withdraws the billing card from the tray, does not start
+/// the worker or burn handle `r1`, lets the agent read the note, and retrying
+/// after reading the note gets handle `r1`.
+#[tokio::test]
+async fn a_note_wakes_a_billing_approval_wait_and_keeps_the_handle() {
+    let seen: Seen = Arc::default();
+    let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server = ModelServer::start(Arc::new({
+        let (seen, step) = (seen.clone(), step.clone());
+        move |_, body: String| {
+            let who = sender(&body);
+            let (model, effort) = model_and_effort(&body);
+            seen.lock()
+                .unwrap()
+                .push((who.clone(), model, effort, body.clone()));
+            let n = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if who != "main" {
+                    return complete(&format!("w{n}"), "Worker finished.");
+                }
+                if body.contains("Started r1") {
+                    complete(&format!("m{n}"), "Started r1 after reading your note.")
+                } else if body.contains("Actually go ahead on astra.") {
+                    tool_call(
+                        &format!("m{n}"),
+                        crew::START_AGENT,
+                        serde_json::json!({
+                            "agent": WORKER,
+                            "task": "Retry after note.",
+                            "model": "astra",
+                            "effort": "low",
+                        }),
+                    )
+                } else {
+                    tool_call(
+                        &format!("m{n}"),
+                        crew::START_AGENT,
+                        serde_json::json!({
+                            "agent": WORKER,
+                            "task": "First try before note.",
+                            "model": "astra",
+                            "effort": "low",
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, input) = harness(temp.path(), server.client(), true);
+    harness.output.to_feed(harness.feed.clone());
+    harness.settings.openai_auth = Some(providers::OpenAiAuth::ApiKey);
+    harness.providers = providers::Setup::new(Some(providers::OpenAiAuth::ApiKey));
+    harness.settings.worker_billing = crate::billing::WorkerBilling::Ask;
+    harness.start_new_workers();
+    let feed = harness.feed.clone();
+    let sender = input.clone();
+    let user = tokio::spawn(async move {
+        // Once the first billing card arrives, send a note instead of approving.
+        until(|| !feed.approvals().is_empty()).await;
+        let first = feed.approvals();
+        assert_eq!(first.len(), 1);
+        sender
+            .send(Input::Line("Actually go ahead on astra.".into()))
+            .unwrap();
+        // Wait for the first card to leave the tray, then approve the retry card.
+        until_answered(&feed, &first).await;
+        until(|| !feed.approvals().is_empty()).await;
+        let second = feed.approvals();
+        assert_eq!(second.len(), 1);
+        send_tray_answer(&sender, &second, &[0], false, "");
+        until_answered(&feed, &second).await;
+    });
+    start_worker(&mut harness, &mut inputs, "Start the worker.").await;
+    tokio::time::timeout(Duration::from_secs(20), user)
+        .await
+        .expect("user interactions completed")
+        .unwrap();
+    assert!(harness.feed.approvals().is_empty());
+    // The first start returned non-error note-wake text, not a rejection,
+    // and the retry after reading the note kept handle r1.
+    let results = last_results(&seen, 3);
+    assert!(
+        results[0].starts_with(
+            "A note arrived while waiting for approval to start a worker on GPT-6.2 Astra, so it didn't start."
+        ),
+        "{results:?}"
+    );
+    assert!(results[1].contains("Started r1"), "{results:?}");
+    assert!(worker_with(&seen, "First try before note.").is_none());
+    assert!(worker_with(&seen, "Retry after note.").is_some());
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A note typed while `save_worker_profile` waits in the approval tray ends the
+/// wait immediately, withdraws the card, saves nothing, lets the agent read
+/// the note, and retrying with the updated name saves the profile.
+#[tokio::test]
+async fn a_note_wakes_a_profile_approval_wait_in_the_tray() {
+    let seen: Seen = Arc::default();
+    let step = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server = ModelServer::start(Arc::new({
+        let (seen, step) = (seen.clone(), step.clone());
+        move |_, body: String| {
+            let who = sender(&body);
+            let (model, effort) = model_and_effort(&body);
+            seen.lock()
+                .unwrap()
+                .push((who.clone(), model, effort, body.clone()));
+            let n = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                if body.contains("Saved the worker profile code-judge") {
+                    complete(&format!("m{n}"), "Saved code-judge.")
+                } else if body.contains("Name it code-judge instead.") {
+                    tool_call(
+                        &format!("m{n}"),
+                        crew::SAVE_WORKER_PROFILE,
+                        serde_json::json!({
+                            "name": "code-judge",
+                            "description": "Judges code",
+                            "model": "sol",
+                            "scope": "user",
+                        }),
+                    )
+                } else {
+                    tool_call(
+                        &format!("m{n}"),
+                        crew::SAVE_WORKER_PROFILE,
+                        serde_json::json!({
+                            "name": "3d-judge",
+                            "description": "Judges 3D",
+                            "model": "sol",
+                            "scope": "user",
+                        }),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, input) = harness(temp.path(), server.client(), true);
+    harness.output.to_feed(harness.feed.clone());
+    harness.start_new_workers();
+    let feed = harness.feed.clone();
+    let sender = input.clone();
+    let user = tokio::spawn(async move {
+        until(|| !feed.approvals().is_empty()).await;
+        let first = feed.approvals();
+        assert_eq!(first[0].approval.name(), "3d-judge");
+        sender
+            .send(Input::Line("Name it code-judge instead.".into()))
+            .unwrap();
+        until_answered(&feed, &first).await;
+        until(|| !feed.approvals().is_empty()).await;
+        let second = feed.approvals();
+        assert_eq!(second[0].approval.name(), "code-judge");
+        send_tray_answer(&sender, &second, &[0], false, "");
+        until_answered(&feed, &second).await;
+    });
+    start_worker(&mut harness, &mut inputs, "Save the profile.").await;
+    tokio::time::timeout(Duration::from_secs(20), user)
+        .await
+        .expect("user interactions completed")
+        .unwrap();
+    assert!(harness.feed.approvals().is_empty());
+    let results = last_results(&seen, 2);
+    assert!(
+        results[0].starts_with(
+            "A note arrived while waiting for approval to save 3d-judge, so it wasn't saved."
+        ),
+        "{results:?}"
+    );
+    assert!(
+        results[1].starts_with("Saved the worker profile code-judge"),
+        "{results:?}"
+    );
+    let roots = harness.crew.as_ref().unwrap().new_workers().unwrap().basis.roots.clone();
+    assert!(crate::profiles::read(&roots, "3d-judge").is_err());
+    assert!(crate::profiles::read(&roots, "code-judge").is_ok());
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

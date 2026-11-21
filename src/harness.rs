@@ -4228,10 +4228,21 @@ impl Harness {
                             continue;
                         }
                         Event::Question(question) => {
-                            if question.answer.as_ref().is_some_and(|answer| answer.is_closed()) {
+                            if question
+                                .answer
+                                .as_ref()
+                                .is_some_and(|answer| answer.is_closed() && !answer.is_woken())
+                            {
                                 continue;
                             }
                             self.flush_printer().await;
+                            if question
+                                .answer
+                                .as_ref()
+                                .is_some_and(|answer| answer.is_closed() && !answer.is_woken())
+                            {
+                                continue;
+                            }
                             let run = question.run;
                             self.question_asked(question);
                             // What the user sent that the agent hasn't read,
@@ -6856,6 +6867,224 @@ pub(crate) mod tests {
         assert_eq!(asking.await.unwrap().unwrap(), "(The user didn't answer.)");
         drop(questions);
         assert_eq!(asker.respond(request("Hello?")).await.unwrap(), CANT_ASK);
+    }
+
+    /// `Asker::respond` wakes directly on `UserInputRequest.context_arrived`
+    /// for agent questions (without `Harness::wake_waits`), marks them unwaited
+    /// on `feed` while keeping them open, leaves plain questions waiting for
+    /// their direct answer, and still delivers a direct answer when given.
+    #[tokio::test]
+    async fn asker_respond_wakes_on_context_arrived_without_harness_wake_waits() {
+        let (sender, mut questions) = mpsc::unbounded_channel();
+        let feed = remote::Feed::new(MAIN);
+        let asker = Arc::new(Asker {
+            questions: Some(sender),
+            feed: Some(feed.clone()),
+            approvals: crate::approvals::Approvals::none(),
+        });
+        let run = uuid::Uuid::new_v4();
+        let asked_q = |id: &str, text: &str| {
+            vec![arko_agents::questions::AskedQuestion {
+                id: id.into(),
+                question: arko_agents::questions::Question {
+                    question: text.into(),
+                    ..Default::default()
+                },
+            }]
+        };
+
+        // Agent question woken by a note via context_arrived gets WAIT_MESSAGE.
+        let source = arko_agents::ContextSource::new();
+        let mut req = request("Tabs or spaces?");
+        req.agent_run_id = run;
+        req.asked = asked_q("q1", "Tabs or spaces?");
+        req.context_arrived = source.call_signal();
+        let asking = tokio::spawn({
+            let asker = asker.clone();
+            async move { asker.respond(req).await }
+        });
+        let q = questions.recv().await.unwrap();
+        assert!(!q.plain());
+        feed.ask(run, &q.asked, true);
+        assert!(feed.open_questions_of(run)[0].waits);
+        source.set_note_waits(true);
+        source.notify();
+        let reply = tokio::time::timeout(Duration::from_secs(5), asking)
+            .await
+            .expect("woke on note")
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, crate::questions::WAIT_MESSAGE);
+        let open = feed.open_questions_of(run);
+        assert_eq!(open.len(), 1);
+        assert!(open[0].state.is_open() && !open[0].waits, "{open:?}");
+
+        // Agent question woken by a non-note update gets WAIT_UPDATE.
+        let updates = arko_agents::ContextSource::new();
+        let mut req = request("Push now?");
+        req.agent_run_id = run;
+        req.asked = asked_q("q2", "Push now?");
+        req.context_arrived = updates.call_signal();
+        let asking = tokio::spawn({
+            let asker = asker.clone();
+            async move { asker.respond(req).await }
+        });
+        let q = questions.recv().await.unwrap();
+        feed.ask(run, &q.asked, true);
+        updates.notify();
+        let reply = tokio::time::timeout(Duration::from_secs(5), asking)
+            .await
+            .expect("woke on update")
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, crate::questions::WAIT_UPDATE);
+        let q2 = feed
+            .open_questions_of(run)
+            .into_iter()
+            .find(|question| question.id == "q2")
+            .unwrap();
+        assert!(q2.state.is_open() && !q2.waits, "{q2:?}");
+
+        // Direct answer on an agent question delivers the answer cleanly.
+        let idle = arko_agents::ContextSource::new();
+        let mut req = request("Keep logs?");
+        req.agent_run_id = run;
+        req.asked = asked_q("q3", "Keep logs?");
+        req.context_arrived = idle.call_signal();
+        let asking = tokio::spawn({
+            let asker = asker.clone();
+            async move { asker.respond(req).await }
+        });
+        let q = questions.recv().await.unwrap();
+        assert!(
+            q.answer
+                .unwrap()
+                .send(crate::questions::WAIT_ANSWERED.into())
+        );
+        assert_eq!(
+            asking.await.unwrap().unwrap(),
+            crate::questions::WAIT_ANSWERED
+        );
+
+        // Plain question (no agent id) does not wake on context_arrived.
+        let plain_source = arko_agents::ContextSource::new();
+        let mut req = request("Which file?");
+        req.agent_run_id = run;
+        req.context_arrived = plain_source.call_signal();
+        let asking = tokio::spawn({
+            let asker = asker.clone();
+            async move { asker.respond(req).await }
+        });
+        let q = questions.recv().await.unwrap();
+        assert!(q.plain());
+        plain_source.set_note_waits(true);
+        plain_source.notify();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !asking.is_finished(),
+            "plain question does not wake on note"
+        );
+        assert!(q.answer.unwrap().send("main.rs".into()));
+        assert_eq!(asking.await.unwrap().unwrap(), "main.rs");
+    }
+
+    /// Answering a question via `Harness` (which posts the answer note before
+    /// sending `WAIT_ANSWERED`) never races with `Asker::respond`'s
+    /// `context_arrived` wake, and concurrent wakes during `question_asked`
+    /// never leave a question marked as waited for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_answer_and_context_wake_never_race_or_leave_waits_stuck() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        harness.feed.questions_run(Some(run));
+
+        // Racing Harness::reply_text against concurrent context_arrived wakes
+        // across worker threads stays strictly consistent. If Harness wins the
+        // claim (Replied::Answered), Asker returns WAIT_ANSWERED. If
+        // context_arrived wins first (Replied::Noted), Asker returns
+        // WAIT_MESSAGE. Neither side can disagree or stall.
+        for i in 1..=200u32 {
+            let id = format!("q{i}");
+            let (sender, mut questions) = mpsc::unbounded_channel();
+            let asker = Arc::new(Asker {
+                questions: Some(sender),
+                feed: Some(harness.feed.clone()),
+                approvals: crate::approvals::Approvals::none(),
+            });
+            let source = arko_agents::ContextSource::new();
+            let mut req = request("Tabs or spaces?");
+            req.agent_run_id = run;
+            req.asked = one_question(&id, "Tabs or spaces?");
+            req.context_arrived = source.call_signal();
+            let asking = tokio::spawn({
+                let asker = asker.clone();
+                async move { asker.respond(req).await }
+            });
+            let q = questions.recv().await.unwrap();
+            harness.question_asked(q);
+            let wake = tokio::spawn(async move {
+                source.set_note_waits(true);
+                source.notify();
+            });
+            let answer_reply = harness.reply_text("Spaces", std::slice::from_ref(&id));
+            wake.await.unwrap();
+            let got = tokio::time::timeout(Duration::from_secs(5), asking)
+                .await
+                .expect("wait finished")
+                .unwrap()
+                .unwrap();
+            match answer_reply {
+                crate::asking::Replied::Answered { .. } => {
+                    assert_eq!(got, crate::questions::WAIT_ANSWERED, "iteration {i}");
+                }
+                crate::asking::Replied::Noted { .. } => {
+                    assert_eq!(got, crate::questions::WAIT_MESSAGE, "iteration {i}");
+                }
+                other => panic!("iteration {i}: unexpected {other:?}"),
+            }
+        }
+
+        // Concurrent context_arrived wakes racing with question_asked never
+        // leave the question marked as waited for.
+        for i in 201..=400u32 {
+            let id = format!("q{i}");
+            let (sender, mut questions) = mpsc::unbounded_channel();
+            let asker = Arc::new(Asker {
+                questions: Some(sender),
+                feed: Some(harness.feed.clone()),
+                approvals: crate::approvals::Approvals::none(),
+            });
+            let source = arko_agents::ContextSource::new();
+            let mut req = request("Push now?");
+            req.agent_run_id = run;
+            req.asked = one_question(&id, "Push now?");
+            req.context_arrived = source.call_signal();
+            let asking = tokio::spawn({
+                let asker = asker.clone();
+                async move { asker.respond(req).await }
+            });
+            let q = questions.recv().await.unwrap();
+            let wake = tokio::spawn(async move {
+                source.set_note_waits(true);
+                source.notify();
+            });
+            harness.question_asked(q);
+            wake.await.unwrap();
+            let got = tokio::time::timeout(Duration::from_secs(5), asking)
+                .await
+                .expect("wait woke")
+                .unwrap()
+                .unwrap();
+            assert_eq!(got, crate::questions::WAIT_MESSAGE, "iteration {i}");
+            let open = harness
+                .feed
+                .open_questions_of(run)
+                .into_iter()
+                .find(|question| question.id == id)
+                .expect("question stays open");
+            assert!(!open.waits, "iteration {i}: question stuck waiting");
+        }
     }
 
     /// A session started before the search indexes, skills or the `mcp`

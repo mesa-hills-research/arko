@@ -579,3 +579,110 @@ fn removing_a_kept_index_reads_as_its_card_and_round_trips() {
     let back: Approval = serde_json::from_str(&json).unwrap();
     assert_eq!(back, approval);
 }
+
+/// A note or waking update ends an approval wait, withdraws the card from the
+/// tray, and lets a retry after reading the note be approved cleanly. A
+/// pre-arrived note wakes immediately without placing a card in the tray, and
+/// a stop signal ends the wait as unanswered.
+#[tokio::test]
+async fn a_note_or_update_wakes_an_approval_wait_and_withdraws_its_card() {
+    let feed = Feed::new(crate::agents::MAIN);
+    let approvals = Approvals::new(Some(feed.clone()), true, None);
+    let run = Uuid::new_v4();
+
+    // Woken while waiting by a posted note.
+    let source = arko_agents::ContextSource::new();
+    let mut ctx = TaskContext::new(run, "main", "", std::path::Path::new("."));
+    ctx.context_arrived = source.call_signal();
+    let waiting = tokio::spawn({
+        let approvals = approvals.clone();
+        async move { approvals.request(&ctx, Approval::Skill(skill())).await }
+    });
+    while feed.approvals().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    source.set_note_waits(true);
+    source.notify();
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("woke on note")
+        .unwrap();
+    assert_eq!(answer, Answer::Woken { note: true });
+    assert!(feed.approvals().is_empty(), "card withdrawn from tray");
+
+    // Pre-arrived note wakes immediately without putting a card in the tray.
+    let mut pre = TaskContext::new(run, "main", "", std::path::Path::new("."));
+    pre.context_arrived = source.call_signal();
+    source.set_note_waits(true);
+    source.notify();
+    let answer = approvals.request(&pre, Approval::Skill(skill())).await;
+    assert_eq!(answer, Answer::Woken { note: true });
+    assert!(feed.approvals().is_empty());
+
+    // Woken while waiting by a non-note update.
+    let updates = arko_agents::ContextSource::new();
+    let mut ctx = TaskContext::new(run, "main", "", std::path::Path::new("."));
+    ctx.context_arrived = updates.call_signal();
+    let waiting = tokio::spawn({
+        let approvals = approvals.clone();
+        async move { approvals.request(&ctx, Approval::McpServer(server())).await }
+    });
+    while feed.approvals().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    updates.notify();
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("woke on update")
+        .unwrap();
+    assert_eq!(answer, Answer::Woken { note: false });
+    assert!(feed.approvals().is_empty());
+
+    // A stop signal ends the wait as unanswered and withdraws the card.
+    let stop = arko_agents::StopSource::new();
+    let mut ctx = TaskContext::new(run, "main", "", std::path::Path::new("."));
+    ctx.stop = stop.signal();
+    let waiting = tokio::spawn({
+        let approvals = approvals.clone();
+        async move { approvals.request(&ctx, Approval::Skill(skill())).await }
+    });
+    while feed.approvals().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    stop.stop("stopped");
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        .await
+        .expect("ended on stop")
+        .unwrap();
+    assert_eq!(answer, Answer::Unanswered);
+    assert!(feed.approvals().is_empty());
+
+    // Retrying with a fresh signal and approving works cleanly.
+    let fresh = arko_agents::ContextSource::new();
+    let mut ctx = TaskContext::new(run, "main", "", std::path::Path::new("."));
+    ctx.context_arrived = fresh.call_signal();
+    let waiting = tokio::spawn({
+        let approvals = approvals.clone();
+        async move { approvals.request(&ctx, Approval::Skill(skill())).await }
+    });
+    let request = loop {
+        if let Some(request) = feed.approvals().into_iter().next() {
+            break request;
+        }
+        tokio::task::yield_now().await;
+    };
+    feed.answer_approvals(&ApprovalAnswers::of(
+        std::slice::from_ref(&request),
+        |_| true,
+        |_| false,
+        "",
+    ));
+    assert_eq!(
+        waiting.await.unwrap(),
+        Answer::Approved {
+            words: None,
+            option: false
+        }
+    );
+    assert!(feed.approvals().is_empty());
+}

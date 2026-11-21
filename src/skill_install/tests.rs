@@ -962,6 +962,56 @@ async fn an_auto_loading_skill_turned_down_isnt_saved() {
     fixture.nothing_saved();
 }
 
+/// A note or update arriving while waiting for skill approval leaves the skill
+/// unsaved and returns non-rejection guidance telling the agent to read it
+/// first, for both `add_skill` and `edit_skill`.
+#[tokio::test]
+async fn a_woken_skill_approval_does_not_save_or_claim_rejection() {
+    let fixture = fixture(true, Answer::Woken { note: true }, Vec::new());
+    let draft = write_skill(&fixture.drafts(), "always", "auto_load: true\n", &[]);
+    let source = draft.display().to_string();
+    let result = fixture.add(params("always", &source)).await.unwrap();
+    assert_eq!(
+        result,
+        "A note arrived while waiting for approval to save the skill always, so it wasn't saved. Read it first, then call add_skill again if it's still needed."
+    );
+    fixture.nothing_saved();
+
+    // Save a plain project skill first, then wake an auto_load edit on an update.
+    let plain = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let plain_source = plain.display().to_string();
+    fixture.add(params("notes", &plain_source)).await.unwrap();
+    std::fs::write(
+        plain.join("SKILL.md"),
+        skill_md("notes", "auto_load: true\n"),
+    )
+    .unwrap();
+    let edit_fixture = super::tests::fixture(true, Answer::Woken { note: false }, Vec::new());
+    let edit_draft = write_skill(&edit_fixture.drafts(), "notes", "", &[]);
+    let edit_source = edit_draft.display().to_string();
+    edit_fixture
+        .add(params("notes", &edit_source))
+        .await
+        .unwrap();
+    std::fs::write(
+        edit_draft.join("SKILL.md"),
+        skill_md("notes", "auto_load: true\n"),
+    )
+    .unwrap();
+    let updated = edit_fixture
+        .edit(params("notes", &edit_source))
+        .await
+        .unwrap();
+    assert_eq!(
+        updated,
+        "An update arrived while waiting for approval to update the skill notes, so it wasn't updated. Read it first, then call edit_skill again if it's still needed."
+    );
+    assert_eq!(
+        std::fs::read_to_string(edit_fixture.project().join("notes/SKILL.md")).unwrap(),
+        skill_md("notes", "")
+    );
+}
+
 /// With no one to ask, a skill with `auto_load: true` is refused, as a save
 /// and as an update, and nothing changes.
 #[tokio::test]

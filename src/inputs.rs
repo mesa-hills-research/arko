@@ -2,11 +2,13 @@
 //! the main agent's `ask_user` questions, finished jobs, monitors' alerts
 //! and the crew's wake-ups.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use arko_workflows::prelude::*;
 use arko_workflows::user_input::{UserInputHandler, UserInputRequest};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::agents::MAIN;
 use crate::engine::Request;
@@ -393,18 +395,124 @@ pub(crate) struct Question {
     pub(crate) answer: Option<Answering>,
 }
 
+/// Coordinates who ends a wait for agent questions so `Harness` posting an
+/// answer note before sending [`WAIT_ANSWERED`](crate::questions::WAIT_ANSWERED)
+/// can't race with [`Asker::respond`] waking on `context_arrived`.
+#[derive(Clone, Default)]
+pub(crate) struct WaitClaim(Arc<WaitClaimInner>);
+
+#[derive(Default)]
+struct WaitClaimInner {
+    state: AtomicU8,
+    registered: AtomicBool,
+    notify: Notify,
+}
+
+const WAIT_OPEN: u8 = 0;
+const WAIT_ANSWERING: u8 = 1;
+const WAIT_WOKEN: u8 = 2;
+
+impl WaitClaim {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// `Harness` claims the wait before posting the answer note so
+    /// `context_arrived` won't wake it as an unrelated note.
+    pub(crate) fn claim_answer(&self) -> bool {
+        self.0
+            .state
+            .compare_exchange(
+                WAIT_OPEN,
+                WAIT_ANSWERING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// `Asker` claims the wait when `context_arrived` fires. Returns false if
+    /// `Harness` already claimed it to send an answer.
+    pub(crate) fn claim_wake(&self) -> bool {
+        self.0
+            .state
+            .compare_exchange(WAIT_OPEN, WAIT_WOKEN, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Whether `Asker` woke this wait on `context_arrived`.
+    pub(crate) fn is_woken(&self) -> bool {
+        self.0.state.load(Ordering::Acquire) == WAIT_WOKEN
+    }
+
+    /// Marks that `Harness::question_asked` has handled this wait and added
+    /// any remaining open questions to `Harness::waiting`.
+    pub(crate) fn mark_registered(&self) {
+        self.0.registered.store(true, Ordering::Release);
+        self.0.notify.notify_waiters();
+    }
+
+    pub(crate) fn is_registered(&self) -> bool {
+        self.0.registered.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn registered(&self) {
+        let notified = self.0.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if self.is_registered() {
+            return;
+        }
+        notified.await;
+    }
+}
+
 /// Where the answer to questions the agent waits for goes.
 pub(crate) enum Answering {
     /// The agent's wait (`ask_user` with `wait`, or a question without
     /// ids), with the answer as text.
     Text(oneshot::Sender<String>),
+    /// An agent question wait that also wakes on `context_arrived`.
+    Claimed(oneshot::Sender<String>, WaitClaim),
 }
 
 impl Answering {
-    /// The wait is gone (its turn stopped).
+    /// The wait is gone (its turn stopped, or it already woke for a note).
     pub(crate) fn is_closed(&self) -> bool {
         match self {
             Self::Text(answer) => answer.is_closed(),
+            Self::Claimed(answer, claim) => answer.is_closed() || claim.is_woken(),
+        }
+    }
+
+    /// Whether the wait already woke on `context_arrived`.
+    pub(crate) fn is_woken(&self) -> bool {
+        match self {
+            Self::Text(_) => false,
+            Self::Claimed(_, claim) => claim.is_woken(),
+        }
+    }
+
+    /// Claims the wait for `Harness` before posting an answer note. Returns
+    /// false when the wait is already closed or woken.
+    pub(crate) fn claim_answer(&self) -> bool {
+        match self {
+            Self::Text(answer) => !answer.is_closed(),
+            Self::Claimed(answer, claim) => !answer.is_closed() && claim.claim_answer(),
+        }
+    }
+
+    /// Marks that `Harness::question_asked` registered this wait.
+    pub(crate) fn mark_registered(&self) {
+        if let Self::Claimed(_, claim) = self {
+            claim.mark_registered();
+        }
+    }
+
+    /// Sends `text` to the waiting caller. Returns whether it was delivered.
+    pub(crate) fn send(self, text: String) -> bool {
+        match self {
+            Self::Text(answer) | Self::Claimed(answer, _) => answer.send(text).is_ok(),
         }
     }
 }
@@ -445,25 +553,84 @@ pub(crate) struct Asker {
 }
 
 impl Asker {
-    /// Puts `asked` to the user and waits for the answer.
+    /// Puts `asked` to the user and waits for the answer. For agent questions
+    /// with IDs, a waking note or update on `context_arrived` ends the wait
+    /// so the agent reads it first, leaving the questions open and unwaited.
     async fn put(
         &self,
         run: uuid::Uuid,
         asked: Vec<arko_agents::questions::AskedQuestion>,
+        context_arrived: arko_agents::ContextSignal,
     ) -> Result<String, String> {
         let Some(questions) = &self.questions else {
             return Ok(CANT_ASK.to_string());
         };
-        let (answer, answered) = oneshot::channel();
+        let plain = !asked
+            .iter()
+            .all(|question| crate::questions::is_agent_id(&question.id));
+        let (answer, mut answered) = oneshot::channel();
+        if plain {
+            let question = Question {
+                run,
+                asked,
+                answer: Some(Answering::Text(answer)),
+            };
+            if questions.send(question).is_err() {
+                return Ok(CANT_ASK.to_string());
+            }
+            return Ok(answered.await.unwrap_or_else(|_| NO_ANSWER.to_string()));
+        }
+        let ids: Vec<String> = asked.iter().map(|asked| asked.id.clone()).collect();
+        let claim = WaitClaim::new();
         let question = Question {
             run,
             asked,
-            answer: Some(Answering::Text(answer)),
+            answer: Some(Answering::Claimed(answer, claim.clone())),
         };
         if questions.send(question).is_err() {
             return Ok(CANT_ASK.to_string());
         }
-        Ok(answered.await.unwrap_or_else(|_| NO_ANSWER.to_string()))
+        loop {
+            tokio::select! {
+                biased;
+                answer = &mut answered => {
+                    return Ok(answer.unwrap_or_else(|_| NO_ANSWER.to_string()));
+                }
+                () = context_arrived.arrived() => {
+                    // If one of these questions was already settled before
+                    // Harness processed this Question (for example, answered
+                    // before a Claude Code turn ended), let question_asked
+                    // send WAIT_ANSWERED or register the remaining open ones.
+                    if !claim.is_registered()
+                        && self
+                            .feed
+                            .as_ref()
+                            .is_some_and(|feed| feed.any_question_settled(run, &ids))
+                    {
+                        tokio::select! {
+                            biased;
+                            answer = &mut answered => {
+                                return Ok(answer.unwrap_or_else(|_| NO_ANSWER.to_string()));
+                            }
+                            () = claim.registered() => continue,
+                        }
+                    }
+                    if !claim.claim_wake() {
+                        // Harness already claimed this wait to send an answer
+                        // (posting the answer note fired context_arrived first).
+                        return Ok(answered.await.unwrap_or_else(|_| NO_ANSWER.to_string()));
+                    }
+                    if let Some(feed) = &self.feed {
+                        feed.questions_unwaited(&ids);
+                    }
+                    return Ok(if context_arrived.note_waits() {
+                        crate::questions::WAIT_MESSAGE.to_string()
+                    } else {
+                        crate::questions::WAIT_UPDATE.to_string()
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -476,7 +643,9 @@ pub(crate) const CANT_ASK: &str = "No one can answer questions in this session (
 #[async_trait::async_trait]
 impl UserInputHandler for Asker {
     async fn respond(&self, request: UserInputRequest) -> Result<String, String> {
-        self.put(request.agent_run_id, asked_of(&request)).await
+        let asked = asked_of(&request);
+        self.put(request.agent_run_id, asked, request.context_arrived)
+            .await
     }
 
     /// The questions go to the user, and their answers reach the agent

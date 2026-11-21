@@ -1501,7 +1501,20 @@ impl AddSkill {
                 "The user chose not to {verb} the skill {} for {reach}, so don't ask again unless they want it.",
                 plan.name
             ),
-            _ => format!(
+            Answer::Woken { note } => {
+                let past = if self.1 == Mode::Edit {
+                    "updated"
+                } else {
+                    "saved"
+                };
+                Answer::woken_message(
+                    *note,
+                    &format!("{verb} the skill {}", plan.name),
+                    &format!("it wasn't {past}"),
+                    &format!("call {tool} again"),
+                )
+            }
+            Answer::Unanswered | Answer::Approved { .. } => format!(
                 "The user didn't answer, so the skill {} wasn't {}.",
                 plan.name,
                 if self.1 == Mode::Edit {

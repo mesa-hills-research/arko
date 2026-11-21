@@ -587,3 +587,78 @@ async fn an_answer_sent_before_the_agent_waits_for_another_question_reaches_it()
     let question = the_question(&harness);
     assert!(question.state.is_open() && !question.waits, "{question:?}");
 }
+
+/// A host note posted directly to the workflow (for example a monitor alert
+/// or external note, without going through `Harness::wake_waits`) wakes an
+/// `ask_user` wait through `UserInputRequest.context_arrived`, leaves the
+/// question open and unwaited, and lets the user answer it afterwards.
+#[tokio::test]
+async fn a_host_note_posted_to_the_workflow_wakes_ask_user_without_wake_waits() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("The user answered q1.") {
+                    complete("m3", "Tabs it is.")
+                } else if body.contains("Monitor: build failed.") {
+                    complete("m2", "Read the monitor alert.")
+                } else {
+                    asks("m1")
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    on_screen(&harness);
+    let workflow = Arc::clone(harness.workflow());
+    let feed = harness.feed.clone();
+    let poster = tokio::spawn(async move {
+        until(|| waits(&feed)).await;
+        workflow
+            .post_note(
+                Note::new("Monitor: build failed.")
+                    .source(arko_workflows::notes::NoteSource::Host)
+                    .to([MAIN])
+                    .once(),
+            )
+            .unwrap();
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
+    )
+    .await
+    .expect("the host note woke ask_user via context_arrived");
+    poster.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Read the monitor alert.");
+    let last = bodies.lock().unwrap().last().unwrap().clone();
+    assert!(last.contains(crate::questions::WAIT_MESSAGE), "{last}");
+    assert!(last.contains("Monitor: build failed."), "{last}");
+    let question = the_question(&harness);
+    assert!(question.state.is_open() && !question.waits, "{question:?}");
+    assert!(!waits(&harness.feed));
+    // Answering q1 afterwards still delivers the answer.
+    assert!(
+        harness
+            .answer_questions(
+                answers(vec![text_answer(&question.id, "Tabs")]),
+                &mut crate::sending::Reply::default()
+            )
+            .is_some()
+    );
+    assert!(matches!(
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.deliver_answers(&mut inputs)
+        )
+        .await
+        .unwrap(),
+        News::Done
+    ));
+    assert_eq!(summary(&harness), "Tabs it is.");
+}

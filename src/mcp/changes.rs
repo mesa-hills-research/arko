@@ -662,6 +662,14 @@ impl McpChanges for Changes {
             let card = self.card(&request, scope, found.replaced.as_ref());
             match self.ask.ask(context, card).await {
                 Answer::Approved { words: said, .. } => words = said,
+                Answer::Woken { note } => {
+                    return Ok(Answer::woken_message(
+                        note,
+                        &format!("add {name}"),
+                        "it wasn't added",
+                        "call add again",
+                    ));
+                }
                 Answer::Unanswered => {
                     return Ok(format!("The user didn't answer, so {name} wasn't added."));
                 }

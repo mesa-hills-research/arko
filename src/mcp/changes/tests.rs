@@ -437,10 +437,30 @@ async fn a_card_turned_down_writes_nothing() {
     *ask.answer.lock().unwrap() = Answer::Unanswered;
     let said = setup
         .changes
-        .add(&context(temp.path()), request)
+        .add(&context(temp.path()), request.clone())
         .await
         .unwrap();
     assert_eq!(said, "The user didn't answer, so fine wasn't added.");
+    *ask.answer.lock().unwrap() = Answer::Woken { note: true };
+    let said = setup
+        .changes
+        .add(&context(temp.path()), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        said,
+        "A note arrived while waiting for approval to add fine, so it wasn't added. Read it first, then call add again if it's still needed."
+    );
+    *ask.answer.lock().unwrap() = Answer::Woken { note: false };
+    let said = setup
+        .changes
+        .add(&context(temp.path()), request)
+        .await
+        .unwrap();
+    assert_eq!(
+        said,
+        "An update arrived while waiting for approval to add fine, so it wasn't added. Read it first, then call add again if it's still needed."
+    );
     assert!(!local_file(&setup.workspace).exists());
     assert!(agent_added::servers(&setup.root).is_empty());
 }

@@ -1499,6 +1499,14 @@ impl Tool for ManageTool {
                     .await
                 {
                     crate::approvals::Answer::Approved { words, .. } => approved_words = words,
+                    crate::approvals::Answer::Woken { note } => {
+                        return Ok(crate::approvals::Answer::woken_message(
+                            note,
+                            &format!("remove the kept index {}", target.manifest.name),
+                            "it wasn't removed",
+                            "try again",
+                        ));
+                    }
                     crate::approvals::Answer::Unanswered => {
                         return Ok(format!(
                             "The user didn't answer, so the kept index {} wasn't removed.",

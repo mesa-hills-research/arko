@@ -1208,3 +1208,56 @@ async fn the_tools_definitions_are_known_without_a_session() {
             .collect::<Vec<_>>()
     );
 }
+
+/// A note arriving while `save_worker_profile` waits in the approval tray
+/// wakes the tool immediately, withdraws the card, saves nothing, and lets
+/// a retry succeed once approved.
+#[tokio::test]
+async fn a_note_wakes_save_worker_profile_and_retry_saves_it() {
+    let fixture = fixture(ModelChoice::Agent, true);
+    let source = arko_agents::ContextSource::new();
+    let mut ctx = TaskContext::new(uuid::Uuid::new_v4(), "main", "", std::path::Path::new("."));
+    ctx.context_arrived = source.call_signal();
+    let params = HashMap::from([
+        ("name".to_string(), Value::from("reviewer")),
+        ("description".to_string(), Value::from("Reviews diffs")),
+        ("scope".to_string(), Value::from("user")),
+    ]);
+    let saving = {
+        let save = fixture.save.clone();
+        let params = params.clone();
+        tokio::spawn(async move { save.execute(&ctx, params).await })
+    };
+    while fixture.feed.approvals().is_empty() {
+        tokio::task::yield_now().await;
+    }
+    source.set_note_waits(true);
+    source.notify();
+    let text = tokio::time::timeout(std::time::Duration::from_secs(5), saving)
+        .await
+        .expect("woke on note")
+        .unwrap()
+        .expect("not a tool error");
+    assert_eq!(
+        text,
+        "A note arrived while waiting for approval to save reviewer, so it wasn't saved. Read it first, then call save_worker_profile again if it's still needed."
+    );
+    assert!(fixture.feed.approvals().is_empty(), "card withdrawn");
+    assert!(profiles::read(&fixture.basis.roots, "reviewer").is_err());
+
+    // Retrying with a fresh signal and approving saves the profile.
+    let retry = {
+        let save = fixture.save.clone();
+        tokio::spawn(async move {
+            let ctx = TaskContext::new(uuid::Uuid::new_v4(), "main", "", std::path::Path::new("."));
+            save.execute(&ctx, params).await
+        })
+    };
+    fixture.decide(true, None).await;
+    let saved = retry.await.unwrap().unwrap();
+    assert!(
+        saved.starts_with("Saved the worker profile reviewer"),
+        "{saved}"
+    );
+    assert!(profiles::read(&fixture.basis.roots, "reviewer").is_ok());
+}

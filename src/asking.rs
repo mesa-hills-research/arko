@@ -129,8 +129,11 @@ impl Harness {
     /// and their note follows. When the agent has read that note already
     /// (a runtime that waits only once the turn that asked ends), the wait
     /// is told so instead, or, with questions still open, waits for those.
-    pub(crate) fn question_asked(&mut self, question: Question) {
+    pub(crate) fn question_asked(&mut self, mut question: Question) {
         let plain = question.plain();
+        if question.answer.as_ref().is_some_and(Answering::is_woken) {
+            question.answer = None;
+        }
         let mut asked = question.asked;
         if plain {
             for question in &mut asked {
@@ -162,46 +165,58 @@ impl Harness {
         // (A wait whose answer can no longer come ends.)
         self.waiting.retain(|waiting| !waiting.answer.is_closed());
         let ids: Vec<String> = asked.iter().map(|asked| asked.id.clone()).collect();
+        if answer.is_woken() {
+            if !plain {
+                self.feed.questions_unwaited(&ids);
+            }
+            return;
+        }
         if !plain {
             let open = ids_of(&self.feed.open_questions_of(run));
             let (open, settled): (Vec<String>, Vec<String>) =
                 ids.iter().cloned().partition(|id| open.contains(id));
-            if !settled.is_empty()
-                && let Answering::Text(answer) = answer
-            {
+            if !settled.is_empty() {
                 if self.note_unread(run, &settled) {
-                    self.post_kept_notes_or_say(run);
-                    let _ = answer.send(WAIT_ANSWERED.to_string());
+                    if answer.claim_answer() {
+                        self.post_kept_notes_or_say(run);
+                        answer.send(WAIT_ANSWERED.to_string());
+                    }
+                    if !open.is_empty() {
+                        self.feed.questions_unwaited(&open);
+                    }
                 } else if open.is_empty() {
-                    let _ = answer.send(crate::questions::wait_answered_earlier(&settled));
+                    if answer.claim_answer() {
+                        answer.send(crate::questions::wait_answered_earlier(&settled));
+                    }
                 } else {
+                    answer.mark_registered();
                     self.waiting.push(Waiting {
                         run,
                         ids: open,
-                        answer: Answering::Text(answer),
+                        answer,
                     });
                 }
                 return;
             }
         }
+        answer.mark_registered();
         self.waiting.push(Waiting { run, ids, answer });
     }
 
-    /// Tells the agent's wait for the questions of `pending` that the user
-    /// replied. Their note follows. False when it doesn't wait for them (or
-    /// its wait is gone).
-    fn answer_agent_wait(&mut self, pending: &Pending) -> bool {
-        let Some(at) = self.waiting.iter().position(|waiting| {
+    /// Claims the live wait for any of `pending`'s questions before posting
+    /// its answer note, so posting the note can't race with `context_arrived`.
+    fn claim_agent_wait(&mut self, pending: &Pending) -> Option<Answering> {
+        while let Some(at) = self.waiting.iter().position(|waiting| {
             !waiting.plain()
                 && waiting.run == pending.run
                 && waiting.ids.iter().any(|id| pending.ids.contains(id))
-        }) else {
-            return false;
-        };
-        let waiting = self.waiting.remove(at);
-        match waiting.answer {
-            Answering::Text(answer) => answer.send(WAIT_ANSWERED.to_string()).is_ok(),
+        }) {
+            let waiting = self.waiting.remove(at);
+            if waiting.answer.claim_answer() {
+                return Some(waiting.answer);
+            }
         }
+        None
     }
 
     /// Posts run `run`'s kept notes not posted yet, each as a workflow note
@@ -272,11 +287,7 @@ impl Harness {
         for waiting in std::mem::take(&mut self.waiting) {
             match waiting.ids.iter().find(|id| answered.contains(id)) {
                 Some(id) if waiting.plain() => {
-                    match waiting.answer {
-                        Answering::Text(answer) => {
-                            let _ = answer.send(words(id));
-                        }
-                    }
+                    waiting.answer.send(words(id));
                     any = true;
                 }
                 _ => kept.push(waiting),
@@ -345,6 +356,9 @@ impl Harness {
                 .map(|answer| answer.words(None))
                 .unwrap_or_default()
         });
+        let wait = pending
+            .as_ref()
+            .and_then(|pending| self.claim_agent_wait(pending));
         // They went once settled and kept for the agent, whether or not
         // their note could be posted now.
         let not_posted = pending
@@ -353,7 +367,9 @@ impl Harness {
         let partial = self.partly(reply, dropped(&ids, &settled), not_posted);
         reply.accept_partly(Delivery::Answer, None, partial);
         let pending = pending?;
-        self.answer_agent_wait(&pending);
+        if let Some(wait) = wait {
+            wait.send(WAIT_ANSWERED.to_string());
+        }
         Some(pending.note)
     }
 
@@ -381,13 +397,18 @@ impl Harness {
         }
         self.user_present();
         self.answer_plain_waits(&ids_of(&settled), |_| String::new());
+        let wait = pending
+            .as_ref()
+            .and_then(|pending| self.claim_agent_wait(pending));
         let not_posted = pending
             .as_ref()
             .and_then(|pending| self.post_kept_notes(pending.run).err());
         let partial = self.partly(reply, dropped(&ids, &settled), not_posted);
         reply.accept_partly(Delivery::Answer, None, partial);
         let pending = pending?;
-        self.answer_agent_wait(&pending);
+        if let Some(wait) = wait {
+            wait.send(WAIT_ANSWERED.to_string());
+        }
         Some(pending.note)
     }
 
@@ -422,8 +443,11 @@ impl Harness {
                 settled: !settled.is_empty(),
             };
         };
+        let wait = self.claim_agent_wait(&pending);
         let not_posted = self.post_kept_notes(pending.run).err();
-        if self.answer_agent_wait(&pending) {
+        if let Some(wait) = wait
+            && wait.send(WAIT_ANSWERED.to_string())
+        {
             return Replied::Answered { not_posted };
         }
         Replied::Noted {
@@ -443,7 +467,7 @@ impl Harness {
         let run = self.feed.questions_conversation();
         self.waiting
             .iter()
-            .filter(|waiting| Some(waiting.run) == run)
+            .filter(|waiting| !waiting.answer.is_closed() && Some(waiting.run) == run)
             .flat_map(|waiting| waiting.ids.clone())
             .collect()
     }
@@ -471,10 +495,8 @@ impl Harness {
             .partition(|waiting| !waiting.plain() && Some(waiting.run) == run);
         self.waiting = kept;
         for waiting in woken {
-            match waiting.answer {
-                Answering::Text(answer) => {
-                    let _ = answer.send(WAIT_MESSAGE.to_string());
-                }
+            if waiting.answer.claim_answer() {
+                waiting.answer.send(WAIT_MESSAGE.to_string());
             }
             self.feed.questions_unwaited(&waiting.ids);
         }

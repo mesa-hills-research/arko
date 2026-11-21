@@ -274,7 +274,23 @@ fn the_answer_decides_and_the_agent_reads_why_it_did_not_start() {
         Decision::Deny(Some("use sonnet".into()))
     );
     assert_eq!(Decision::of(&Answer::Unanswered), Decision::Unanswered);
+    assert_eq!(
+        Decision::of(&Answer::Woken { note: true }),
+        Decision::Woken { note: true }
+    );
+    assert_eq!(
+        Decision::of(&Answer::Woken { note: false }),
+        Decision::Woken { note: false }
+    );
     let opus = model("opus");
+    assert_eq!(
+        woken(true, &opus),
+        "A note arrived while waiting for approval to start a worker on Opus 5.5, so it didn't start. Read it first, then start the worker again if it's still needed."
+    );
+    assert_eq!(
+        woken(false, &opus),
+        "An update arrived while waiting for approval to start a worker on Opus 5.5, so it didn't start. Read it first, then start the worker again if it's still needed."
+    );
     assert_eq!(
         refusal(&Decision::Deny(None), &opus),
         "The user denied a worker on Opus 5.5, which is billed per token, so it didn't start. Start it on a plan model, which worker_options lists, or ask the user what they want."

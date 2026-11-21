@@ -3540,6 +3540,7 @@ impl Feed {
     }
 
     /// Whether the user stopped the turn and it hasn't ended yet.
+    #[cfg(test)]
     pub(crate) fn turn_is_stopping(&self) -> bool {
         matches!(
             self.lock().phase,
@@ -3778,6 +3779,11 @@ impl Feed {
     /// Run `run`'s open questions.
     pub(crate) fn open_questions_of(&self, run: Uuid) -> Vec<crate::questions::AgentQuestion> {
         self.lock().questions.open_of(Some(run))
+    }
+
+    /// Whether any of run `run`'s questions in `ids` has already been settled.
+    pub(crate) fn any_question_settled(&self, run: Uuid, ids: &[String]) -> bool {
+        self.lock().questions.any_settled(run, ids)
     }
 
     /// The conversation whose questions are shown.

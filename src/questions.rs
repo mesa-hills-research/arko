@@ -332,6 +332,11 @@ pub(crate) const WAIT_ANSWERED: &str =
 /// message to a working agent does, and the questions stay open.
 pub(crate) const WAIT_MESSAGE: &str = "The user sent you a message instead of answering, and your questions stay open. What they said is in the note that follows.";
 
+/// What the agent's wait for its questions reads when another waking update
+/// (such as a worker's report or a background job) arrives while it waits,
+/// and the questions stay open.
+pub(crate) const WAIT_UPDATE: &str = "An update arrived while you waited, and your questions stay open. What arrived is in the update that follows.";
+
 /// How a wait's reply ends when the user's answer reached the agent before
 /// the wait came, in a note it read while the turn that asked went on.
 pub(crate) const READ_ALREADY: &str = "in a note you've already read. There's nothing new.";
@@ -609,6 +614,14 @@ impl Book {
         self.entries
             .iter()
             .any(|entry| entry.run == run && entry.question.id == id)
+    }
+
+    /// Whether any of run `run`'s questions in `ids` has already been settled
+    /// (answered, dismissed or closed).
+    pub(crate) fn any_settled(&self, run: Uuid, ids: &[String]) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.run == run && ids.contains(&entry.question.id) && !entry.question.state.is_open()
+        })
     }
 
     /// The questions of card `item`.

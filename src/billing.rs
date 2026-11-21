@@ -306,6 +306,9 @@ pub(crate) enum Decision {
     AllowForSession,
     /// It doesn't start, with what the user wrote, if anything.
     Deny(Option<String>),
+    /// A note or waking update arrived before the user answered, so the
+    /// request left the tray and the worker didn't start.
+    Woken { note: bool },
     /// No answer came (the turn stopped), or no one can answer.
     Unanswered,
 }
@@ -318,9 +321,22 @@ impl Decision {
             Answer::Approved { option: true, .. } => Decision::AllowForSession,
             Answer::Approved { .. } => Decision::Allow,
             Answer::Rejected { words } => Decision::Deny(words.clone()),
+            Answer::Woken { note } => Decision::Woken { note: *note },
             Answer::Unanswered => Decision::Unanswered,
         }
     }
+}
+
+/// What the agent reads when a note or update woke the billing approval wait
+/// before the user answered.
+pub(crate) fn woken(note: bool, model: &Model) -> String {
+    let name = crate::models::display_name(&providers::model_name(model));
+    crate::approvals::Answer::woken_message(
+        note,
+        &format!("start a worker on {name}"),
+        "it didn't start",
+        "start the worker again",
+    )
 }
 
 /// What the agent reads when the worker it started on `model` doesn't
@@ -336,6 +352,7 @@ pub(crate) fn refusal(decision: &Decision, model: &Model) -> String {
         Decision::Deny(Some(words)) => format!(
             "The user didn't allow a worker on {name}, which is billed per token, and wrote “{words}”. Act on what they wrote. A worker on a model billed per token asks them again."
         ),
+        Decision::Woken { note } => woken(*note, model),
         Decision::Unanswered => format!(
             "No answer came, so the worker didn't start on {name}, which is billed per token."
         ),

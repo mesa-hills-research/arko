@@ -855,6 +855,7 @@ fn answer_items(text: &str) -> Vec<Item> {
     let trimmed = text.trim();
     if trimmed.ends_with(crate::questions::WAIT_ANSWERED)
         || trimmed.ends_with(crate::questions::WAIT_MESSAGE)
+        || trimmed.ends_with(crate::questions::WAIT_UPDATE)
         || trimmed.ends_with(crate::questions::READ_ALREADY)
         || is_answer_note(text)
     {

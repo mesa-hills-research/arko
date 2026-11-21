@@ -13,8 +13,8 @@ use arko_agents::{
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use arko_workflows::prelude::*;
 use arko_workflows::subagents::{
-    GitWorktreeProvider, StartRequest, SubagentEventKind, SubagentHook, SubagentRecord,
-    SubagentState, SubagentsConfig,
+    GitWorktreeProvider, StartCall, StartOutcome, StartRequest, SubagentEventKind, SubagentHook,
+    SubagentRecord, SubagentState, SubagentsConfig,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -142,17 +142,17 @@ impl Spending {
 
     /// Asks the user to allow the worker `request` starts on `model` in the
     /// approval tray, with the day's spend (`spent`, when the budget's check
-    /// read it) and the budget it reached (`over`), and waits for the
-    /// answer. The wait ends without one when the turn stops or the workflow
-    /// does. Words the user wrote beside an approval reach the main agent
-    /// as a note.
-    fn ask(
+    /// read it) and the budget it reached (`over`), and waits asynchronously
+    /// for the answer, a stop, or a waking note/update. Words the user wrote
+    /// beside an approval reach the main agent as a note.
+    async fn ask(
         &self,
         request: &StartRequest,
         model: &arko_ai::Model,
         spent: Option<f64>,
         over: Option<(f64, f64)>,
         workflow: &Weak<Workflow>,
+        call: &StartCall,
     ) -> Result<billing::Decision, String> {
         let approvals = self
             .asker
@@ -160,46 +160,17 @@ impl Spending {
             .map(|asker| asker.approvals.clone())
             .filter(crate::approvals::Approvals::can_answer)
             .ok_or_else(|| billing::cant_ask(model))?;
-        // (The start hook can't wait asynchronously, so it waits on a thread
-        // the runtime can do without.)
-        let runtime = match tokio::runtime::Handle::try_current() {
-            Ok(runtime)
-                if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-            {
-                runtime
-            }
-            _ => return Err(billing::cant_ask(model)),
-        };
         let spent = spent.unwrap_or_else(|| self.spend.today(workflow.upgrade().as_deref(), true));
         let approval = billing::approval(model, &request.task, Some(spent), over);
-        let mut waiter = approvals
-            .ask(
+        let answer = approvals
+            .request_with_signal(
                 request.caller_run_id,
-                None,
+                call.call_id.clone(),
                 crate::approvals::Approval::WorkerBilling(approval),
+                &call.stop,
+                &call.context_arrived,
             )
-            .ok_or_else(|| billing::cant_ask(model))?;
-        let feed = self.feed.clone();
-        let stopped = move || {
-            feed.as_ref().is_some_and(remote::Feed::turn_is_stopping)
-                || workflow
-                    .upgrade()
-                    .is_some_and(|workflow| workflow.is_cancelled())
-        };
-        let answer = tokio::task::block_in_place(|| {
-            runtime.block_on(async {
-                let stops = async {
-                    while !stopped() {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                };
-                tokio::select! {
-                    answer = waiter.receiver() => answer.unwrap_or(crate::approvals::Answer::Unanswered),
-                    () = stops => crate::approvals::Answer::Unanswered,
-                }
-            })
-        });
-        drop(waiter);
+            .await;
         if let crate::approvals::Answer::Approved {
             words: Some(words), ..
         } = &answer
@@ -606,27 +577,42 @@ fn apply_cache(
     Ok(())
 }
 
-/// The start hook. A run seen before gets the setup it started with, always.
-/// A start works its setup out ([`chooser::choose`]) and records it before
-/// the run is saved. A run saved before records existed, checked as a
-/// checkpoint is read back, gets the registered worker's configuration with
-/// its prompt cache.
-fn prepare(
+/// What [`plan_start`] decided for a worker start before any async user wait.
+enum StartPlan {
+    /// Already applied to `config` (a saved run or an unattached crew).
+    Done,
+    /// Ready to record and apply without asking the user.
+    Ready {
+        setup: WorkerSetup,
+        parent: Option<String>,
+    },
+    /// Needs the user's billing approval in the approval tray before starting.
+    AskBilling {
+        setup: WorkerSetup,
+        parent: Option<String>,
+        spent: Option<f64>,
+        over: Option<(f64, f64)>,
+    },
+}
+
+/// Works out a worker's setup and checks the session's billing policy
+/// without waiting on a person. A run seen before gets the setup it started
+/// with, always.
+fn plan_start(
     hook: &StartHook,
     request: &StartRequest,
     config: &mut AgentConfig,
-) -> Result<(), String> {
+) -> Result<StartPlan, String> {
     let StartHook {
         models,
         workflow,
-        feed,
         refuse,
         default_long,
         spending,
         hub,
         ..
     } = hook;
-    let (feed, refuse, default_long) = (feed.as_ref(), refuse.as_ref(), *default_long);
+    let (refuse, default_long) = (refuse.as_ref(), *default_long);
     // (The lock is held briefly, because choosing may read files, and Claude Code's
     // login check runs a command.)
     let (started, attached, new) = {
@@ -639,12 +625,13 @@ fn prepare(
     };
     if let Some(started) = started {
         started.apply(config);
-        return Ok(());
+        return Ok(StartPlan::Done);
     }
     if !attached {
-        return apply_cache(request, config, default_long);
+        apply_cache(request, config, default_long)?;
+        return Ok(StartPlan::Done);
     }
-    let setup = match new {
+    match new {
         Some(new) => {
             let current = workflow.lock().unwrap().upgrade();
             let runs = current
@@ -667,18 +654,38 @@ fn prepare(
                 family,
                 starter.as_ref(),
                 &servers,
-            )
-            .and_then(|setup| {
-                let weak = workflow.lock().unwrap().clone();
-                pay_for(&setup, &new.basis, request, family, refuse, spending, &weak)?;
-                Ok(setup)
-            });
-            let setup = setup?;
-            // The clients put its line where its parent is.
-            if let (Some(feed), Some(parent)) = (feed, parent) {
-                feed.worker_under(&request.handle, &parent);
+            )?;
+            let weak = workflow.lock().unwrap().clone();
+            let model = &setup.llm_config.model;
+            let spent = std::cell::Cell::new(None);
+            let gate = billing::gate(
+                new.basis.billing,
+                new.basis.api_budget,
+                model,
+                new.basis.providers.openai_auth.get(),
+                family.depth > 1,
+                spending.allowed.has(model),
+                || {
+                    let today = spending.spend.today(weak.upgrade().as_deref(), true);
+                    spent.set(Some(today));
+                    today
+                },
+                || chooser::plan_models(&new.basis, refuse),
+            );
+            let spent = spent.get();
+            if let Some(spent) = spent {
+                spending.tell_budget(&new.basis, spent);
             }
-            setup
+            match gate {
+                billing::Gate::Go => Ok(StartPlan::Ready { setup, parent }),
+                billing::Gate::Refuse(why) => Err(why),
+                billing::Gate::Ask { over } => Ok(StartPlan::AskBilling {
+                    setup,
+                    parent,
+                    spent,
+                    over,
+                }),
+            }
         }
         None => {
             // Not told what new workers start on, so the registered worker.
@@ -686,58 +693,82 @@ fn prepare(
                 return Err(why);
             }
             apply_cache(request, config, default_long)?;
-            WorkerSetup::of(config)
+            Ok(StartPlan::Ready {
+                setup: WorkerSetup::of(config),
+                parent: None,
+            })
         }
-    };
+    }
+}
+
+/// Applies and records an approved worker setup once it is ready to start.
+fn finish_start(
+    hook: &StartHook,
+    request: &StartRequest,
+    config: &mut AgentConfig,
+    setup: WorkerSetup,
+    parent: Option<String>,
+) -> Result<(), String> {
+    // The clients put its line where its parent is.
+    if let (Some(feed), Some(parent)) = (hook.feed.as_ref(), parent) {
+        feed.worker_under(&request.handle, &parent);
+    }
     setup.apply(config);
-    let mut models = models.lock().unwrap();
+    let mut models = hook.models.lock().unwrap();
     models.runs.insert(request.run_id, setup);
     models.save()
 }
 
-/// Holds the start `request` of a worker with `setup` (at `family`) to the
-/// session's worker billing ([`billing::gate`]). A model billed per token
-/// may be refused, or wait here for the user's OK.
-fn pay_for(
-    setup: &WorkerSetup,
-    basis: &chooser::Basis,
+/// Synchronous start hook for resume, relaunch and handover. Never waits on a
+/// person.
+fn prepare(
+    hook: &StartHook,
     request: &StartRequest,
-    family: chooser::Family,
-    refuse: Option<&Refuse>,
-    spending: &Spending,
-    workflow: &Weak<Workflow>,
+    config: &mut AgentConfig,
 ) -> Result<(), String> {
-    let model = &setup.llm_config.model;
-    let spent = std::cell::Cell::new(None);
-    let gate = billing::gate(
-        basis.billing,
-        basis.api_budget,
-        model,
-        basis.providers.openai_auth.get(),
-        family.depth > 1,
-        spending.allowed.has(model),
-        || {
-            let today = spending.spend.today(workflow.upgrade().as_deref(), true);
-            spent.set(Some(today));
-            today
-        },
-        || chooser::plan_models(basis, refuse),
-    );
-    if let Some(spent) = spent.get() {
-        spending.tell_budget(basis, spent);
+    match plan_start(hook, request, config)? {
+        StartPlan::Done => Ok(()),
+        StartPlan::Ready { setup, parent } => finish_start(hook, request, config, setup, parent),
+        StartPlan::AskBilling { setup, .. } => Err(billing::cant_ask(&setup.llm_config.model)),
     }
-    match gate {
-        billing::Gate::Go => Ok(()),
-        billing::Gate::Refuse(why) => Err(why),
-        billing::Gate::Ask { over } => {
-            match spending.ask(request, model, spent.get(), over, workflow)? {
-                billing::Decision::Allow => Ok(()),
-                billing::Decision::AllowForSession => {
-                    spending.allowed.add(model);
-                    Ok(())
+}
+
+/// Live `start_agent` hook. Waits asynchronously for billing approval when
+/// required, waking cleanly on a stop or incoming note/update.
+async fn prepare_start(
+    hook: &StartHook,
+    request: &StartRequest,
+    config: &mut AgentConfig,
+    call: &StartCall,
+) -> Result<StartOutcome, String> {
+    match plan_start(hook, request, config)? {
+        StartPlan::Done => Ok(StartOutcome::Start),
+        StartPlan::Ready { setup, parent } => {
+            finish_start(hook, request, config, setup, parent)?;
+            Ok(StartOutcome::Start)
+        }
+        StartPlan::AskBilling {
+            setup,
+            parent,
+            spent,
+            over,
+        } => {
+            let model = &setup.llm_config.model;
+            let weak = hook.workflow.lock().unwrap().clone();
+            match hook
+                .spending
+                .ask(request, model, spent, over, &weak, call)
+                .await?
+            {
+                billing::Decision::Allow => {}
+                billing::Decision::AllowForSession => hook.spending.allowed.add(model),
+                billing::Decision::Woken { note } => {
+                    return Ok(StartOutcome::NotStarted(billing::woken(note, model)));
                 }
-                other => Err(billing::refusal(&other, model)),
+                other => return Err(billing::refusal(&other, model)),
             }
+            finish_start(hook, request, config, setup, parent)?;
+            Ok(StartOutcome::Start)
         }
     }
 }
@@ -939,9 +970,19 @@ fn servers_of(slot: &HubSlot) -> Vec<arko_agents::mcp::ServerFacts> {
     hub.map(|hub| hub.servers()).unwrap_or_default()
 }
 
+#[async_trait]
 impl SubagentHook for StartHook {
     fn prepare(&self, request: &StartRequest, config: &mut AgentConfig) -> Result<(), String> {
         prepare(self, request, config)
+    }
+
+    async fn prepare_start(
+        &self,
+        request: &StartRequest,
+        config: &mut AgentConfig,
+        call: &StartCall,
+    ) -> Result<StartOutcome, String> {
+        prepare_start(self, request, config, call).await
     }
 
     /// What the worker runs and its profile, for its starter. The start's
@@ -3486,17 +3527,34 @@ mod tests {
         (crew, registered, feed)
     }
 
-    /// Starts a worker on `model` through `crew`'s start hook, on a thread of
-    /// the runtime's, as `start_agent` does.
+    /// Starts a worker on `model` through `crew`'s async start hook with
+    /// `call`, as `start_agent` does.
+    fn start_on_with_call(
+        crew: &Crew,
+        base: &AgentConfig,
+        model: &str,
+        call: StartCall,
+    ) -> tokio::task::JoinHandle<Result<StartOutcome, String>> {
+        let hook = crew.config().hook.unwrap();
+        let mut config = base.clone();
+        let request = start("r1", &[(MODEL_PARAM, model)]);
+        tokio::spawn(async move { hook.prepare_start(&request, &mut config, &call).await })
+    }
+
+    /// Starts a worker on `model` through `crew`'s async start hook, as
+    /// `start_agent` does.
     fn start_on(
         crew: &Crew,
         base: &AgentConfig,
         model: &str,
     ) -> tokio::task::JoinHandle<Result<(), String>> {
-        let hook = crew.config().hook.unwrap();
-        let mut config = base.clone();
-        let request = start("r1", &[(MODEL_PARAM, model)]);
-        tokio::spawn(async move { hook.prepare(&request, &mut config) })
+        let task = start_on_with_call(crew, base, model, StartCall::default());
+        tokio::spawn(async move {
+            match task.await.unwrap()? {
+                StartOutcome::Start => Ok(()),
+                StartOutcome::NotStarted(why) => Err(why),
+            }
+        })
     }
 
     /// The first request in the approval tray of `feed`, in time.
@@ -3603,12 +3661,14 @@ mod tests {
             "{why}"
         );
 
-        // A turn stopped while the request waits ends the wait, and the
+        // A stop signal while the request waits ends the wait, and the
         // request leaves the tray.
-        feed.turn_started();
-        let starting = start_on(&crew, &base, "opus");
+        let stop = arko_agents::StopSource::new();
+        let mut call = StartCall::default();
+        call.stop = stop.signal();
+        let starting = start_on_with_call(&crew, &base, "opus", call);
         asked(&feed).await;
-        feed.turn_stopping("Stopping the turn…");
+        stop.stop("the user stopped the turn");
         let why = tokio::time::timeout(Duration::from_secs(10), starting)
             .await
             .expect("the wait ended")
@@ -3616,7 +3676,6 @@ mod tests {
             .unwrap_err();
         assert!(why.starts_with("No answer came"), "{why}");
         assert!(feed.approvals().is_empty());
-        feed.turn_ended("1 s", None);
 
         // Allowed for the session, so it starts, and so do the next ones, with
         // no request, also in the session opened again.
@@ -3799,5 +3858,113 @@ mod tests {
         ask.set_new_workers(new);
         assert_eq!(start_on(&ask, &base, "opus").await.unwrap(), Ok(()));
         assert!(tray.approvals().is_empty());
+    }
+
+    /// A note or waking update ends a worker billing approval wait with
+    /// `StartOutcome::NotStarted`, withdraws the card from the tray, records
+    /// nothing for the unstarted run, and lets a retry succeed afterwards.
+    /// Sync `prepare` (used on resume/handover) never waits on a person.
+    #[tokio::test]
+    async fn billing_approval_wakes_on_note_and_sync_prepare_never_waits() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        let (crew, base, feed) =
+            billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
+        let hook = crew.config().hook.unwrap();
+
+        // Sync prepare never waits on a person for an unrecorded API worker.
+        let unrecorded = start("r1", &[(MODEL_PARAM, "opus")]);
+        let mut sync_config = base.clone();
+        let err = hook.prepare(&unrecorded, &mut sync_config).unwrap_err();
+        assert!(err.starts_with("No one can allow"), "{err}");
+        assert!(feed.approvals().is_empty());
+
+        // Live prepare_start wakes on a posted note while waiting.
+        let source = arko_agents::ContextSource::new();
+        let mut call = StartCall::default();
+        call.call_id = Some("call-1".into());
+        call.context_arrived = source.call_signal();
+        let req = start("r1", &[(MODEL_PARAM, "opus")]);
+        let run_id = req.run_id;
+        let waiting = tokio::spawn({
+            let hook = hook.clone();
+            let mut config = base.clone();
+            async move { hook.prepare_start(&req, &mut config, &call).await }
+        });
+        asked(&feed).await;
+        source.set_note_waits(true);
+        source.notify();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("woke on note")
+            .unwrap()
+            .expect("not a tool error");
+        let StartOutcome::NotStarted(text) = outcome else {
+            panic!("expected NotStarted, got {outcome:?}");
+        };
+        assert!(
+            text.starts_with("A note arrived while waiting for approval to start a worker on Opus 5.5, so it didn't start."),
+            "{text}"
+        );
+        assert!(feed.approvals().is_empty(), "billing card withdrawn");
+        assert!(
+            crew.run_model(run_id).is_none(),
+            "unstarted run was not recorded"
+        );
+
+        // A pre-arrived note returns NotStarted immediately without posting a card.
+        let mut pre_call = StartCall::default();
+        pre_call.context_arrived = source.call_signal();
+        source.set_note_waits(true);
+        source.notify();
+        let pre_req = start("r1", &[(MODEL_PARAM, "opus")]);
+        let mut pre_config = base.clone();
+        let outcome = hook
+            .prepare_start(&pre_req, &mut pre_config, &pre_call)
+            .await
+            .expect("not a tool error");
+        assert!(
+            matches!(outcome, StartOutcome::NotStarted(ref msg) if msg.starts_with("A note arrived")),
+            "{outcome:?}"
+        );
+        assert!(feed.approvals().is_empty());
+
+        // A non-note waking update reports "An update arrived...".
+        let update_source = arko_agents::ContextSource::new();
+        let mut update_call = StartCall::default();
+        update_call.context_arrived = update_source.call_signal();
+        let waiting = start_on_with_call(&crew, &base, "opus", update_call);
+        asked(&feed).await;
+        update_source.notify();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("woke on update")
+            .unwrap()
+            .expect("not a tool error");
+        assert!(
+            matches!(outcome, StartOutcome::NotStarted(ref msg) if msg.starts_with("An update arrived")),
+            "{outcome:?}"
+        );
+        assert!(feed.approvals().is_empty());
+
+        // Starting again after reading the note and approving succeeds, and
+        // sync prepare on that recorded run reuses its saved setup without asking.
+        let approved_req = start("r1", &[(MODEL_PARAM, "opus")]);
+        let approved_run_id = approved_req.run_id;
+        let starting = tokio::spawn({
+            let hook = hook.clone();
+            let req = approved_req.clone();
+            let mut config = base.clone();
+            async move {
+                hook.prepare_start(&req, &mut config, &StartCall::default())
+                    .await
+            }
+        });
+        answer(&feed, &asked(&feed).await, true, false, None);
+        assert_eq!(starting.await.unwrap(), Ok(StartOutcome::Start));
+        assert!(crew.run_model(approved_run_id).is_some());
+        let mut resumed_config = base.clone();
+        assert_eq!(hook.prepare(&approved_req, &mut resumed_config), Ok(()));
+        assert!(feed.approvals().is_empty());
     }
 }
