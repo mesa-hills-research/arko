@@ -2240,25 +2240,33 @@ pub fn cost_lines(
 /// used", with its credits, extra usage and set-aside logins after them.
 fn plan_used_words(status: &crate::remote::PlanStatus) -> String {
     if status.plan == plan_name(Some(SubscriptionPlan::Antigravity)) {
-        return status.text.clone();
-    }
-    let windows: Vec<String> = status
-        .windows
-        .iter()
-        .enumerate()
-        .map(|(at, window)| {
-            let whose = match at {
-                0 => format!("the {}'s", status.plan),
-                _ => "its".to_string(),
+        let mut groups: Vec<(&str, Vec<(f64, &str)>)> = Vec::new();
+        for window in &status.windows {
+            let Some((name, length)) = antigravity::group_window(&window.label) else {
+                break;
             };
-            format!(
-                "{:.0}% of {whose} {} used",
-                window.used_percent,
-                window_words(&window.label)
-            )
-        })
-        .collect();
-    let mut text = crate::and_list(&windows);
+            match groups.last_mut() {
+                Some((group, windows)) if *group == name => {
+                    windows.push((window.used_percent, length))
+                }
+                _ => groups.push((name, vec![(window.used_percent, length)])),
+            }
+        }
+        if !groups.is_empty() {
+            return groups
+                .into_iter()
+                .map(|(name, windows)| format!("{name}. {}", used_windows(&status.plan, windows)))
+                .collect::<Vec<_>>()
+                .join(" · ");
+        }
+    }
+    let mut text = used_windows(
+        &status.plan,
+        status
+            .windows
+            .iter()
+            .map(|window| (window.used_percent, window.label.as_str())),
+    );
     for part in status
         .credits
         .as_ref()
@@ -2271,6 +2279,22 @@ fn plan_used_words(status: &crate::remote::PlanStatus) -> String {
     }
     text.push_str(&crate::logins::set_aside_note(status.set_aside));
     text
+}
+
+fn used_windows<'a>(plan: &str, windows: impl IntoIterator<Item = (f64, &'a str)>) -> String {
+    let windows: Vec<_> = windows
+        .into_iter()
+        .enumerate()
+        .map(|(at, (used, label))| {
+            let whose = if at == 0 {
+                format!("the {plan}'s")
+            } else {
+                "its".to_string()
+            };
+            format!("{used:.0}% of {whose} {} used", window_words(label))
+        })
+        .collect();
+    crate::and_list(&windows)
 }
 
 /// A usage window's length in words, from its label (`7 d`, `5 h`, `90 min`)

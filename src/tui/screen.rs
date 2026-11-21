@@ -769,15 +769,15 @@ fn plan_figures(app: &App, cut: usize) -> Vec<Span<'static>> {
             spans.extend(name.take());
             // ("5 h" as `5h`, as the plan names its windows.)
             let mut label = window.label.as_str();
-            if plan.plan == "Google AI plan"
-                && let Some((group, length)) = label.rsplit_once(' ')
-                && let Some((group, count)) = group.rsplit_once(' ')
+            if plan.plan
+                == crate::providers::plan_name(Some(arko_ai::SubscriptionPlan::Antigravity))
+                && let Some((group, length)) = crate::antigravity::group_window(label)
             {
                 if previous_group != Some(group) {
                     spans.push(Span::styled(format!("{group} "), theme.dim()));
                     previous_group = Some(group);
                 }
-                label = &label[label.len() - count.len() - 1 - length.len()..];
+                label = length;
             }
             let label = label.replace(' ', "");
             spans.push(Span::styled(

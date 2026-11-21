@@ -327,6 +327,14 @@ fn windows(group: &agy::UsageGroup) -> Vec<crate::remote::PlanWindow> {
         .collect()
 }
 
+/// Separates the label used when more than one model group has usage.
+pub(crate) fn group_window(label: &str) -> Option<(&str, &str)> {
+    ["7 d", "5 h"].into_iter().find_map(|length| {
+        let name = label.strip_suffix(length)?.strip_suffix(' ')?;
+        Some((name, length))
+    })
+}
+
 fn figures(windows: &[crate::remote::PlanWindow]) -> String {
     windows
         .iter()
@@ -417,6 +425,12 @@ mod tests {
         usage.record(event(&gemini, &gemini));
         let status = usage.plan_status().unwrap();
         assert_eq!(status.text, "Google AI plan 7 d 3%, 5 h 9%");
+        let lines =
+            crate::providers::cost_lines(&[], &Default::default(), std::slice::from_ref(&status));
+        assert_eq!(
+            lines[1].text,
+            "3% of the Google AI plan's week used and 9% of its 5 hours used"
+        );
         assert_eq!(status.windows[0].resets_at, Some(1_790_861_400));
         assert_eq!(
             usage.for_model_name("Claude Opus 5.5").as_deref(),
@@ -436,7 +450,7 @@ mod tests {
         let lines = crate::providers::cost_lines(&[], &Default::default(), &[status]);
         assert_eq!(
             lines[1].text,
-            "Google AI plan Gemini Models 7 d 17%, 5 h 34% · Claude and GPT models 7 d 25%, 5 h 32%"
+            "Gemini Models. 17% of the Google AI plan's week used and 34% of its 5 hours used · Claude and GPT models. 25% of the Google AI plan's week used and 32% of its 5 hours used"
         );
     }
 }
