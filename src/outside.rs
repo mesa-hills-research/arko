@@ -157,7 +157,7 @@ impl Outside {
                 // (Refused with outside access on too, by the tool.)
                 Some(Leaves::Maybe(reason)) => {
                     return HookResult::Reject(format!(
-                        "Refused: `{path}` may lead outside the working directory `{dir}` ({reason}). Keep the files you write inside the working directory, or say what you need to change there and why."
+                        "Refused: `{path}` may lead outside the working directory `{dir}` ({reason}). Name the file by its real path, without links."
                     ));
                 }
             }
