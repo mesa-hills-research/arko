@@ -56,6 +56,27 @@ fn as_set_up(_: &Model, configured: usize) -> usize {
     configured
 }
 
+#[test]
+fn antigravity_worker_options_show_only_the_models_own_usage() {
+    let temp = tempfile::tempdir().unwrap();
+    let basis = basis(temp.path(), ModelChoice::Agent);
+    let plans = BTreeMap::from([
+        (
+            "agy:gemini-4-neon".to_string(),
+            "7 d 3%, 5 h 9%".to_string(),
+        ),
+        (
+            "agy:claude-opus-5-5".to_string(),
+            "7 d 25%, 5 h 32%".to_string(),
+        ),
+    ]);
+    let text = options_text(&basis, Show::Models, &|_| None, &plans, &as_set_up);
+    let line = |name: &str| text.lines().find(|line| line.starts_with(name)).unwrap();
+    assert!(line("- agy:neon ").contains("Google AI plan 7 d 3%, 5 h 9%"));
+    assert!(line("- agy:opus ").contains("Google AI plan 7 d 25%, 5 h 32%"));
+    assert!(!line("- agy:argon ").contains('%'));
+}
+
 fn plans() -> BTreeMap<String, String> {
     BTreeMap::from([(
         "ChatGPT plan".to_string(),

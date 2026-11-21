@@ -763,11 +763,23 @@ fn plan_figures(app: &App, cut: usize) -> Vec<Span<'static>> {
         } else {
             &plan.windows[first..]
         };
+        let mut previous_group = None;
         for window in windows {
             spans.push(sep());
             spans.extend(name.take());
             // ("5 h" as `5h`, as the plan names its windows.)
-            let label = window.label.replace(' ', "");
+            let mut label = window.label.as_str();
+            if plan.plan == "Google AI plan"
+                && let Some((group, length)) = label.rsplit_once(' ')
+                && let Some((group, count)) = group.rsplit_once(' ')
+            {
+                if previous_group != Some(group) {
+                    spans.push(Span::styled(format!("{group} "), theme.dim()));
+                    previous_group = Some(group);
+                }
+                label = &label[label.len() - count.len() - 1 - length.len()..];
+            }
+            let label = label.replace(' ', "");
             spans.push(Span::styled(
                 format!("{label}: {:.0}%", window.used_percent),
                 if window.used_percent >= PLAN_WARNS_AT {
@@ -4276,8 +4288,9 @@ mod tests {
             "{rows}"
         );
         assert!(rows.contains("│ Another model  "), "{rows}");
+        assert!(rows.contains("│ Type a model ID or alias…"), "{rows}");
         assert!(
-            rows.contains("│ Type a model ID, an alias, cc:<model> or openrouter:<slug>…"),
+            rows.contains("Antigravity, on your Google AI plan  needs Antigravity installed"),
             "{rows}"
         );
         assert!(rows.contains(" Enter  next   Esc  close"), "{rows}");

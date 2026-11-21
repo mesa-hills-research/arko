@@ -7,10 +7,10 @@ cargo test
 cargo test --manifest-path web/Cargo.toml
 ```
 
-The tests run against a mock model server, so they need no API keys. The Claude Code tests run a
-scripted stand-in for the `claude` CLI, `tests/fixtures/fake_claude_agent.py`, and need Python 3
-(`ARKO_TEST_PYTHON` picks the interpreter). The stand-in is a copy of arko_agents' test fixture,
-so update it when arko_agents changes the protocol it speaks.
+The tests run against a mock model server, so they need no API keys. The Claude Code and
+Antigravity tests run scripted stand-ins in `tests/fixtures/` and need Python 3
+(`ARKO_TEST_PYTHON` picks the interpreter). The stand-ins are copies of arko_agents' test
+fixtures. Update them when its protocol changes.
 
 The terminal view's screens are checked against goldens in `tests/screens/`, a text file for each
 screen at each size with the characters, colours and attributes of every cell. After a change to

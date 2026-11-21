@@ -272,6 +272,11 @@ fn choose_at(
             _ => format!("{why} worker_options lists the models usable now."),
         }
     })?;
+    if model.provider == arko_ai::Provider::Antigravity
+        && basis.providers.antigravity.helper_command.is_none()
+    {
+        return Err(crate::antigravity::UNSUPPORTED_HOST.to_string());
+    }
     let model_name = providers::model_name(&model);
     let same_model = providers::resolve_model(&basis.worker.model)
         .is_ok_and(|session| providers::model_name(&session) == model_name);
@@ -418,8 +423,11 @@ pub(crate) fn plan_models(basis: &Basis, refuse: Option<&Refuse>) -> Vec<String>
         .filter(|(name, _)| {
             // (Claude Mythos needs access few accounts have.)
             providers::model_note(name).is_none()
-                && providers::resolve_model(name)
-                    .is_ok_and(|model| providers::plan_of(&model, auth).is_some())
+                && providers::resolve_model(name).is_ok_and(|model| {
+                    (model.provider != arko_ai::Provider::Antigravity
+                        || basis.providers.antigravity.helper_command.is_some())
+                        && providers::plan_of(&model, auth).is_some()
+                })
         })
         .map(|(name, alias)| {
             if alias.is_empty() {

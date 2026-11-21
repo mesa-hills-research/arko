@@ -179,6 +179,9 @@ pub struct Options {
     pub mode: crate::session::Mode,
     /// A new chat's instructions from the user.
     pub chat_instructions: Option<String>,
+    /// The host command that runs Antigravity's relay and hooks. Without it,
+    /// this host can't open sessions on `agy:` models.
+    pub antigravity_helper: Option<arko_ai::antigravity::HelperCommand>,
     /// A client to use in place of the one the session's credentials make
     /// (in tests, the mock model server's).
     #[cfg(any(test, feature = "testing"))]
@@ -259,6 +262,7 @@ impl Default for Options {
             source: remote::Source::App,
             mode: crate::session::Mode::Agent,
             chat_instructions: None,
+            antigravity_helper: None,
             #[cfg(any(test, feature = "testing"))]
             client: None,
         }

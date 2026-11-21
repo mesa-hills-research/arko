@@ -38,10 +38,10 @@ use rustyline::validate::Validator;
 #[cfg(feature = "tui")]
 use rustyline::{ColorMode, Context, Helper};
 
-use crate::claude_code;
 use crate::session;
 #[cfg(feature = "tui")]
 use crate::ui::Output;
+use crate::{antigravity, claude_code};
 
 /// The Anthropic API key.
 pub const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
@@ -849,6 +849,11 @@ pub enum Need {
         model: String,
         problem: claude_code::Problem,
     },
+    /// The model needs the Antigravity CLI signed in.
+    Antigravity {
+        model: String,
+        problem: antigravity::Problem,
+    },
 }
 
 impl Need {
@@ -860,7 +865,7 @@ impl Need {
         };
         match self {
             Need::Any => format!(
-                "there are no credentials. Set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter) in the environment or a .env file, sign in to ChatGPT with `codex login`, install Claude Code for Claude models on your Claude plan, or {setup}"
+                "there are no credentials. Set ANTHROPIC_API_KEY (Claude models), OPENAI_API_KEY (OpenAI models), GEMINI_API_KEY (Gemini models) or OPENROUTER_API_KEY (any model on OpenRouter) in the environment or a .env file, sign in to ChatGPT with `codex login`, sign in to Claude Code or Antigravity to use your plan, or {setup}"
             ),
             Need::AnthropicKey { model } => key(model, ANTHROPIC_KEY),
             Need::OpenAiKey { model } => key(model, OPENAI_KEY),
@@ -888,6 +893,7 @@ impl Need {
                 problem: claude_code::Problem::Outdated { version },
                 ..
             } => claude_code::outdated_text(version),
+            Need::Antigravity { problem, .. } => antigravity::problem_text(problem),
         }
     }
 }
@@ -1150,11 +1156,12 @@ enum Choice {
     Key(&'static Key),
     ChatGptLogin,
     ClaudeCode,
+    Antigravity,
 }
 
 /// The menu, with what each choice is for.
 #[cfg(feature = "tui")]
-const MENU: [(Choice, &str); 7] = [
+const MENU: [(Choice, &str); 8] = [
     (
         Choice::Key(&ANTHROPIC),
         "Paste an Anthropic API key, for Claude models (billed per token)",
@@ -1178,6 +1185,10 @@ const MENU: [(Choice, &str); 7] = [
     (
         Choice::ClaudeCode,
         "Use Claude Code, for Claude models on your Claude plan (-m cc:opus)",
+    ),
+    (
+        Choice::Antigravity,
+        "Use Antigravity on your Google AI plan (-m agy:neon)",
     ),
     (
         Choice::Key(&VOYAGE),
@@ -1224,6 +1235,15 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 }
             };
             out.line(&format!("  Claude Code         {claude}"));
+            let agy = antigravity::check_at_setup()?;
+            let status = match agy.as_ref() {
+                Ok(ready) => agy_sign_in(ready),
+                Err(antigravity::Problem::Missing) => "not installed".to_string(),
+                Err(antigravity::Problem::SignedOut) => "not signed in".to_string(),
+                Err(antigravity::Problem::Outdated { found }) => format!("{found}, too old"),
+                Err(antigravity::Problem::Failed(_)) => "couldn't check sign-in".to_string(),
+            };
+            out.line(&format!("  Antigravity         {status}"));
             let voyage = match lookup(VOYAGE_KEY) {
                 None => "not set (search indexes are keyword-only)".to_string(),
                 Some((_, source)) => format!("set ({})", describe(&source)),
@@ -1231,7 +1251,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             out.line(&format!("  Voyage API key      {voyage}"));
         }
         Some(Need::Any) => out.line(
-            "No credentials found. No API key is set (in the environment or a .env file), there is no ChatGPT login, and Claude Code isn't installed.",
+            "No sign-in or API key found.",
         ),
         Some(Need::AnthropicKey { model }) => out.line(&format!(
             "{model} needs an Anthropic API key, and ANTHROPIC_API_KEY isn't set in the environment or a .env file."
@@ -1264,6 +1284,9 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             ),
             claude_code::Problem::Outdated { version } => claude_code::outdated_text(version),
         }),
+        Some(Need::Antigravity { model, .. }) => {
+            out.line(&format!("{model} runs in Antigravity."));
+        }
     }
     out.line("");
     let mut editor = Prompt::editor()?;
@@ -1278,6 +1301,9 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
                 "(For another provider instead, quit (q) and start Arko with --setup, or with -m and another model.)",
             ));
             return ask_claude_code(&out, &mut editor, Some(problem.clone()));
+        }
+        Some(Need::Antigravity { problem, .. }) => {
+            return ask_antigravity(&out, &mut editor, Some(problem));
         }
         None | Some(Need::Any) => {
             // The Voyage key is no model's credential, so it is offered on its own.
@@ -1313,6 +1339,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
         Choice::Key(key) => ask_key(&out, &mut editor, &dotenv, key),
         Choice::ChatGptLogin => ask_login(&out, &mut editor, &dotenv),
         Choice::ClaudeCode => ask_claude_code(&out, &mut editor, None),
+        Choice::Antigravity => ask_antigravity(&out, &mut editor, None),
     }
 }
 
@@ -1501,6 +1528,46 @@ fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), Str
     }
     out.line("");
     Ok(())
+}
+
+#[cfg(feature = "tui")]
+fn agy_sign_in(ready: &antigravity::Ready) -> String {
+    ready.tier.as_ref().map_or_else(
+        || "signed in".to_string(),
+        |tier| format!("signed in ({tier})"),
+    )
+}
+
+#[cfg(feature = "tui")]
+fn ask_antigravity(
+    out: &Output,
+    editor: &mut Editor,
+    known: Option<&antigravity::Problem>,
+) -> Result<(), String> {
+    let mut problem = known.cloned();
+    loop {
+        if problem.is_none() {
+            match antigravity::check_at_setup()?.as_ref() {
+                Ok(ready) => {
+                    out.line(&format!("Antigravity is {}.", agy_sign_in(ready)));
+                    return Ok(());
+                }
+                Err(found) => problem = Some(found.clone()),
+            }
+        }
+        if let Some(problem) = problem.take() {
+            out.line(&out.warn(&antigravity::problem_text(&problem)));
+        }
+        let line = read(
+            editor,
+            "Press Enter to check again, or q to quit. ",
+            "",
+            false,
+        )?;
+        if matches!(line.trim(), "q" | "Q") {
+            return Err(cancelled());
+        }
+    }
 }
 
 #[cfg(feature = "tui")]
@@ -2288,6 +2355,33 @@ mod tests {
         ] {
             assert!(message.contains(name), "{name}: {message}");
         }
+    }
+
+    #[test]
+    fn antigravity_setup_says_what_to_do_next() {
+        let text = |problem| {
+            Need::Antigravity {
+                model: "agy:gemini-4-neon".into(),
+                problem,
+            }
+            .message()
+        };
+        use antigravity::Problem;
+        assert_eq!(
+            text(Problem::Missing),
+            "Install the Antigravity CLI, then run `agy` to sign in."
+        );
+        assert_eq!(text(Problem::SignedOut), "Run `agy` to sign in.");
+        assert_eq!(
+            text(Problem::Outdated {
+                found: "1.5.13".to_string()
+            }),
+            "Antigravity CLI 1.5.13 is too old for Arko, which needs 1.5.14. Update it with `agy update`."
+        );
+        assert_eq!(
+            text(Problem::Failed("The CLI didn't answer.".to_string())),
+            "Couldn't check Antigravity sign-in. The CLI didn't answer."
+        );
     }
 
     /// A key shows its provider's prefix and its last 4 characters at most.

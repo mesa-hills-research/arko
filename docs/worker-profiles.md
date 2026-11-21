@@ -24,7 +24,7 @@ materials. Say what is wrong, in order of how much it matters.
 | Key | Meaning |
 |---|---|
 | `description` | One line of up to 120 characters, shown in lists. Required |
-| `model` | A model as `/model` takes it, such as `opus`, `sol`, `cc:haiku` or `openrouter:<slug>`. Without one, the session's worker model |
+| `model` | A model as `/model` takes it, such as `opus`, `sol`, `cc:haiku`, `agy:neon` or `openrouter:<slug>`. Without one, the session's worker model |
 | `effort` | `low`, `medium`, `high`, `xhigh` or `max`, as the model takes it |
 | `fast` | `true` for fast mode, where the model has it |
 | `cache` | `long` or `short` (`1h` and `5m` mean the same), the prompt cache of workers whose model has a long one. Long is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key. Short is 5 minutes on Claude and 30 minutes on OpenAI |
@@ -170,8 +170,9 @@ worker's own view (`/watch r1`, or the worker's view on the web page), and at th
 
 ## Worker billing
 
-`cc:` models run on your Claude plan, and OpenAI models on your ChatGPT plan when the session uses
-the ChatGPT login. Models on an API key, Gemini and OpenRouter are billed per token.
+`cc:` models run on your Claude plan and `agy:` models on your Google AI plan. OpenAI models run on
+your ChatGPT plan when the session uses the ChatGPT login. Models on an API key and OpenRouter
+models are billed per token.
 `/worker-billing` (also `--worker-billing`, and `ARKO_WORKER_BILLING` for new sessions) says
 whether workers may run on those. It is the "Worker billing" row in `/settings` and the setting of
 that name on the web page, and it applies to the next worker started.

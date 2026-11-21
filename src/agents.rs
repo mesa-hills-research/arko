@@ -232,6 +232,11 @@ impl ModelSettings {
             .is_ok_and(|provider| provider == Provider::ClaudeCode)
     }
 
+    pub fn in_antigravity(&self) -> bool {
+        self.provider()
+            .is_ok_and(|provider| provider == Provider::Antigravity)
+    }
+
     /// A model with a long prompt cache to choose, so a worker's `cache`
     /// chooses ([`providers::takes_long_cache`]).
     fn takes_long_cache(&self, openai_auth: Option<OpenAiAuth>) -> bool {
@@ -694,6 +699,11 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     }
     if settings.main.in_claude_code() {
         builder = builder.claude_code(settings.providers.claude_code.clone());
+    } else if settings.main.in_antigravity() {
+        builder = builder.antigravity(crate::antigravity::for_agent(
+            &settings.providers.antigravity,
+            settings.main,
+        )?);
     }
     builder.build().map_err(|error| error.to_string())
 }
@@ -714,6 +724,10 @@ pub(crate) fn worker_setup(
         claude_code: worker
             .in_claude_code()
             .then(|| claude_code::worker_settings(&providers.claude_code)),
+        antigravity: worker
+            .in_antigravity()
+            .then(|| crate::antigravity::for_agent(&providers.antigravity, worker))
+            .transpose()?,
         handover: Some(handover(
             worker,
             worker.handover_at.unwrap_or(handover_at),
@@ -782,6 +796,11 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         builder = builder.claude_code(claude_code::worker_settings(
             &settings.providers.claude_code,
         ));
+    } else if settings.worker.in_antigravity() {
+        builder = builder.antigravity(crate::antigravity::for_agent(
+            &settings.providers.antigravity,
+            settings.worker,
+        )?);
     }
     builder.build().map_err(|error| error.to_string())
 }
@@ -986,13 +1005,13 @@ pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can sta
 pub(crate) fn billing_words(billing: WorkerBilling) -> &'static str {
     match billing {
         WorkerBilling::Plans => {
-            "The user lets workers run only on their plans (`cc:` models and the ChatGPT login), so a start on a model billed per token is refused."
+            "The user lets workers run only on their plans (`cc:` and `agy:` models or the ChatGPT login), so a start on a model billed per token is refused."
         }
         WorkerBilling::Ask => {
-            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it, so choose one only when the job needs it."
+            "Prefer the models on the user's plans (`cc:` and `agy:` models or the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it, so choose one only when the job needs it."
         }
         WorkerBilling::Api => {
-            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job, since models billed per token cost the user money."
+            "Prefer the models on the user's plans (`cc:` and `agy:` models or the ChatGPT login) when they do the job, since models billed per token cost the user money."
         }
     }
 }
@@ -1253,6 +1272,61 @@ mod tests {
             Provider::Google
         );
         assert!(resolve_model("no-such-model").is_err());
+    }
+
+    #[test]
+    fn antigravity_agents_use_the_session_profile_and_keep_worker_settings() {
+        let main = model("agy:neon", false);
+        let worker = model("agy:sonnet", false);
+        let api = model("neon", false);
+        let dir = tempfile::tempdir().unwrap();
+        let no_helper = AgentSettings::for_test(&main, &worker);
+        assert_eq!(
+            main_config(&no_helper).unwrap_err(),
+            crate::antigravity::UNSUPPORTED_HOST
+        );
+        let mut providers = providers::Setup::new(None);
+        providers.antigravity.helper_command = Some(arko_ai::antigravity::HelperCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec!["agy-helper".to_string()],
+        });
+        crate::antigravity::for_session(&mut providers.antigravity, dir.path());
+        let settings = AgentSettings {
+            providers: &providers,
+            ..AgentSettings::for_test(&main, &worker)
+        };
+        let (main_config, worker_config) = (
+            main_config(&settings).unwrap(),
+            worker_config(&settings).unwrap(),
+        );
+        let chat_config = crate::chat::config(&settings).unwrap();
+        for config in [&main_config, &worker_config, &chat_config] {
+            assert!(config.runs_in_antigravity());
+            assert!(!compacts(config));
+            let agy = config.antigravity.as_ref().unwrap();
+            let helper = agy.helper_command.as_ref().unwrap();
+            assert_eq!(helper.program, std::env::current_exe().unwrap());
+            assert_eq!(helper.args, ["agy-helper"]);
+            assert_eq!(
+                agy.profile_root.as_deref(),
+                Some(dir.path().join("antigravity").as_path())
+            );
+        }
+        assert_eq!(
+            worker_config.antigravity.as_ref().unwrap().thought_level,
+            Some(worker.effort.to_string())
+        );
+        let mut prior_api = self::worker_config(&AgentSettings::for_test(&api, &api)).unwrap();
+        assert!(prior_api.antigravity.is_none());
+        let setup = worker_setup(&worker, &providers, true, 200_000, false).unwrap();
+        let mut saved = serde_json::to_value(setup).unwrap();
+        let read: crew::WorkerSetup = serde_json::from_value(saved.clone()).unwrap();
+        read.apply(&mut prior_api);
+        assert!(prior_api.runs_in_antigravity());
+        assert_eq!(prior_api.antigravity, worker_config.antigravity);
+        saved.as_object_mut().unwrap().remove("antigravity");
+        let old: crew::WorkerSetup = serde_json::from_value(saved).unwrap();
+        assert!(old.antigravity.is_none());
     }
 
     /// Agents in Claude Code get Arko's own tools, served to it, and none of
@@ -1566,7 +1640,7 @@ mod tests {
         }
         let ask = text(ModelChoice::Agent, WorkerBilling::Ask);
         assert!(ask.contains(
-            "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it"
+            "Prefer the models on the user's plans (`cc:` and `agy:` models or the ChatGPT login) when they do the job. A worker on a model billed per token starts only once the user allows it"
         ));
         assert!(
             text(ModelChoice::Agent, WorkerBilling::Plans).contains("billed per token is refused")

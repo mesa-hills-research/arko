@@ -152,12 +152,13 @@ style 15 12 13 fg=#303030 bg=#101010
 style 15 13 106 fg=#dedede bg=#101010
 style 15 106 107 fg=#303030 bg=#101010
 style 15 107 120 fg=#dedede bg=#131313
-text 16 "            │ Another model                                                                               │"
+text 16 "            │ Antigravity, on your Google AI plan  needs Antigravity installed                            │"
 style 16 0 12 fg=#dedede bg=#131313
 style 16 12 13 fg=#303030 bg=#101010
 style 16 13 14 fg=#dedede bg=#101010
-style 16 14 27 fg=#9d9d9d bg=#101010 bold
-style 16 27 106 fg=#dedede bg=#101010
+style 16 14 49 fg=#9d9d9d bg=#101010 bold
+style 16 49 78 fg=#9d9d9d bg=#101010
+style 16 78 106 fg=#dedede bg=#101010
 style 16 106 107 fg=#303030 bg=#101010
 style 16 107 120 fg=#dedede bg=#131313
 text 17 "            │                                                                                             │"

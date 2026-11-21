@@ -252,6 +252,12 @@ fn states() -> Vec<State> {
             app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         }),
         s("model-picker-workers", |app, _| model_picker(app, true)),
+        s("model-picker-antigravity", |app, _| {
+            antigravity_picker(app, false)
+        }),
+        s("model-picker-antigravity-effort", |app, _| {
+            antigravity_picker(app, true)
+        }),
         s("keys-menu", |app, _| {
             backdrop(app);
             app.open_keys("", None);
@@ -1297,6 +1303,40 @@ fn quit(app: &mut App, choice: usize, dont_ask: bool) {
         app_tests::job("npm run dev", Duration::from_millis(3_700_300)),
     ]);
     app.overlay = Some(Overlay::Quit { choice, dont_ask });
+}
+
+fn antigravity_picker(app: &mut App, effort: bool) {
+    app.transcript.banner = Some(super::Banner {
+        model: "agy:gemini-4-neon (high effort)".to_string(),
+        ..banner()
+    });
+    app.model_needs = |_, name| {
+        (!name.starts_with("agy:")).then(|| {
+            let model = crate::providers::resolve_model(name).unwrap();
+            crate::providers::credential_name(&model.provider).to_string()
+        })
+    };
+    app.set_reading(Reading {
+        models: Models {
+            main: "agy:gemini-4-neon".into(),
+            main_effort: "high".into(),
+            workers: "agy:gemini-4-neon".into(),
+            workers_effort: "high".into(),
+            workers_follow: true,
+            ..Models::default()
+        },
+        ..Reading::default()
+    });
+    app.open_model(crate::model_command::Target::Main);
+    if effort && let Some(Overlay::Model(picker)) = &mut app.overlay {
+        use crate::agents::Effort;
+        picker.step = super::model_picker::Step::Efforts {
+            model: "agy:gemini-4-neon".into(),
+            efforts: vec![Effort::Low, Effort::High, Effort::Xhigh],
+            selected: 1,
+            last: None,
+        };
+    }
 }
 
 fn model_picker(app: &mut App, workers: bool) {

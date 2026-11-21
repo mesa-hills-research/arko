@@ -437,10 +437,7 @@ impl Harness {
             None => providers::fit_effort(&resolved, self.conversation_settings().effort),
         };
         let (settings, workers_follow) = self.main_switched(&resolved, effort);
-        let setup = providers::Setup {
-            openai_auth: self.providers.openai_auth.clone(),
-            claude_code: self.providers.claude_code.clone(),
-        };
+        let setup = self.providers.clone();
         let (main_config, worker_config) = self.agent_configs(&settings, &setup)?;
         Ok(Target {
             settings,

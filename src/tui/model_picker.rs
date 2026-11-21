@@ -255,18 +255,27 @@ impl ModelPicker {
 
     /// The box's title, saying whose model it is.
     pub fn title(&self) -> String {
+        let label = |model: &str| {
+            if model.starts_with(providers::ANTIGRAVITY) {
+                providers::short_model_name(model)
+            } else {
+                model.to_string()
+            }
+        };
         if self.new_conversation {
             return match &self.step {
-                Step::Efforts { model, .. } => format!("New conversation's effort on {model}"),
+                Step::Efforts { model, .. } => {
+                    format!("New conversation's effort on {}", label(model))
+                }
                 _ => "New conversation's model".to_string(),
             };
         }
         match (&self.target, &self.step) {
             (Target::Main, Step::Efforts { model, .. }) => {
-                format!("Main agent's effort on {model}")
+                format!("Main agent's effort on {}", label(model))
             }
             (Target::Workers, Step::Efforts { model, .. }) => {
-                format!("Workers' effort on {model}")
+                format!("Workers' effort on {}", label(model))
             }
             (Target::Main, Step::Browse { .. }) => "Main agent's model on OpenRouter".to_string(),
             (Target::Workers, Step::Browse { .. }) => "Workers' model on OpenRouter".to_string(),
@@ -510,6 +519,13 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
             Span::raw("  ")
         }
     };
+    let heading = |name: &str| {
+        if name == providers::ANTIGRAVITY_GROUP && text_width(name) + 2 > inner_width {
+            "Antigravity, Google AI plan".to_string()
+        } else {
+            name.to_string()
+        }
+    };
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Lines that stay where they are while `lines` scroll.
     let mut header: Vec<Line<'static>> = Vec::new();
@@ -573,7 +589,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             lines.push(Line::default());
                         }
                         let mut spans = vec![Span::styled(
-                            name.clone(),
+                            heading(name),
                             theme.dim().add_modifier(Modifier::BOLD),
                         )];
                         // What the OpenRouter settings do to its models.
@@ -589,18 +605,23 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             lines.push(Line::default());
                         }
                         lines.push(Line::from(vec![
-                            Span::styled(group.clone(), theme.dim().add_modifier(Modifier::BOLD)),
+                            Span::styled(heading(group), theme.dim().add_modifier(Modifier::BOLD)),
                             Span::styled(format!("  needs {needs}"), theme.dim()),
                         ]));
                     }
                     Row::Model { name, alias } => {
                         let current = !picker.follows && *name == picker.model;
-                        let mut spans = vec![
-                            marker(chosen),
-                            Span::styled(format!("{name:<name_width$}"), style),
-                            Span::styled(format!("{alias:<alias_width$}"), theme.dim()),
-                        ];
-                        if details_width > 2 {
+                        let short = name.starts_with(providers::ANTIGRAVITY)
+                            && !alias.is_empty()
+                            && inner_width < name_width + alias_width + 2;
+                        let mut spans = vec![marker(chosen)];
+                        if short {
+                            spans.push(Span::styled(format!("{alias:<alias_width$}"), style));
+                        } else {
+                            spans.push(Span::styled(format!("{name:<name_width$}"), style));
+                            spans.push(Span::styled(format!("{alias:<alias_width$}"), theme.dim()));
+                        }
+                        if !short && details_width > 2 {
                             let details = picker.details(name);
                             spans.push(Span::styled(
                                 format!("{:<details_width$}", glyphs::render(&details)),
@@ -661,10 +682,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                         // In line with its heading, so when chosen, it shows by its
                         // colour alone.
                         lines.push(Line::from(Span::styled(
-                            glyphs::render(
-                                "Type a model ID, an alias, cc:<model> or openrouter:<slug>…",
-                            )
-                            .into_owned(),
+                            glyphs::render("Type a model ID or alias…").into_owned(),
                             style,
                         )));
                         if chosen {
@@ -780,7 +798,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
             keys = &[("Enter", "next"), ("Esc", "back")];
             for line in wrap::wrap(
                 &[Span::styled(
-                    "Type a model ID, an alias, cc:<model> for Claude Code, or openrouter:<slug> for a model on OpenRouter.",
+                    "Type a model ID or alias, such as cc:opus, agy:neon or openrouter:<slug>.",
                     theme.text(),
                 )],
                 inner_width.saturating_sub(2),

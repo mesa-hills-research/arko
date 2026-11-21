@@ -200,8 +200,8 @@ pub struct Profile {
     pub name: String,
     /// One line of up to [`MAX_DESCRIPTION`] characters.
     pub description: String,
-    /// A model as `/model` takes it (an alias, an ID, `openrouter:<slug>`
-    /// or `cc:<model>`). `None` is the session's worker model.
+    /// A model as `/model` takes it (an alias, an ID, `openrouter:<slug>`,
+    /// `cc:<model>` or `agy:<model>`). `None` is the session's worker model.
     pub model: Option<String>,
     /// The reasoning effort. `None` is the nearest one the model takes to
     /// the session's worker effort.

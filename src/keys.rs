@@ -340,7 +340,7 @@ impl Keys {
     /// when it can be used.
     pub fn needs(&self, model: &Model) -> Option<String> {
         match &model.provider {
-            Provider::ClaudeCode => {
+            Provider::ClaudeCode | Provider::Antigravity => {
                 providers::missing_credential(&providers::model_name(model), None)
             }
             provider if self.reaches(provider) => None,
@@ -367,6 +367,12 @@ impl Keys {
     ) -> Option<String> {
         const USABLE: &str = "worker_options lists the models usable now.";
         let name = providers::model_name(model);
+        if model.provider == Provider::Antigravity {
+            return self.needs(model).map(|needs| {
+                let hint = providers::needs_text(&name, &needs);
+                format!("Can't start a worker. {hint} {USABLE}")
+            });
+        }
         if model.provider == Provider::ClaudeCode {
             return claude_code_needs(model).map(|needs| {
                 if needs == "Claude Code signed in" {

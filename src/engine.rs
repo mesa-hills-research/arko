@@ -643,6 +643,13 @@ impl Engine {
                     true,
                     Some(&root),
                 ));
+                if options.model.is_none()
+                    && options.antigravity_helper.is_some()
+                    && !cfg!(test)
+                    && options.given_client().is_none()
+                {
+                    crate::antigravity::check().await;
+                }
                 if options.model.is_none() && default_model(&options).is_none() {
                     prompter.need_credentials(&Need::Any).await?;
                 }
@@ -674,6 +681,19 @@ impl Engine {
             );
         }
 
+        let agy = [&settings.main, &settings.worker]
+            .iter()
+            .any(|model| model.in_antigravity());
+        if agy && options.antigravity_helper.is_none() {
+            return Err(crate::antigravity::UNSUPPORTED_HOST.to_string().into());
+        }
+        if options.antigravity_helper.is_some()
+            && !cfg!(test)
+            && options.given_client().is_none()
+            && (!new || options.model.is_some())
+        {
+            crate::antigravity::check().await;
+        }
         // Missing credentials, or an auth file that fails, are asked for.
         let client = match options.given_client() {
             Some(client) => client,
@@ -684,6 +704,15 @@ impl Engine {
                 .await?,
             ),
         };
+        if new {
+            for settings in [&mut settings.main, &mut settings.worker] {
+                if let Ok(model) = providers::resolve_model(&settings.model)
+                    && model.provider == arko_ai::Provider::Antigravity
+                {
+                    settings.effort = providers::fit_effort(&model, settings.effort);
+                }
+            }
+        }
         // The OpenRouter models it starts on count among the ones picked.
         for model in [&settings.worker.model, &settings.main.model] {
             crate::openrouter::remember(&root, model);
@@ -709,7 +738,8 @@ impl Engine {
             settings.openai_auth = reached;
         }
         let openai_way = providers::OpenAiWay::new(reached);
-        let provider_setup = providers::Setup::new(openai_way.clone());
+        let mut provider_setup = providers::Setup::new(openai_way.clone());
+        provider_setup.antigravity.helper_command = options.antigravity_helper.clone();
         {
             // Settings the agents can't be built with leave no session behind.
             let agent_settings = AgentSettings::for_session(&settings, &provider_setup);
@@ -755,6 +785,7 @@ impl Engine {
             }
         };
         let lock = lock.expect("the session is locked");
+        crate::antigravity::for_session(&mut provider_setup.antigravity, &session.dir);
         if new && chat {
             // A chat works in no folder of the user's, only its own, which `arko
             // -c` never takes for a project's.

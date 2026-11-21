@@ -133,7 +133,12 @@ pub(crate) async fn client_asking(
     loop {
         match make() {
             Ok(client) => return Ok(client),
-            Err(Failure::Need(need)) => prompter.need_credentials(&need).await?,
+            Err(Failure::Need(need)) => {
+                prompter.need_credentials(&need).await?;
+                if matches!(need, Need::Antigravity { .. }) {
+                    crate::antigravity::check().await;
+                }
+            }
             Err(Failure::Other(message)) => return Err(message),
         }
     }

@@ -159,6 +159,16 @@ pub fn model_names(model: &Model) -> Vec<String> {
                 .collect();
             names.into_iter().chain(in_claude_code).collect()
         }
+        Provider::Antigravity => {
+            let mut names = plain(&model.id);
+            let name = providers::model_name(model);
+            let short = providers::short_model_name(&name);
+            if short != name {
+                names.push(short);
+            }
+            names.push(name);
+            names
+        }
         Provider::OpenRouter => {
             let mut names = providers::openrouter_equivalent(&model.id)
                 .map(plain)

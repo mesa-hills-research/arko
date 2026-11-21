@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use arko_agents::{
-    AgentConfig, AgentLLMConfig, ClaudeCodeSettings, HandoverConfig, TaskContext, Tool,
-    ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType, ToolTypeDetails,
+    AgentConfig, AgentLLMConfig, AntigravitySettings, ClaudeCodeSettings, HandoverConfig,
+    TaskContext, Tool, ToolDefinition, ToolError, ToolParameterDefinition, ToolParameterType,
+    ToolTypeDetails,
 };
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use arko_workflows::prelude::*;
@@ -276,6 +277,8 @@ pub struct WorkerSetup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_code: Option<ClaudeCodeSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity: Option<AntigravitySettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<HandoverConfig>,
     /// Text for the top of the run's first message, after the project's
     /// instructions, meaning the profile's instructions and nested worker
@@ -322,6 +325,7 @@ impl WorkerSetup {
         Self {
             llm_config: config.llm_config.clone(),
             claude_code: config.claude_code.clone(),
+            antigravity: config.antigravity.clone(),
             handover: config.handover.clone(),
             context_added: None,
             tools_added: Vec::new(),
@@ -357,6 +361,7 @@ impl WorkerSetup {
     pub(crate) fn apply(&self, config: &mut AgentConfig) {
         config.llm_config = self.llm_config.clone();
         config.claude_code = self.claude_code.clone();
+        config.antigravity = self.antigravity.clone();
         config.handover = self.handover.clone();
         // The skills are the run's own too, also over a list that a
         // configuration of another run was saved with. A worker never has

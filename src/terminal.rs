@@ -42,7 +42,13 @@ impl Prompter for TerminalPrompter {
         if !self.can_ask {
             return Err(need.message());
         }
-        credentials::setup(Some(need))
+        let context = crate::context::handle();
+        let need = need.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::context::within(context, || credentials::setup(Some(&need)))
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     async fn approve_project_mcp(&self, approval: &McpApproval) -> Result<Option<bool>, String> {

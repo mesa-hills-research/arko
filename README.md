@@ -8,7 +8,7 @@
 Arko is a general-purpose agent for the terminal. It works in your project with a shell, background
 jobs and file tools, and it can start workers that run in parallel while it carries on, each in the
 working directory or in a git worktree of its own. It runs on Claude, OpenAI, Gemini and OpenRouter
-models, and on your Claude plan through an installed Claude Code.
+models, and on your Claude or Google AI plan through Claude Code or Antigravity.
 
 <picture>
   <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/mesa-hills-research/arko/master/docs/images/arko-demo-still.png">
@@ -84,7 +84,8 @@ arko --remote 0.0.0.0                # also serve the web page to your network
 
 Arko picks a model from the credentials it finds. Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY` or `OPENROUTER_API_KEY`, sign in to Codex for a ChatGPT login, or sign in to Claude
-Code for `cc:` models. When the key for a model is missing, Arko asks for it on a setup screen. Keys
+Code for `cc:` models or [Antigravity](docs/antigravity.md) for `agy:` models. When the key for a
+model is missing, Arko asks for it on a setup screen. Keys
 can also go in a `.env` file. Semantic search in the indexes uses `VOYAGE_API_KEY`, and without it
 search is by keywords. A second ChatGPT login takes over when the first reaches its usage limit, and `/chatgpt` manages
 them (see [ChatGPT logins](docs/chatgpt-logins.md)).

@@ -493,6 +493,7 @@ fn main_plan(
     let chatgpt = models.openai_auth.as_deref() == Some(providers::OpenAiAuth::ChatGpt.describe());
     match model.map(|model| &model.provider) {
         Some(arko_ai::Provider::ClaudeCode) => Some(arko_ai::SubscriptionPlan::ClaudeCode),
+        Some(arko_ai::Provider::Antigravity) => Some(arko_ai::SubscriptionPlan::Antigravity),
         Some(arko_ai::Provider::OpenAI) if chatgpt => Some(arko_ai::SubscriptionPlan::ChatGpt),
         _ => None,
     }
@@ -531,6 +532,7 @@ pub(crate) fn cache_status(
     let model = providers::resolve_model(&models.main).ok();
     let on_plan = main_plan(model.as_ref(), models).map(|plan| match plan {
         arko_ai::SubscriptionPlan::ClaudeCode => "your Claude plan",
+        arko_ai::SubscriptionPlan::Antigravity => "your Google AI plan",
         arko_ai::SubscriptionPlan::ChatGpt => "your ChatGPT plan",
     });
     let tokens = stats.context_tokens;

@@ -8,7 +8,8 @@
 //! `openrouter:<slug>` any model OpenRouter serves
 //! (`openrouter:anthropic/claude-opus-5.5`), on an OpenRouter key, and
 //! `cc:<model>` a Claude model run in the user's Claude Code CLI, on their
-//! Claude plan (`cc:opus`, `cc:fable`).
+//! Claude plan (`cc:opus`, `cc:fable`). `agy:<model>` runs in the Antigravity
+//! CLI on the user's Google AI plan (`agy:neon`).
 //!
 //! Plain names stay as they were. A registry ID names one model at one
 //! provider (IDs are unique across the registry). A prefix appears only
@@ -33,11 +34,11 @@ use arko_workflows::budget::{CostLedger, CostSource};
 use serde::{Deserialize, Serialize};
 
 use crate::agents::{Effort, ModelSettings, default_handover};
-use crate::claude_code;
 use crate::credentials::{self, Need};
 use crate::logins;
 use crate::remote::protocol;
 use crate::session::Settings;
+use crate::{antigravity, claude_code};
 
 /// The prefix of a model on OpenRouter, as `openrouter:<slug>`.
 pub const OPENROUTER: &str = "openrouter:";
@@ -45,6 +46,19 @@ pub const OPENROUTER: &str = "openrouter:";
 pub const CLAUDE_CODE: &str = "cc:";
 /// The long form of [`CLAUDE_CODE`], also accepted.
 const CLAUDE_CODE_LONG: &str = "claude-code:";
+/// The prefix of a model run in Antigravity, as `agy:<model>`.
+pub const ANTIGRAVITY: &str = "agy:";
+pub const ANTIGRAVITY_GROUP: &str = "Antigravity, on your Google AI plan";
+
+const AGY_MODELS: &[(&str, &str)] = &[
+    ("agy:gemini-4-neon", "agy:neon"),
+    ("agy:gemini-4-argon", "agy:argon"),
+    ("agy:gemini-4-hydrogen", "agy:hydrogen"),
+    ("agy:gemini-3.8-flash", "agy:flash"),
+    ("agy:claude-opus-5-5", "agy:opus"),
+    ("agy:claude-sonnet-5-5", "agy:sonnet"),
+    ("agy:gpt-oss-120b-medium", "agy:gpt-oss"),
+];
 
 /// Short names for the models people use most. A model with two goes by
 /// the first in short (`carbon`, `hydrogen`). `gemini` names Google's most
@@ -191,8 +205,8 @@ pub const OPENROUTER_ROUTING_SUFFIXES: [&str; 3] = [":floor", ":nitro", ":free"]
 /// smallest context window common among the models OpenRouter serves.
 pub const UNKNOWN_LIMIT_HANDOVER: usize = 100_000;
 
-/// The model `name` names, a registry ID or alias, `openrouter:<slug>`, or
-/// `cc:<model>`.
+/// The model `name` names, a registry ID or alias, `openrouter:<slug>`,
+/// `cc:<model>` or `agy:<model>`.
 pub fn resolve_model(name: &str) -> Result<Model, String> {
     let name = name.trim();
     if let Some(slug) = strip_prefix(name, OPENROUTER) {
@@ -220,6 +234,18 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
             ));
         }
         return Ok(Model::claude_code(model));
+    }
+    if let Some(id) = strip_prefix(name, ANTIGRAVITY) {
+        let id = AGY_MODELS.iter().find_map(|(full, short)| {
+            let full = &full[ANTIGRAVITY.len()..];
+            let short = &short[ANTIGRAVITY.len()..];
+            (full.eq_ignore_ascii_case(id) || short.eq_ignore_ascii_case(id)).then_some(full)
+        });
+        return id
+            .and_then(|id| Model::get(Provider::Antigravity, id).ok())
+            .ok_or_else(|| {
+                format!("`{name}` isn't an Antigravity model. Try `agy:neon` or `agy:opus`.")
+            });
     }
     registered(name)
 }
@@ -255,7 +281,7 @@ fn unknown(name: &str) -> String {
         text.push_str(&format!(" Did you mean {close}?"));
     }
     text.push_str(&format!(
-        "{UNKNOWN_HELP}{}), openrouter:<slug> for a model on OpenRouter, or cc:<model> for a Claude model in Claude Code (cc:opus).",
+        "{UNKNOWN_HELP}{}), openrouter:<slug> for OpenRouter, cc:<model> for Claude Code (cc:opus) or agy:<model> for Antigravity (agy:neon).",
         ALIASES
             .iter()
             .map(|(alias, id)| format!("{alias} = {id}"))
@@ -307,6 +333,7 @@ pub fn model_name(model: &Model) -> String {
     match model.provider {
         Provider::OpenRouter => format!("{OPENROUTER}{}", model.id),
         Provider::ClaudeCode => format!("{CLAUDE_CODE}{}", model.id),
+        Provider::Antigravity => format!("{ANTIGRAVITY}{}", model.id),
         _ => model.id.clone(),
     }
 }
@@ -315,6 +342,9 @@ pub fn model_name(model: &Model) -> String {
 /// still name it. That is its alias (`sol`, `cc:opus`), or else a long
 /// OpenRouter slug cut short.
 pub fn short_model_name(name: &str) -> String {
+    if let Some((_, short)) = AGY_MODELS.iter().find(|(full, _)| *full == name) {
+        return (*short).to_string();
+    }
     let (prefix, id) = match name.strip_prefix(CLAUDE_CODE) {
         Some(id) => (CLAUDE_CODE, id),
         None => ("", name),
@@ -336,6 +366,7 @@ pub fn provider_name(model: &Model) -> &'static str {
         Provider::Google => "Gemini",
         Provider::OpenRouter => "OpenRouter",
         Provider::ClaudeCode => "Claude Code",
+        Provider::Antigravity => "Antigravity",
     }
 }
 
@@ -358,7 +389,7 @@ pub fn takes_long_cache(model: &Model, openai_auth: Option<OpenAiAuth>) -> bool 
         Provider::OpenAI => {
             openai_auth == Some(OpenAiAuth::ApiKey) && model.supports_openai_prompt_cache_options()
         }
-        Provider::Google => false,
+        Provider::Google | Provider::Antigravity => false,
     }
 }
 
@@ -464,6 +495,14 @@ pub fn generation(
                 generation = generation.with_openai_service_tier(OpenAIServiceTier::Fast);
             }
         }
+        Provider::Antigravity => {
+            if fast {
+                return Err(format!(
+                    "Arko doesn't support fast mode with {}",
+                    model_name(model)
+                ));
+            }
+        }
         Provider::Google => {
             if fast {
                 return Err(format!(
@@ -508,18 +547,26 @@ pub fn generation(
 pub fn settings_of(config: &arko_agents::AgentConfig, fallback: Effort) -> ModelSettings {
     let model = &config.llm_config.model;
     let generation = &config.llm_config.generation_config;
-    let have = serde_json::to_value(&generation.reasoning).ok();
-    let effort = efforts(model)
-        .iter()
-        .copied()
-        .find(|effort| {
-            [true, false].iter().any(|thinking_text| {
-                generation_of(model, *effort, *thinking_text).is_some_and(|candidate| {
-                    serde_json::to_value(&candidate.reasoning).ok() == have
+    let effort = if model.provider == Provider::Antigravity {
+        config
+            .antigravity
+            .as_ref()
+            .and_then(|settings| settings.thought_level.as_deref())
+            .and_then(|level| level.parse().ok())
+            .unwrap_or(fallback)
+    } else {
+        let have = serde_json::to_value(&generation.reasoning).ok();
+        efforts(model)
+            .into_iter()
+            .find(|effort| {
+                [true, false].iter().any(|thinking_text| {
+                    generation_of(model, *effort, *thinking_text).is_some_and(|candidate| {
+                        serde_json::to_value(&candidate.reasoning).ok() == have
+                    })
                 })
             })
-        })
-        .unwrap_or_else(|| fit_effort(model, fallback));
+            .unwrap_or_else(|| fit_effort(model, fallback))
+    };
     ModelSettings {
         model: model_name(model),
         effort,
@@ -734,6 +781,7 @@ pub fn model_by_credentials(codex_auth: Option<&Path>) -> Option<(&'static str, 
         openrouter: credentials::var(credentials::OPENROUTER_KEY).is_some(),
         openai: credentials::var(credentials::OPENAI_KEY).is_some(),
         gemini: gemini_key().is_some(),
+        antigravity: antigravity::default_model(AGY_MODELS),
     })
 }
 
@@ -747,6 +795,7 @@ struct Credentials {
     openrouter: bool,
     openai: bool,
     gemini: bool,
+    antigravity: Option<&'static str>,
 }
 
 /// [`model_by_credentials`]'s order.
@@ -770,6 +819,8 @@ fn first_by_credentials(have: Credentials) -> Option<(&'static str, &'static str
         Some(("gpt-6.2-sol", "OPENAI_API_KEY is set"))
     } else if have.gemini {
         Some(("gemini-4-carbon", "GEMINI_API_KEY is set"))
+    } else if let Some(model) = have.antigravity {
+        Some((model, "Antigravity is signed in"))
     } else if have.claude_code.is_some() {
         Some((opus_on_plan, "Claude Code is installed"))
     } else {
@@ -785,6 +836,7 @@ pub fn credential_name(provider: &Provider) -> &'static str {
         Provider::Google => "GEMINI_API_KEY",
         Provider::OpenRouter => "OPENROUTER_API_KEY",
         Provider::ClaudeCode => "Claude Code signed in",
+        Provider::Antigravity => antigravity::SIGN_IN,
     }
 }
 
@@ -806,6 +858,7 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
         }
         Provider::Google => gemini_key().is_none(),
         Provider::OpenRouter => credentials::var(credentials::OPENROUTER_KEY).is_none(),
+        Provider::Antigravity => return antigravity::needs_model(&model.id),
         Provider::ClaudeCode => {
             return match claude_code::find_cli().map(|_| claude_code::check_recent()) {
                 Some(Ok(_)) => None,
@@ -906,6 +959,7 @@ pub fn efforts(model: &Model) -> Vec<Effort> {
             vec![Low, Medium, High, Xhigh]
         }
         Provider::Google => vec![Low, Medium, High],
+        Provider::Antigravity => antigravity::efforts(&model.id),
         // OpenRouter maps each effort to the model's own levels.
         Provider::OpenRouter => all,
     }
@@ -938,7 +992,11 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
 /// What the user is told when `model` can't be used. It needs `needs`
 /// (from [`missing_credential`] or [`credential_name`]), and how to get it.
 pub fn needs_text(model: &str, needs: &str) -> String {
-    if needs == "Claude Code signed in" {
+    if needs == antigravity::UNSUPPORTED_HOST {
+        needs.to_string()
+    } else if let Some(action) = antigravity::action(needs) {
+        format!("{model} needs {needs}. {action}")
+    } else if needs == "Claude Code signed in" {
         format!("{model} needs Claude Code signed in. Sign in with `claude auth login`.")
     } else if needs == "Claude Code updated" {
         format!("{model} needs Claude Code updated. Update it with `claude update`.")
@@ -1028,7 +1086,7 @@ pub fn model_menu(
         &'static str,
         &'static [(&'static str, &'static str)],
     );
-    let groups: [Group; 5] = [
+    let groups: [Group; 6] = [
         (
             "Claude Code, on your Claude plan".to_string(),
             "cc:claude-opus-5-5",
@@ -1076,6 +1134,11 @@ pub fn model_menu(
             "openrouter:anthropic/claude-opus-5.5",
             &[("openrouter:anthropic/claude-opus-5.5", "")],
         ),
+        (
+            ANTIGRAVITY_GROUP.to_string(),
+            antigravity::default_model(AGY_MODELS).unwrap_or(AGY_MODELS[0].0),
+            AGY_MODELS,
+        ),
     ];
     let mut menu: Vec<ModelGroup> = groups
         .into_iter()
@@ -1084,6 +1147,11 @@ pub fn model_menu(
             needs: needs(sample),
             models: models
                 .iter()
+                .filter(|(model, _)| {
+                    model
+                        .strip_prefix(ANTIGRAVITY)
+                        .is_none_or(|id| antigravity::offers(id) != Some(false))
+                })
                 .map(|(model, alias)| (model.to_string(), *alias))
                 .collect(),
         })
@@ -1113,6 +1181,7 @@ pub fn model_menu(
             Provider::OpenAI => 2,
             Provider::Google => 3,
             Provider::OpenRouter => 4,
+            Provider::Antigravity => 5,
         };
         menu[group].models.push((name.to_string(), ""));
     }
@@ -1253,6 +1322,28 @@ pub fn client(
             arko_ai::providers::openai::OpenAIClient::new("test-key").with_base_url(&url),
         ));
     }
+    if let Some(model) = [&settings.main, &settings.worker]
+        .into_iter()
+        .find(|model| model.in_antigravity())
+    {
+        if let Some(Err(problem)) = antigravity::status().as_deref() {
+            return Err(Failure::Need(Need::Antigravity {
+                model: model.model.clone(),
+                problem: problem.clone(),
+            }));
+        }
+        for model in [&settings.main, &settings.worker] {
+            if let Ok(resolved) = resolve_model(&model.model)
+                && resolved.provider == Provider::Antigravity
+                && antigravity::offers(&resolved.id) == Some(false)
+            {
+                return Err(Failure::Other(needs_text(
+                    &model.model,
+                    antigravity::MODEL_ACCESS,
+                )));
+            }
+        }
+    }
     client_with(
         settings,
         root,
@@ -1356,7 +1447,9 @@ fn client_with(
         client = client.with_chatgpt_accounts(accounts);
     }
     for (settings, model) in &models {
-        if model.provider == Provider::ClaudeCode || client.has_provider(&model.provider) {
+        if matches!(model.provider, Provider::ClaudeCode | Provider::Antigravity)
+            || client.has_provider(&model.provider)
+        {
             continue;
         }
         let model_name = settings.model.clone();
@@ -1365,7 +1458,9 @@ fn client_with(
             Provider::OpenAI => Need::OpenAiKey { model: model_name },
             Provider::Google => Need::GeminiKey { model: model_name },
             Provider::OpenRouter => Need::OpenRouterKey { model: model_name },
-            Provider::ClaudeCode => unreachable!("Claude Code takes no client"),
+            Provider::ClaudeCode | Provider::Antigravity => {
+                unreachable!("CLI models take no client")
+            }
         }));
     }
     if let Some((settings, _)) = models
@@ -1671,6 +1766,7 @@ pub fn plan_usage_line(plans: &std::collections::BTreeMap<String, String>) -> Op
 pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
     match plan {
         Some(SubscriptionPlan::ClaudeCode) => "Claude plan",
+        Some(SubscriptionPlan::Antigravity) => "Google AI plan",
         // Reports saved before plans were named came from ChatGPT.
         Some(SubscriptionPlan::ChatGpt) | None => "ChatGPT plan",
     }
@@ -1684,6 +1780,7 @@ pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
 pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'static str> {
     match model.provider {
         Provider::ClaudeCode => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
+        Provider::Antigravity => Some(plan_name(Some(SubscriptionPlan::Antigravity))),
         Provider::OpenAI if openai_auth == Some(OpenAiAuth::ChatGpt) => {
             Some(plan_name(Some(SubscriptionPlan::ChatGpt)))
         }
@@ -1719,6 +1816,7 @@ fn plan_that_paid(model: &Model, billing: BillingKind) -> Option<&'static str> {
     }
     match model.provider {
         Provider::ClaudeCode => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
+        Provider::Antigravity => Some(plan_name(Some(SubscriptionPlan::Antigravity))),
         Provider::OpenAI => Some(plan_name(Some(SubscriptionPlan::ChatGpt))),
         _ => None,
     }
@@ -1873,6 +1971,7 @@ pub(crate) fn run_usage_line(
     if usage.billing == BillingKind::Subscription {
         used.plan = Some(plan_name(Some(match provider {
             Provider::ClaudeCode => SubscriptionPlan::ClaudeCode,
+            Provider::Antigravity => SubscriptionPlan::Antigravity,
             _ => SubscriptionPlan::ChatGpt,
         })));
     }
@@ -2108,12 +2207,14 @@ pub fn cost_lines(
             ));
         }
     }
-    // The plans' usage, as last reported.
-    for (_, part) in &parts {
-        if let Some(status) = part
-            .plan
-            .and_then(|plan| plans.iter().find(|status| status.plan == plan))
-        {
+    // Antigravity reports only for groups used here. Include them even when
+    // the workers' share combines more than one way of paying.
+    let used_plans = parts
+        .iter()
+        .filter_map(|(_, part)| part.plan)
+        .chain([plan_name(Some(SubscriptionPlan::Antigravity))]);
+    for plan in used_plans {
+        if let Some(status) = plans.iter().find(|status| status.plan == plan) {
             let words = plan_used_words(status);
             if !lines.iter().any(|line| line.text == words) {
                 lines.push(line(1, false, words));
@@ -2127,6 +2228,9 @@ pub fn cost_lines(
 /// week used", "12% of the Claude plan's 5 hours used and 3% of its week
 /// used", with its credits, extra usage and set-aside logins after them.
 fn plan_used_words(status: &crate::remote::PlanStatus) -> String {
+    if status.plan == plan_name(Some(SubscriptionPlan::Antigravity)) {
+        return status.text.clone();
+    }
     let windows: Vec<String> = status
         .windows
         .iter()
@@ -2225,6 +2329,8 @@ pub struct Setup {
     pub openai_auth: OpenAiWay,
     /// How Claude Code runs, for the agents on `cc:` models.
     pub claude_code: arko_agents::ClaudeCodeSettings,
+    /// How the Antigravity CLI runs for `agy:` models.
+    pub antigravity: arko_agents::AntigravitySettings,
 }
 
 impl Setup {
@@ -2233,6 +2339,7 @@ impl Setup {
         Self {
             openai_auth: openai_auth.into(),
             claude_code: claude_code::settings(),
+            antigravity: arko_agents::AntigravitySettings::default(),
         }
     }
 }
@@ -3376,6 +3483,18 @@ mod tests {
             }),
             Some("gemini-4-carbon")
         );
+        let agy = Credentials {
+            antigravity: Some("agy:gemini-4-neon"),
+            ..Credentials::default()
+        };
+        assert_eq!(first(agy), Some("agy:gemini-4-neon"));
+        assert_eq!(
+            first(Credentials {
+                gemini: true,
+                ..agy
+            }),
+            Some("gemini-4-carbon")
+        );
         assert_eq!(first(Credentials::default()), None);
     }
 
@@ -3984,6 +4103,43 @@ mod tests {
             parse_effort("extreme")
                 .unwrap_err()
                 .contains("low, medium, high, xhigh and max")
+        );
+    }
+
+    #[test]
+    fn antigravity_names_round_trip_without_changing_api_models() {
+        for (name, alias) in AGY_MODELS {
+            for input in [name.to_string(), alias.to_uppercase()] {
+                let model = resolve_model(&input).unwrap();
+                assert_eq!(model.provider, Provider::Antigravity);
+                assert_eq!(model_name(&model), *name);
+                assert_eq!(short_model_name(name), *alias);
+                assert_eq!(plan_of(&model, None), Some("Google AI plan"));
+            }
+        }
+        let google = resolve_model("neon").unwrap();
+        let agy = resolve_model("agy:neon").unwrap();
+        assert_eq!(
+            serde_json::to_value(agy.pricing).unwrap(),
+            serde_json::to_value(google.pricing).unwrap()
+        );
+        assert_eq!(agy.max_input_tokens, google.max_input_tokens);
+        assert_eq!(agy.max_output_tokens, google.max_output_tokens);
+        assert_eq!(resolve_model("flash").unwrap().id, "gemini-4-hydrogen");
+        assert_eq!(resolve_model("agy:flash").unwrap().id, "gemini-3.8-flash");
+        assert!(resolve_model("agy:carbon").is_err());
+        assert!(resolve_model("agy:").is_err());
+        let menu = model_menu(|_| None, None, &[], &[]);
+        let group = menu
+            .iter()
+            .find(|group| group.name == "Antigravity, on your Google AI plan")
+            .unwrap();
+        assert_eq!(
+            group.models,
+            AGY_MODELS
+                .iter()
+                .map(|(name, alias)| (name.to_string(), *alias))
+                .collect::<Vec<_>>()
         );
     }
 

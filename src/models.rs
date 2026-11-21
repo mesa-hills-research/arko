@@ -72,7 +72,9 @@ pub fn note(name: &str) -> Option<&'static str> {
 pub fn needs(reachable: &[String], name: &str) -> Option<String> {
     let model = providers::resolve_model(name).ok()?;
     match &model.provider {
-        arko_ai::Provider::ClaudeCode => providers::missing_credential(name, None),
+        arko_ai::Provider::ClaudeCode | arko_ai::Provider::Antigravity => {
+            providers::missing_credential(name, None)
+        }
         provider
             if reachable
                 .iter()

@@ -34,8 +34,9 @@ text 14 "  │ OpenRouter, billed per token  needs OPENROUTER_API_KEY           
 style 14 4 32 bold dim
 style 14 32 58 dim
 text 15 "  │                                                                          │"
-text 16 "  │ Another model                                                            │"
-style 16 4 17 bold dim
+text 16 "  │ Antigravity, on your Google AI plan  needs Antigravity installed         │"
+style 16 4 39 bold dim
+style 16 39 68 dim
 text 17 "  │                                                                          │"
 text 18 "  └───────────────────────────────── ↑ ↓  choose   Enter  next   Esc  close ─┘"
 style 18 36 41 reverse

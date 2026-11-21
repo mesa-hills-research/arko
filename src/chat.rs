@@ -29,6 +29,11 @@ pub fn config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     ));
     if settings.main.in_claude_code() {
         builder = builder.claude_code(settings.providers.claude_code.clone());
+    } else if settings.main.in_antigravity() {
+        builder = builder.antigravity(crate::antigravity::for_agent(
+            &settings.providers.antigravity,
+            settings.main,
+        )?);
     }
     builder.build().map_err(|error| error.to_string())
 }

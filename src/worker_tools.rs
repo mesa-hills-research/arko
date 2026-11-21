@@ -137,11 +137,19 @@ impl Tool for WorkerOptions {
             .new_workers()
             .ok_or_else(|| refused("This session has no workers."))?
             .basis;
-        let plans = crate::lock(&self.0.stats).plans.clone();
+        let (mut plans, antigravity_usage) = {
+            let stats = crate::lock(&self.0.stats);
+            (stats.plans.clone(), stats.antigravity_usage.clone())
+        };
         let keys = self.0.keys.clone();
         let handover = self.0.handover.clone();
         // (Claude Code's login check may run a command.)
         let text = tokio::task::spawn_blocking(move || {
+            for model in Model::list(Provider::Antigravity) {
+                if let Some(usage) = antigravity_usage.for_model(&model.id) {
+                    plans.insert(providers::model_name(&model), usage);
+                }
+            }
             options_text(
                 &basis,
                 show,
@@ -350,7 +358,13 @@ fn model_line(
     let chatgpt = model.provider == Provider::OpenAI
         && basis.providers.openai_auth.get() == Some(providers::OpenAiAuth::ChatGpt);
     let plan = |key: &str| {
-        let usage = plans.get(key).cloned().unwrap_or_else(|| key.to_string());
+        let usage = if model.provider == Provider::Antigravity {
+            plans
+                .get(&providers::model_name(model))
+                .map_or_else(|| key.to_string(), |figures| format!("{key} {figures}"))
+        } else {
+            plans.get(key).cloned().unwrap_or_else(|| key.to_string())
+        };
         format!("{usage}, shared with the user's own use")
     };
     let cost = match providers::plan_of(model, basis.providers.openai_auth.get()) {
@@ -421,7 +435,7 @@ fn models_text(
                 "Claude Code signed in" => "The user signs in with `claude auth login`.",
                 "Claude Code installed" => "The user installs Claude Code.",
                 "Claude Code updated" => "The user updates it with `claude update`.",
-                _ => "The user adds it with /keys.",
+                _ => crate::antigravity::action(missing).unwrap_or("The user adds it with /keys."),
             };
             unusable.push_str(&format!(
                 "\n- {} · needs {missing}. {how}",
@@ -507,6 +521,9 @@ impl SaveWorkerProfile {
 /// What the credential check says, as a warning for the agent, which says workers on
 /// the profile's model can't start until the user has done it.
 fn needs_warning(needs: &str) -> String {
+    if let Some(action) = crate::antigravity::action(needs) {
+        return format!(" Workers can't start on it. {action}");
+    }
     match needs {
         "Claude Code signed in" => " Workers on it can't start until the user signs in to Claude Code with `claude auth login`.".to_string(),
         "Claude Code installed" => " Workers on it can't start until the user installs Claude Code.".to_string(),

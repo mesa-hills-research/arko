@@ -40,9 +40,15 @@ fn gate_of(
 #[test]
 fn each_setting_refuses_asks_or_starts_by_how_the_model_is_billed() {
     use WorkerBilling::{Api, Ask, Plans};
-    // The plans are cc: models, and OpenAI models on the ChatGPT login.
+    // Both installed CLIs and OpenAI with the ChatGPT login bill the plan.
     for billing in WorkerBilling::ALL {
-        for (name, key) in [("cc:opus", false), ("cc:haiku", true), ("sol", false)] {
+        for (name, key) in [
+            ("cc:opus", false),
+            ("cc:haiku", true),
+            ("agy:neon", false),
+            ("agy:opus", true),
+            ("sol", false),
+        ] {
             assert_eq!(
                 gate_of(billing, Some(1.0), name, key, true, false, 100.0),
                 Gate::Go,
@@ -104,7 +110,7 @@ fn each_setting_refuses_asks_or_starts_by_how_the_model_is_billed() {
     );
     assert_eq!(
         none,
-        Gate::Refuse("The user lets workers run only on their plans (/worker-billing plans), and Opus 5.5 is billed per token. No plan model is usable now, so ask the user to sign in to Claude Code or ChatGPT, or to change /worker-billing.".into())
+        Gate::Refuse("The user lets workers run only on their plans (/worker-billing plans), and Opus 5.5 is billed per token. No plan model is usable now. Ask the user to sign in to Claude Code, ChatGPT or Antigravity, or to change /worker-billing.".into())
     );
 }
 

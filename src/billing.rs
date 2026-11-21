@@ -243,7 +243,7 @@ pub(crate) fn gate(
     let name = crate::models::display_name(&providers::model_name(model));
     let instead = |plans: Vec<String>| {
         match plans.as_slice() {
-        [] => "No plan model is usable now, so ask the user to sign in to Claude Code or ChatGPT, or to change /worker-billing.".to_string(),
+        [] => "No plan model is usable now. Ask the user to sign in to Claude Code, ChatGPT or Antigravity, or to change /worker-billing.".to_string(),
         models => format!(
             "Start it on a plan model instead. Those usable now are {}.",
             crate::and_list(models)

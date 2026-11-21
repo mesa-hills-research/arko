@@ -415,6 +415,11 @@ impl Harness {
 
     /// What `model` needs that this session doesn't have.
     pub(crate) fn needs(&self, model: &Model) -> Option<String> {
+        if model.provider == Provider::Antigravity
+            && self.providers.antigravity.helper_command.is_none()
+        {
+            return Some(crate::antigravity::UNSUPPORTED_HOST.to_string());
+        }
         self.keys.needs(model)
     }
 
@@ -504,10 +509,7 @@ impl Harness {
                 ),
             });
         }
-        let setup = providers::Setup {
-            openai_auth: self.providers.openai_auth.clone(),
-            claude_code: self.providers.claude_code.clone(),
-        };
+        let setup = self.providers.clone();
         let (_, worker_config) = self.agent_configs(&settings, &setup)?;
         let crew = self.crew.clone().expect("a crew");
         // The workers already started keep theirs, also those of Arko
@@ -597,10 +599,7 @@ impl Harness {
     /// size and new workers' model. The session and the next session's
     /// default keep them.
     pub(crate) fn rebuild_agents(&mut self, settings: Settings) -> Result<(), String> {
-        let setup = providers::Setup {
-            openai_auth: self.providers.openai_auth.clone(),
-            claude_code: self.providers.claude_code.clone(),
-        };
+        let setup = self.providers.clone();
         let (main_config, worker_config) = self.agent_configs(&settings, &setup)?;
         self.settings = settings;
         self.providers = setup;

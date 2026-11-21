@@ -642,6 +642,8 @@ pub struct Stats {
     pub context_window: Option<usize>,
     /// Each plan's usage, by plan, as last reported.
     pub plan_status: std::collections::BTreeMap<String, remote::PlanStatus>,
+    /// Counters for the Antigravity model groups, even groups not used here.
+    pub(crate) antigravity_usage: crate::antigravity::Usage,
     /// Each worker's context, by its handle, meaning the input of its latest
     /// request and what its model accepts, in tokens.
     pub workers: std::collections::BTreeMap<String, (usize, Option<usize>)>,
@@ -1214,7 +1216,15 @@ impl EventPrinter {
                 }
             }
             AgentEvent::PlanUsageReported(usage) => {
-                if let Some(mut text) = crate::providers::plan_usage_text(&usage) {
+                if usage.plan == Some(arko_ai::SubscriptionPlan::Antigravity) {
+                    let mut stats = self.stats.lock().unwrap();
+                    stats.antigravity_usage.record(usage);
+                    if let Some(status) = stats.antigravity_usage.plan_status() {
+                        stats.plans.insert(status.plan.clone(), status.text.clone());
+                        stats.plan_usage = crate::providers::plan_usage_line(&stats.plans);
+                        stats.plan_status.insert(status.plan.clone(), status);
+                    }
+                } else if let Some(mut text) = crate::providers::plan_usage_text(&usage) {
                     let mut stats = self.stats.lock().unwrap();
                     let set_aside = if usage.plan == Some(arko_ai::SubscriptionPlan::ClaudeCode) {
                         0
