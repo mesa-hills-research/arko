@@ -116,20 +116,22 @@ impl Outside {
             return HookResult::Continue;
         };
         let directory = self.directory_of(hook.agent_run_id);
-        let outside = |path: &str| {
-            !path.trim().is_empty()
-                && matches!(
-                    arko_agents::utils::is_path_in_workspace(path, &directory),
-                    Ok(false)
-                )
-        };
         if tool == START_AGENT {
-            return match params.get(WORKSPACE_PARAM).and_then(Value::as_str) {
-                Some(path) if outside(path) => HookResult::Reject(format!(
-                    "Refused: the workspace `{path}` is outside your working directory `{}`, and the user hasn't turned on outside access. Give the worker a workspace inside your working directory, or say why the task needs that one.",
-                    directory.display()
+            // As the tool reads it, which takes a number as its digits.
+            let path = match params.get(WORKSPACE_PARAM) {
+                Some(Value::String(path)) => path.clone(),
+                Some(Value::Number(number)) => number.to_string(),
+                _ => return HookResult::Continue,
+            };
+            let dir = directory.display();
+            return match leaves(&path, &directory) {
+                None => HookResult::Continue,
+                Some(Leaves::Outside) => HookResult::Reject(format!(
+                    "Refused: the workspace `{path}` is outside your working directory `{dir}`, and the user hasn't turned on outside access. Give the worker a workspace inside your working directory, or say why the task needs that one."
                 )),
-                _ => HookResult::Continue,
+                Some(Leaves::Maybe(reason)) => HookResult::Reject(format!(
+                    "Refused: the workspace `{path}` may lead outside your working directory `{dir}` ({reason}), and the user hasn't turned on outside access. Give the worker a workspace inside your working directory, or say why the task needs that one."
+                )),
             };
         }
         // (`edit_file` for sessions saved while the agents edited with it.)
@@ -139,14 +141,25 @@ impl Outside {
             APPLY_DIFF_TOOL_NAME => ApplyDiffTool.definition(),
             _ => return HookResult::Continue,
         };
+        // (The tool itself refuses a path that isn't a string.)
         for parameter in definition.parameters.iter().filter(|p| p.is_path) {
-            if let Some(path) = params.get(&parameter.name).and_then(Value::as_str)
-                && outside(path)
-            {
-                return HookResult::Reject(format!(
-                    "Refused: `{path}` is outside the working directory `{}`, and the user hasn't turned on outside access. Keep the files you write inside the working directory, or say what you need to change there and why.",
-                    directory.display()
-                ));
+            let Some(path) = params.get(&parameter.name).and_then(Value::as_str) else {
+                continue;
+            };
+            let dir = directory.display();
+            match leaves(path, &directory) {
+                None => {}
+                Some(Leaves::Outside) => {
+                    return HookResult::Reject(format!(
+                        "Refused: `{path}` is outside the working directory `{dir}`, and the user hasn't turned on outside access. Keep the files you write inside the working directory, or say what you need to change there and why."
+                    ));
+                }
+                // (Refused with outside access on too, by the tool.)
+                Some(Leaves::Maybe(reason)) => {
+                    return HookResult::Reject(format!(
+                        "Refused: `{path}` may lead outside the working directory `{dir}` ({reason}). Keep the files you write inside the working directory, or say what you need to change there and why."
+                    ));
+                }
             }
         }
         HookResult::Continue
@@ -207,6 +220,30 @@ impl Outside {
             .filter_map(Weak::upgrade)
             .map(|manager| manager.allows_outside_workspace())
             .collect()
+    }
+}
+
+/// Why a path isn't inside a working directory.
+enum Leaves {
+    Outside,
+    /// The check couldn't place it inside, for this reason. It may leave
+    /// through a link, go through a link whose target is missing, or be
+    /// inside or outside depending on how a tool reads it.
+    Maybe(String),
+}
+
+/// Whether `path`, relative to `directory`, may lead outside it. A blank
+/// path is the directory itself, and a path is inside only when the check
+/// finds it inside.
+fn leaves(path: &str, directory: &std::path::Path) -> Option<Leaves> {
+    if path.trim().is_empty() {
+        return None;
+    }
+    match arko_agents::utils::is_path_in_workspace(path, directory) {
+        Ok(true) => None,
+        Ok(false) => Some(Leaves::Outside),
+        Err(arko_agents::ArkoAgentsError::Io(error)) => Some(Leaves::Maybe(error.to_string())),
+        Err(error) => Some(Leaves::Maybe(error.to_string())),
     }
 }
 
@@ -402,6 +439,88 @@ mod tests {
                 .note()
                 .starts_with("The user turned off outside access")
         );
+    }
+
+    /// A working directory `work` holding `src`, `source -> src`, and the
+    /// links `tools` and `7` to the directory `elsewhere` beside it, and
+    /// `up -> ..`, with outside access off.
+    #[cfg(unix)]
+    fn linked() -> (tempfile::TempDir, Arc<Outside>) {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("work");
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        symlink("src", workspace.join("source")).unwrap();
+        symlink(&elsewhere, workspace.join("tools")).unwrap();
+        symlink(&elsewhere, workspace.join("7")).unwrap();
+        symlink("..", workspace.join("up")).unwrap();
+        let outside = Arc::new(Outside::new(false, Vec::new(), workspace));
+        (temp, outside)
+    }
+
+    #[cfg(unix)]
+    fn start_in(outside: &Outside, workspace: Value) -> Option<String> {
+        refused(outside.check(&hook(
+            START_AGENT,
+            serde_json::json!({"agent": "worker", "task": "t", "workspace": workspace}),
+        )))
+    }
+
+    /// While outside access is off, a worker can't start in a link to a
+    /// directory outside the working directory, however the link is
+    /// written. On, it may. A link that stays inside is fine.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_through_a_link_to_elsewhere_is_refused() {
+        let (_temp, outside) = linked();
+        for workspace in ["tools", "tools/", "./tools", " tools "] {
+            let reason = start_in(&outside, workspace.into())
+                .unwrap_or_else(|| panic!("`{workspace}` was let through"));
+            assert!(reason.contains("symbolic link"), "{reason}");
+            assert!(reason.contains("outside access"), "{reason}");
+        }
+        // The tool reads a number as its digits.
+        assert!(start_in(&outside, 7.into()).is_some());
+        assert!(start_in(&outside, "source".into()).is_none());
+        assert!(start_in(&outside, "src".into()).is_none());
+        outside.set(true);
+        assert!(start_in(&outside, "tools".into()).is_none());
+    }
+
+    /// A link to the directory above is refused as a workspace, also on the
+    /// way to a directory beside the working directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_through_a_link_up_is_refused() {
+        let (_temp, outside) = linked();
+        for workspace in ["up", "up/", "up/elsewhere"] {
+            assert!(
+                start_in(&outside, workspace.into()).is_some(),
+                "`{workspace}` was let through"
+            );
+        }
+        // Back into the working directory is inside it.
+        assert!(start_in(&outside, "up/work/src".into()).is_none());
+    }
+
+    /// The file tools' writes through a link that leaves are refused too.
+    #[cfg(unix)]
+    #[test]
+    fn writes_through_a_link_that_leaves_are_refused() {
+        let (_temp, outside) = linked();
+        let write = |path: &str| {
+            refused(outside.check(&hook(
+                WRITE_FILE_TOOL_NAME,
+                serde_json::json!({"path": path, "content": "x"}),
+            )))
+        };
+        for path in ["tools/x.txt", "up/x.txt", "up/elsewhere/x.txt"] {
+            let reason = write(path).unwrap_or_else(|| panic!("`{path}` was let through"));
+            assert!(reason.contains("symbolic link"), "{reason}");
+        }
+        assert!(write("source/x.txt").is_none());
     }
 
     /// The command guards of the managers follow the switch, from the
