@@ -456,6 +456,10 @@ pub struct App {
     /// How far OpenRouter's models in memory had changed when the view last
     /// looked.
     openrouter_seen: u64,
+    /// The terminal host can start Antigravity. Unit tests opt in explicitly.
+    pub antigravity_models: bool,
+    antigravity_check:
+        Option<tokio::sync::oneshot::Receiver<std::sync::Arc<crate::antigravity::Status>>>,
     /// The recording `/dictate` or Ctrl+R started, until it ends.
     pub recording: Option<super::dictation::Recording>,
     /// Arko runs in an SSH session, so a recording says whose microphone it
@@ -557,6 +561,8 @@ impl App {
             }),
             model_names: Default::default(),
             openrouter_seen: crate::openrouter::generation(),
+            antigravity_models: false,
+            antigravity_check: None,
             recording: None,
             over_ssh: crate::dictation::over_ssh(),
             #[cfg(feature = "dbg-snapshot")]
@@ -617,12 +623,46 @@ impl App {
         }
         let needs = self.model_needs;
         let reachable = models.reachable.clone();
-        self.overlay = Some(Overlay::Model(ModelPicker::open_in(
+        let mut picker = ModelPicker::open_in(
             target,
             &models,
             |name| needs(&reachable, name),
             self.info.root.as_deref(),
-        )));
+        );
+        if self.antigravity_models {
+            let ready = crate::antigravity::recent();
+            picker.add_antigravity(ready.as_deref());
+            if ready.is_none() && self.antigravity_check.is_none() {
+                let (send, receive) = tokio::sync::oneshot::channel();
+                self.antigravity_check = Some(receive);
+                tokio::spawn(async move {
+                    let _ = send.send(crate::antigravity::check_recent().await);
+                });
+            }
+        }
+        self.overlay = Some(Overlay::Model(picker));
+    }
+
+    /// Updates the Antigravity heading and a pending choice, without rebuilding the rows.
+    pub fn antigravity_moved(&mut self) -> bool {
+        let Some(status) = self
+            .antigravity_check
+            .as_mut()
+            .and_then(|check| check.try_recv().ok())
+        else {
+            return false;
+        };
+        self.antigravity_check = None;
+        self.model_names.take();
+        let Some(Overlay::Model(picker)) = &mut self.overlay else {
+            return false;
+        };
+        if let Outcome::Apply { line, said } = picker.antigravity_checked(&status) {
+            self.overlay = None;
+            self.send(&line);
+            self.say(said);
+        }
+        true
     }
 
     /// `/openrouter`'s menu.

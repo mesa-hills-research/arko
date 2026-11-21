@@ -137,6 +137,10 @@ impl Tool for WorkerOptions {
             .new_workers()
             .ok_or_else(|| refused("This session has no workers."))?
             .basis;
+        let agy = basis.providers.antigravity.helper_command.is_some();
+        if agy && show != Show::Profiles && !cfg!(test) {
+            crate::antigravity::check_recent().await;
+        }
         let (mut plans, antigravity_usage) = {
             let stats = crate::lock(&self.0.stats);
             (stats.plans.clone(), stats.antigravity_usage.clone())
@@ -153,7 +157,13 @@ impl Tool for WorkerOptions {
             options_text(
                 &basis,
                 show,
-                &|model| keys.needs(model),
+                &|model| {
+                    if !agy && model.provider == Provider::Antigravity {
+                        Some(crate::antigravity::UNSUPPORTED_HOST.to_string())
+                    } else {
+                        keys.needs(model)
+                    }
+                },
                 &plans,
                 &|model, configured| {
                     handover
@@ -431,6 +441,12 @@ fn models_text(
                     }
                 })
                 .collect();
+            if missing.starts_with(crate::antigravity::CHECK_FAILED)
+                || missing == crate::antigravity::UNSUPPORTED_HOST
+            {
+                unusable.push_str(&format!("\n- {} · {missing}", names.join(", ")));
+                continue;
+            }
             let how = match missing.as_str() {
                 "Claude Code signed in" => "The user signs in with `claude auth login`.",
                 "Claude Code installed" => "The user installs Claude Code.",
@@ -521,6 +537,11 @@ impl SaveWorkerProfile {
 /// What the credential check says, as a warning for the agent, which says workers on
 /// the profile's model can't start until the user has done it.
 fn needs_warning(needs: &str) -> String {
+    if needs.starts_with(crate::antigravity::CHECK_FAILED)
+        || needs == crate::antigravity::UNSUPPORTED_HOST
+    {
+        return format!(" {needs}");
+    }
     if let Some(action) = crate::antigravity::action(needs) {
         return format!(" Workers can't start on it. {action}");
     }

@@ -12,116 +12,117 @@ style 1 2 3 fg=#303030 bg=#101010
 style 1 3 57 fg=#dedede bg=#101010
 style 1 57 58 fg=#303030 bg=#101010
 style 1 58 60 fg=#dedede bg=#131313
-text 2 "  │ Antigravity, on your Google AI plan                  │"
+text 2 "  │ OpenAI, on your ChatGPT plan  needs a ChatGPT login  │"
 style 2 0 2 fg=#dedede bg=#131313
 style 2 2 3 fg=#303030 bg=#101010
 style 2 3 4 fg=#dedede bg=#101010
-style 2 4 39 fg=#9d9d9d bg=#101010 bold
-style 2 39 57 fg=#dedede bg=#101010
+style 2 4 32 fg=#9d9d9d bg=#101010 bold
+style 2 32 56 fg=#9d9d9d bg=#101010
+style 2 56 57 fg=#dedede bg=#101010
 style 2 57 58 fg=#303030 bg=#101010
 style 2 58 60 fg=#dedede bg=#131313
-text 3 "  │ ▸ agy:gemini-4-neon        agy:neon      now, high e │"
+text 3 "  │                                                      │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 3 fg=#303030 bg=#101010
-style 3 3 4 fg=#dedede bg=#101010
-style 3 4 6 fg=#419cff bg=#101010
-style 3 6 31 fg=#419cff bg=#101010 bold
-style 3 31 45 fg=#9d9d9d bg=#101010
-style 3 45 56 fg=#419cff bg=#101010
-style 3 56 57 fg=#dedede bg=#101010
+style 3 3 57 fg=#dedede bg=#101010
 style 3 57 58 fg=#303030 bg=#101010
 style 3 58 60 fg=#dedede bg=#131313
-text 4 "  │   agy:gemini-4-argon       agy:argon                 │"
+text 4 "  │ Google Gemini, billed per token  needs GEMINI_API_KE │"
 style 4 0 2 fg=#dedede bg=#131313
 style 4 2 3 fg=#303030 bg=#101010
-style 4 3 31 fg=#dedede bg=#101010
-style 4 31 45 fg=#9d9d9d bg=#101010
-style 4 45 57 fg=#dedede bg=#101010
+style 4 3 4 fg=#dedede bg=#101010
+style 4 4 35 fg=#9d9d9d bg=#101010 bold
+style 4 35 56 fg=#9d9d9d bg=#101010
+style 4 56 57 fg=#dedede bg=#101010
 style 4 57 58 fg=#303030 bg=#101010
 style 4 58 60 fg=#dedede bg=#131313
-text 5 "  │   agy:gemini-4-hydrogen    agy:hydrogen              │"
+text 5 "  │                                                      │"
 style 5 0 2 fg=#dedede bg=#131313
 style 5 2 3 fg=#303030 bg=#101010
-style 5 3 31 fg=#dedede bg=#101010
-style 5 31 45 fg=#9d9d9d bg=#101010
-style 5 45 57 fg=#dedede bg=#101010
+style 5 3 57 fg=#dedede bg=#101010
 style 5 57 58 fg=#303030 bg=#101010
 style 5 58 60 fg=#dedede bg=#131313
-text 6 "  │   agy:gemini-3.8-flash     agy:flash                 │"
+text 6 "  │ OpenRouter, billed per token  needs OPENROUTER_API_K │"
 style 6 0 2 fg=#dedede bg=#131313
 style 6 2 3 fg=#303030 bg=#101010
-style 6 3 31 fg=#dedede bg=#101010
-style 6 31 45 fg=#9d9d9d bg=#101010
-style 6 45 57 fg=#dedede bg=#101010
+style 6 3 4 fg=#dedede bg=#101010
+style 6 4 32 fg=#9d9d9d bg=#101010 bold
+style 6 32 56 fg=#9d9d9d bg=#101010
+style 6 56 57 fg=#dedede bg=#101010
 style 6 57 58 fg=#303030 bg=#101010
 style 6 58 60 fg=#dedede bg=#131313
-text 7 "  │   agy:claude-opus-5-5      agy:opus                  │"
+text 7 "  │                                                      │"
 style 7 0 2 fg=#dedede bg=#131313
 style 7 2 3 fg=#303030 bg=#101010
-style 7 3 31 fg=#dedede bg=#101010
-style 7 31 45 fg=#9d9d9d bg=#101010
-style 7 45 57 fg=#dedede bg=#101010
+style 7 3 57 fg=#dedede bg=#101010
 style 7 57 58 fg=#303030 bg=#101010
 style 7 58 60 fg=#dedede bg=#131313
-text 8 "  │   agy:claude-sonnet-5-5    agy:sonnet                │"
+text 8 "  │ Antigravity, on your Google AI plan  signed in (Goog │"
 style 8 0 2 fg=#dedede bg=#131313
 style 8 2 3 fg=#303030 bg=#101010
-style 8 3 31 fg=#dedede bg=#101010
-style 8 31 45 fg=#9d9d9d bg=#101010
-style 8 45 57 fg=#dedede bg=#101010
+style 8 3 4 fg=#dedede bg=#101010
+style 8 4 39 fg=#9d9d9d bg=#101010 bold
+style 8 39 56 fg=#9d9d9d bg=#101010
+style 8 56 57 fg=#dedede bg=#101010
 style 8 57 58 fg=#303030 bg=#101010
 style 8 58 60 fg=#dedede bg=#131313
-text 9 "  │   agy:gpt-oss-120b-medium  agy:gpt-oss               │"
+text 9 "  │ ▸ agy:gemini-4-neon        agy:neon      now, high e │"
 style 9 0 2 fg=#dedede bg=#131313
 style 9 2 3 fg=#303030 bg=#101010
-style 9 3 31 fg=#dedede bg=#101010
+style 9 3 4 fg=#dedede bg=#101010
+style 9 4 6 fg=#419cff bg=#101010
+style 9 6 31 fg=#419cff bg=#101010 bold
 style 9 31 45 fg=#9d9d9d bg=#101010
-style 9 45 57 fg=#dedede bg=#101010
+style 9 45 56 fg=#419cff bg=#101010
+style 9 56 57 fg=#dedede bg=#101010
 style 9 57 58 fg=#303030 bg=#101010
 style 9 58 60 fg=#dedede bg=#131313
-text 10 "  │                                                      │"
+text 10 "  │   agy:gemini-4-argon       agy:argon                 │"
 style 10 0 2 fg=#dedede bg=#131313
 style 10 2 3 fg=#303030 bg=#101010
-style 10 3 57 fg=#dedede bg=#101010
+style 10 3 31 fg=#dedede bg=#101010
+style 10 31 45 fg=#9d9d9d bg=#101010
+style 10 45 57 fg=#dedede bg=#101010
 style 10 57 58 fg=#303030 bg=#101010
 style 10 58 60 fg=#dedede bg=#131313
-text 11 "  │ Claude Code, on your Claude plan  needs Claude Code  │"
+text 11 "  │   agy:gemini-4-hydrogen    agy:hydrogen              │"
 style 11 0 2 fg=#dedede bg=#131313
 style 11 2 3 fg=#303030 bg=#101010
-style 11 3 4 fg=#dedede bg=#101010
-style 11 4 36 fg=#9d9d9d bg=#101010 bold
-style 11 36 56 fg=#9d9d9d bg=#101010
-style 11 56 57 fg=#dedede bg=#101010
+style 11 3 31 fg=#dedede bg=#101010
+style 11 31 45 fg=#9d9d9d bg=#101010
+style 11 45 57 fg=#dedede bg=#101010
 style 11 57 58 fg=#303030 bg=#101010
 style 11 58 60 fg=#dedede bg=#131313
-text 12 "  │                                                      │"
+text 12 "  │   agy:gemini-3.8-flash     agy:flash                 │"
 style 12 0 2 fg=#dedede bg=#131313
 style 12 2 3 fg=#303030 bg=#101010
-style 12 3 57 fg=#dedede bg=#101010
+style 12 3 31 fg=#dedede bg=#101010
+style 12 31 45 fg=#9d9d9d bg=#101010
+style 12 45 57 fg=#dedede bg=#101010
 style 12 57 58 fg=#303030 bg=#101010
 style 12 58 60 fg=#dedede bg=#131313
-text 13 "  │ Anthropic API, billed per token  needs ANTHROPIC_API │"
+text 13 "  │   agy:claude-opus-5-5      agy:opus                  │"
 style 13 0 2 fg=#dedede bg=#131313
 style 13 2 3 fg=#303030 bg=#101010
-style 13 3 4 fg=#dedede bg=#101010
-style 13 4 35 fg=#9d9d9d bg=#101010 bold
-style 13 35 56 fg=#9d9d9d bg=#101010
-style 13 56 57 fg=#dedede bg=#101010
+style 13 3 31 fg=#dedede bg=#101010
+style 13 31 45 fg=#9d9d9d bg=#101010
+style 13 45 57 fg=#dedede bg=#101010
 style 13 57 58 fg=#303030 bg=#101010
 style 13 58 60 fg=#dedede bg=#131313
-text 14 "  │                                                      │"
+text 14 "  │   agy:claude-sonnet-5-5    agy:sonnet                │"
 style 14 0 2 fg=#dedede bg=#131313
 style 14 2 3 fg=#303030 bg=#101010
-style 14 3 57 fg=#dedede bg=#101010
+style 14 3 31 fg=#dedede bg=#101010
+style 14 31 45 fg=#9d9d9d bg=#101010
+style 14 45 57 fg=#dedede bg=#101010
 style 14 57 58 fg=#303030 bg=#101010
 style 14 58 60 fg=#dedede bg=#131313
-text 15 "  │ OpenAI, on your ChatGPT plan  needs a ChatGPT login  │"
+text 15 "  │   agy:gpt-oss-120b-medium  agy:gpt-oss               │"
 style 15 0 2 fg=#dedede bg=#131313
 style 15 2 3 fg=#303030 bg=#101010
-style 15 3 4 fg=#dedede bg=#101010
-style 15 4 32 fg=#9d9d9d bg=#101010 bold
-style 15 32 56 fg=#9d9d9d bg=#101010
-style 15 56 57 fg=#dedede bg=#101010
+style 15 3 31 fg=#dedede bg=#101010
+style 15 31 45 fg=#9d9d9d bg=#101010
+style 15 45 57 fg=#dedede bg=#101010
 style 15 57 58 fg=#303030 bg=#101010
 style 15 58 60 fg=#dedede bg=#131313
 text 16 "  │                                                      │"

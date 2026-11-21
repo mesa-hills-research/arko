@@ -3,37 +3,38 @@ cursor 0 0 hidden
 text 0 "  ┌ Main agent's model ──────────────────────────────────────────────────────┐"
 style 0 3 23 bold
 text 1 "  │                                                                          │"
-text 2 "  │ Antigravity, on your Google AI plan                                      │"
-style 2 4 39 bold dim
-text 3 "  │ ▸ agy:gemini-4-neon        agy:neon      now, high effort                │"
-style 3 4 6 fg=cyan
-style 3 6 31 fg=cyan bold
-style 3 31 45 dim
-style 3 45 61 fg=cyan
-text 4 "  │   agy:gemini-4-argon       agy:argon                                     │"
-style 4 31 45 dim
-text 5 "  │   agy:gemini-4-hydrogen    agy:hydrogen                                  │"
-style 5 31 45 dim
-text 6 "  │   agy:gemini-3.8-flash     agy:flash                                     │"
-style 6 31 45 dim
-text 7 "  │   agy:claude-opus-5-5      agy:opus                                      │"
-style 7 31 45 dim
-text 8 "  │   agy:claude-sonnet-5-5    agy:sonnet                                    │"
-style 8 31 45 dim
-text 9 "  │   agy:gpt-oss-120b-medium  agy:gpt-oss                                   │"
+text 2 "  │ OpenAI, on your ChatGPT plan  needs a ChatGPT login or OPENAI_API_KEY    │"
+style 2 4 32 bold dim
+style 2 32 73 dim
+text 3 "  │                                                                          │"
+text 4 "  │ Google Gemini, billed per token  needs GEMINI_API_KEY                    │"
+style 4 4 35 bold dim
+style 4 35 57 dim
+text 5 "  │                                                                          │"
+text 6 "  │ OpenRouter, billed per token  needs OPENROUTER_API_KEY                   │"
+style 6 4 32 bold dim
+style 6 32 58 dim
+text 7 "  │                                                                          │"
+text 8 "  │ Antigravity, on your Google AI plan  signed in (Google AI Pro)           │"
+style 8 4 39 bold dim
+style 8 39 66 dim
+text 9 "  │ ▸ agy:gemini-4-neon        agy:neon      now, high effort                │"
+style 9 4 6 fg=cyan
+style 9 6 31 fg=cyan bold
 style 9 31 45 dim
-text 10 "  │                                                                          │"
-text 11 "  │ Claude Code, on your Claude plan  needs Claude Code signed in            │"
-style 11 4 36 bold dim
-style 11 36 65 dim
-text 12 "  │                                                                          │"
-text 13 "  │ Anthropic API, billed per token  needs ANTHROPIC_API_KEY                 │"
-style 13 4 35 bold dim
-style 13 35 60 dim
-text 14 "  │                                                                          │"
-text 15 "  │ OpenAI, on your ChatGPT plan  needs a ChatGPT login or OPENAI_API_KEY    │"
-style 15 4 32 bold dim
-style 15 32 73 dim
+style 9 45 61 fg=cyan
+text 10 "  │   agy:gemini-4-argon       agy:argon                                     │"
+style 10 31 45 dim
+text 11 "  │   agy:gemini-4-hydrogen    agy:hydrogen                                  │"
+style 11 31 45 dim
+text 12 "  │   agy:gemini-3.8-flash     agy:flash                                     │"
+style 12 31 45 dim
+text 13 "  │   agy:claude-opus-5-5      agy:opus                                      │"
+style 13 31 45 dim
+text 14 "  │   agy:claude-sonnet-5-5    agy:sonnet                                    │"
+style 14 31 45 dim
+text 15 "  │   agy:gpt-oss-120b-medium  agy:gpt-oss                                   │"
+style 15 31 45 dim
 text 16 "  │                                                                          │"
 text 17 "  │                                                                          │"
 text 18 "  └───────────────────────────────── ↑ ↓  choose   Enter  next   Esc  close ─┘"

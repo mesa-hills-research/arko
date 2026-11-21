@@ -22,59 +22,58 @@ style 3 4 15 fg=#9d9d9d bg=#131313
 style 3 15 36 fg=#dedede bg=#131313
 style 3 36 38 fg=#303030 bg=#131313
 style 3 38 40 fg=#dedede bg=#131313
-text 4 "  │ Workspace  /home/ada/proj        │"
+text 4 "  ┌ Main agent's effort on agy:neon ─┐"
 style 4 0 2 fg=#dedede bg=#131313
-style 4 2 4 fg=#303030 bg=#131313
-style 4 4 15 fg=#9d9d9d bg=#131313
-style 4 15 36 fg=#dedede bg=#131313
-style 4 36 38 fg=#303030 bg=#131313
+style 4 2 3 fg=#303030 bg=#101010
+style 4 3 36 fg=#dedede bg=#101010 bold
+style 4 36 38 fg=#303030 bg=#101010
 style 4 38 40 fg=#dedede bg=#131313
-text 5 "  ┌ Main agent's effort on agy:neon ─┐"
+text 5 "  │                                  │"
 style 5 0 2 fg=#dedede bg=#131313
 style 5 2 3 fg=#303030 bg=#101010
-style 5 3 36 fg=#dedede bg=#101010 bold
-style 5 36 38 fg=#303030 bg=#101010
+style 5 3 37 fg=#dedede bg=#101010
+style 5 37 38 fg=#303030 bg=#101010
 style 5 38 40 fg=#dedede bg=#131313
-text 6 "  │                                  │"
+text 6 "  │   low     fastest, thinks least  │"
 style 6 0 2 fg=#dedede bg=#131313
 style 6 2 3 fg=#303030 bg=#101010
-style 6 3 37 fg=#dedede bg=#101010
+style 6 3 14 fg=#dedede bg=#101010
+style 6 14 35 fg=#9d9d9d bg=#101010
+style 6 35 37 fg=#dedede bg=#101010
 style 6 37 38 fg=#303030 bg=#101010
 style 6 38 40 fg=#dedede bg=#131313
-text 7 "  │   low     fastest, thinks least  │"
+text 7 "  │ ▸ high    thinks more  now       │"
 style 7 0 2 fg=#dedede bg=#131313
 style 7 2 3 fg=#303030 bg=#101010
-style 7 3 14 fg=#dedede bg=#101010
-style 7 14 35 fg=#9d9d9d bg=#101010
-style 7 35 37 fg=#dedede bg=#101010
+style 7 3 4 fg=#dedede bg=#101010
+style 7 4 6 fg=#419cff bg=#101010
+style 7 6 14 fg=#419cff bg=#101010 bold
+style 7 14 25 fg=#9d9d9d bg=#101010
+style 7 25 30 fg=#419cff bg=#101010
+style 7 30 37 fg=#dedede bg=#101010
 style 7 37 38 fg=#303030 bg=#101010
 style 7 38 40 fg=#dedede bg=#131313
-text 8 "  │ ▸ high    thinks more  now       │"
+text 8 "  │   xhigh   thinks hard, Arko's de │"
 style 8 0 2 fg=#dedede bg=#131313
 style 8 2 3 fg=#303030 bg=#101010
-style 8 3 4 fg=#dedede bg=#101010
-style 8 4 6 fg=#419cff bg=#101010
-style 8 6 14 fg=#419cff bg=#101010 bold
-style 8 14 25 fg=#9d9d9d bg=#101010
-style 8 25 30 fg=#419cff bg=#101010
-style 8 30 37 fg=#dedede bg=#101010
+style 8 3 14 fg=#dedede bg=#101010
+style 8 14 36 fg=#9d9d9d bg=#101010
+style 8 36 37 fg=#dedede bg=#101010
 style 8 37 38 fg=#303030 bg=#101010
 style 8 38 40 fg=#dedede bg=#131313
-text 9 "  │   xhigh   thinks hard, Arko's de │"
+text 9 "  │                                  │"
 style 9 0 2 fg=#dedede bg=#131313
 style 9 2 3 fg=#303030 bg=#101010
-style 9 3 14 fg=#dedede bg=#101010
-style 9 14 36 fg=#9d9d9d bg=#101010
-style 9 36 37 fg=#dedede bg=#101010
+style 9 3 37 fg=#dedede bg=#101010
 style 9 37 38 fg=#303030 bg=#101010
 style 9 38 40 fg=#dedede bg=#131313
-text 10 "  │                                  │"
+text 10 "  │   ← Back to the models           │"
 style 10 0 2 fg=#dedede bg=#131313
 style 10 2 3 fg=#303030 bg=#101010
 style 10 3 37 fg=#dedede bg=#101010
 style 10 37 38 fg=#303030 bg=#101010
 style 10 38 40 fg=#dedede bg=#131313
-text 11 "  │   ← Back to the models           │"
+text 11 "  │                                  │"
 style 11 0 2 fg=#dedede bg=#131313
 style 11 2 3 fg=#303030 bg=#101010
 style 11 3 37 fg=#dedede bg=#101010

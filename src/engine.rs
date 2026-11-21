@@ -648,7 +648,18 @@ impl Engine {
                     && !cfg!(test)
                     && options.given_client().is_none()
                 {
-                    crate::antigravity::check().await;
+                    let last_uses_agy = providers::LastModels::load(&root).is_some_and(|last| {
+                        std::iter::once(last.main.as_str())
+                            .chain(
+                                last.worker
+                                    .as_deref()
+                                    .filter(|_| options.worker_model.is_none()),
+                            )
+                            .any(providers::is_antigravity_name)
+                    });
+                    if last_uses_agy || default_model(&options).is_none() {
+                        crate::antigravity::check_recent().await;
+                    }
                 }
                 if options.model.is_none() && default_model(&options).is_none() {
                     prompter.need_credentials(&Need::Any).await?;
@@ -687,12 +698,8 @@ impl Engine {
         if agy && options.antigravity_helper.is_none() {
             return Err(crate::antigravity::UNSUPPORTED_HOST.to_string().into());
         }
-        if options.antigravity_helper.is_some()
-            && !cfg!(test)
-            && options.given_client().is_none()
-            && (!new || options.model.is_some())
-        {
-            crate::antigravity::check().await;
+        if agy && !cfg!(test) && options.given_client().is_none() {
+            crate::antigravity::check_recent().await;
         }
         // Missing credentials, or an auth file that fails, are asked for.
         let client = match options.given_client() {

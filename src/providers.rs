@@ -50,7 +50,7 @@ const CLAUDE_CODE_LONG: &str = "claude-code:";
 pub const ANTIGRAVITY: &str = "agy:";
 pub const ANTIGRAVITY_GROUP: &str = "Antigravity, on your Google AI plan";
 
-const AGY_MODELS: &[(&str, &str)] = &[
+pub(crate) const AGY_MODELS: &[(&str, &str)] = &[
     ("agy:gemini-4-neon", "agy:neon"),
     ("agy:gemini-4-argon", "agy:argon"),
     ("agy:gemini-4-hydrogen", "agy:hydrogen"),
@@ -248,6 +248,10 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
             });
     }
     registered(name)
+}
+
+pub(crate) fn is_antigravity_name(name: &str) -> bool {
+    strip_prefix(name.trim(), ANTIGRAVITY).is_some()
 }
 
 /// A registered model by ID or alias.
@@ -731,13 +735,19 @@ fn choose_default(
             let (worker, reason) = match worker {
                 Some(worker) => match missing(&worker) {
                     None => (Some(worker), None),
-                    Some(needs) => (
-                        None,
-                        Some(format!(
-                            "Your last session's workers ran {worker}, which needs {needs}, so they run {} now.",
-                            last.main
-                        )),
-                    ),
+                    Some(needs) => {
+                        let next = &last.main;
+                        let note = if needs.starts_with(antigravity::CHECK_FAILED) {
+                            format!(
+                                "Your last session's workers ran {worker}. {needs} They run {next} now."
+                            )
+                        } else {
+                            format!(
+                                "Your last session's workers ran {worker}, which needs {needs}, so they run {next} now."
+                            )
+                        };
+                        (None, Some(note))
+                    }
                 },
                 None => (None, None),
             };
@@ -749,10 +759,11 @@ fn choose_default(
         }
         Some(needs) => match by_credentials {
             Some((main, _)) => Some(DefaultModels {
-                reason: Some(format!(
-                    "Your last session ran {}, which needs {needs}.",
-                    last.main
-                )),
+                reason: Some(if needs.starts_with(antigravity::CHECK_FAILED) {
+                    format!("Your last session ran {}. {needs}", last.main)
+                } else {
+                    format!("Your last session ran {}, which needs {needs}.", last.main)
+                }),
                 main: main.to_string(),
                 worker: None,
             }),
@@ -992,7 +1003,7 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
 /// What the user is told when `model` can't be used. It needs `needs`
 /// (from [`missing_credential`] or [`credential_name`]), and how to get it.
 pub fn needs_text(model: &str, needs: &str) -> String {
-    if needs == antigravity::UNSUPPORTED_HOST {
+    if needs == antigravity::UNSUPPORTED_HOST || needs.starts_with(antigravity::CHECK_FAILED) {
         needs.to_string()
     } else if let Some(action) = antigravity::action(needs) {
         format!("{model} needs {needs}. {action}")
@@ -3496,6 +3507,34 @@ mod tests {
             Some("gemini-4-carbon")
         );
         assert_eq!(first(Credentials::default()), None);
+    }
+
+    #[test]
+    fn a_model_left_out_after_a_failed_sign_in_check_says_why() {
+        let agy = "agy:gemini-4-neon";
+        let sol = "gpt-6.2-sol";
+        let reason = "Couldn't check Antigravity sign-in. The CLI closed before opening a session.";
+        let choose = |main: &str, worker: Option<&str>| {
+            let last = LastModels {
+                main: main.to_string(),
+                worker: worker.map(str::to_string),
+                efforts: Default::default(),
+            };
+            choose_default(
+                Some(last),
+                |name| (name == agy).then(|| reason.to_string()),
+                Some((sol, "an API key is set")),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            choose(agy, None).reason.unwrap(),
+            format!("Your last session ran {agy}. {reason}")
+        );
+        assert_eq!(
+            choose(sol, Some(agy)).reason.unwrap(),
+            format!("Your last session's workers ran {agy}. {reason} They run {sol} now.")
+        );
     }
 
     #[test]

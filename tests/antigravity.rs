@@ -175,6 +175,11 @@ async fn antigravity_reads_through_arko_in_a_saved_session() {
         assert_eq!(launch["env"]["AGY_CLI_DISABLE_AUTO_UPDATE"], "true");
     }
     assert!(event("permission").all(|entry| entry["allowed"] == true));
+    assert_eq!(
+        event("version").count(),
+        1,
+        "the main and worker share the sign-in check"
+    );
 
     let second = run(command().args(["-c", "-p", "Carry on."])).await;
     assert!(

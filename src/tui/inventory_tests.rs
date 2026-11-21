@@ -1328,14 +1328,15 @@ fn antigravity_picker(app: &mut App, effort: bool) {
         ..Reading::default()
     });
     app.open_model(crate::model_command::Target::Main);
-    if effort && let Some(Overlay::Model(picker)) = &mut app.overlay {
-        use crate::agents::Effort;
-        picker.step = super::model_picker::Step::Efforts {
-            model: "agy:gemini-4-neon".into(),
-            efforts: vec![Effort::Low, Effort::High, Effort::Xhigh],
-            selected: 1,
-            last: None,
-        };
+    let ready =
+        crate::antigravity::test_offer("gemini-4-neon", "Gemini 4 Neon", &["low", "high", "xhigh"]);
+    if let Some(Overlay::Model(picker)) = &mut app.overlay {
+        picker.add_antigravity(Some(&ready));
+        if effort {
+            crate::antigravity::TEST_STATUS.sync_scope(ready, || {
+                picker.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false);
+            });
+        }
     }
 }
 

@@ -28,21 +28,21 @@ style 8 2 118 dim
 text 9 ""
 text 10 ""
 text 11 ""
-text 12 ""
-text 13 "            ┌ Main agent's effort on agy:neon ────────────────────────────────────────────────────────────┐"
-style 13 13 46 bold
-text 14 "            │                                                                                             │"
-text 15 "            │   low     fastest, thinks least                                                             │"
-style 15 24 45 dim
-text 16 "            │ ▸ high    thinks more  now                                                                  │"
-style 16 14 16 fg=cyan
-style 16 16 24 fg=cyan bold
-style 16 24 35 dim
-style 16 35 40 fg=cyan
-text 17 "            │   xhigh   thinks hard, Arko's default                                                       │"
-style 17 24 51 dim
-text 18 "            │                                                                                             │"
-text 19 "            │   ← Back to the models                                                                      │"
+text 12 "            ┌ Main agent's effort on agy:neon ────────────────────────────────────────────────────────────┐"
+style 12 13 46 bold
+text 13 "            │                                                                                             │"
+text 14 "            │   low     fastest, thinks least                                                             │"
+style 14 24 45 dim
+text 15 "            │ ▸ high    thinks more  now                                                                  │"
+style 15 14 16 fg=cyan
+style 15 16 24 fg=cyan bold
+style 15 24 35 dim
+style 15 35 40 fg=cyan
+text 16 "            │   xhigh   thinks hard, Arko's default                                                       │"
+style 16 24 51 dim
+text 17 "            │                                                                                             │"
+text 18 "            │   ← Back to the models                                                                      │"
+text 19 "            │                                                                                             │"
 text 20 "            │                                                                                             │"
 text 21 "            └──────────────────────────────────────────────────── ↑ ↓  choose   Enter  apply   Esc  back ─┘"
 style 21 65 70 reverse

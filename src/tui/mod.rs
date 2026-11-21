@@ -180,6 +180,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     };
     let editor = input::Editor::new(input::History::load(Some(history)));
     let mut app = App::new(snapshot, editor, info, catalog, depth);
+    app.antigravity_models = true;
     app.transcript.banner = Some(setup.banner.clone());
     // The logins the session signs in with, `--codex-auth` included.
     app.login_paths = {
@@ -657,7 +658,7 @@ async fn run(
                 let counting = cache_label != app.cache_label();
                 cache_label = app.cache_label();
                 // (OpenRouter's models arrive in the background.)
-                let models = app.openrouter_moved();
+                let models = app.openrouter_moved() | app.antigravity_moved();
                 if models || reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting || counting {
                     app.set_reading(reading);
                     dirty = true;

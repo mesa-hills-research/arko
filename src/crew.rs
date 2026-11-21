@@ -582,7 +582,22 @@ fn apply_cache(
     Ok(())
 }
 
-/// What [`plan_start`] decided for a worker start before any async user wait.
+/// A start with its model chosen, before the login and billing checks.
+enum StartDraft {
+    Saved,
+    Registered(Box<WorkerSetup>),
+    Chosen(Box<NewWorkerChoice>),
+}
+
+struct NewWorkerChoice {
+    basis: Arc<chooser::Basis>,
+    family: chooser::Family,
+    parent: Option<String>,
+    starter: Option<WorkerSetup>,
+    choice: chooser::Selection,
+}
+
+/// What the start can do after checking the model and billing.
 enum StartPlan {
     /// Already applied to `config` (a saved run or an unattached crew).
     Done,
@@ -600,21 +615,17 @@ enum StartPlan {
     },
 }
 
-/// Works out a worker's setup and checks the session's billing policy
-/// without waiting on a person. A run seen before gets the setup it started
-/// with, always.
-fn plan_start(
+/// Picks the model of a new worker. A run seen before gets its saved setup.
+fn draft_start(
     hook: &StartHook,
     request: &StartRequest,
     config: &mut AgentConfig,
-) -> Result<StartPlan, String> {
+) -> Result<StartDraft, String> {
     let StartHook {
         models,
         workflow,
         refuse,
         default_long,
-        spending,
-        hub,
         ..
     } = hook;
     let (refuse, default_long) = (refuse.as_ref(), *default_long);
@@ -630,11 +641,11 @@ fn plan_start(
     };
     if let Some(started) = started {
         started.apply(config);
-        return Ok(StartPlan::Done);
+        return Ok(StartDraft::Saved);
     }
     if !attached {
         apply_cache(request, config, default_long)?;
-        return Ok(StartPlan::Done);
+        return Ok(StartDraft::Saved);
     }
     match new {
         Some(new) => {
@@ -651,46 +662,14 @@ fn plan_start(
                 .runs
                 .get(&request.caller_run_id)
                 .cloned();
-            let servers = servers_of(hub);
-            let setup = chooser::choose_in(
-                &new.basis,
-                request,
-                refuse,
+            let choice = chooser::select(&new.basis, request, family)?;
+            Ok(StartDraft::Chosen(Box::new(NewWorkerChoice {
+                basis: new.basis,
                 family,
-                starter.as_ref(),
-                &servers,
-            )?;
-            let weak = workflow.lock().unwrap().clone();
-            let model = &setup.llm_config.model;
-            let spent = std::cell::Cell::new(None);
-            let gate = billing::gate(
-                new.basis.billing,
-                new.basis.api_budget,
-                model,
-                new.basis.providers.openai_auth.get(),
-                family.depth > 1,
-                spending.allowed.has(model),
-                || {
-                    let today = spending.spend.today(weak.upgrade().as_deref(), true);
-                    spent.set(Some(today));
-                    today
-                },
-                || chooser::plan_models(&new.basis, refuse),
-            );
-            let spent = spent.get();
-            if let Some(spent) = spent {
-                spending.tell_budget(&new.basis, spent);
-            }
-            match gate {
-                billing::Gate::Go => Ok(StartPlan::Ready { setup, parent }),
-                billing::Gate::Refuse(why) => Err(why),
-                billing::Gate::Ask { over } => Ok(StartPlan::AskBilling {
-                    setup,
-                    parent,
-                    spent,
-                    over,
-                }),
-            }
+                parent,
+                starter,
+                choice,
+            })))
         }
         None => {
             // Not told what new workers start on, so the registered worker.
@@ -698,11 +677,62 @@ fn plan_start(
                 return Err(why);
             }
             apply_cache(request, config, default_long)?;
-            Ok(StartPlan::Ready {
-                setup: WorkerSetup::of(config),
-                parent: None,
-            })
+            Ok(StartDraft::Registered(Box::new(WorkerSetup::of(config))))
         }
+    }
+}
+
+/// Checks the chosen worker's settings and billing without asking the user.
+fn plan_start(hook: &StartHook, draft: StartDraft) -> Result<StartPlan, String> {
+    let NewWorkerChoice {
+        basis,
+        family,
+        parent,
+        starter,
+        choice,
+    } = match draft {
+        StartDraft::Saved => return Ok(StartPlan::Done),
+        StartDraft::Registered(setup) => {
+            return Ok(StartPlan::Ready {
+                setup: *setup,
+                parent: None,
+            });
+        }
+        StartDraft::Chosen(chosen) => *chosen,
+    };
+    let refuse = hook.refuse.as_ref();
+    let servers = servers_of(&hook.hub);
+    let setup = choice.finish(&basis, refuse, starter.as_ref(), &servers)?;
+    let weak = hook.workflow.lock().unwrap().clone();
+    let model = &setup.llm_config.model;
+    let spent = std::cell::Cell::new(None);
+    let gate = billing::gate(
+        basis.billing,
+        basis.api_budget,
+        model,
+        basis.providers.openai_auth.get(),
+        family.depth > 1,
+        hook.spending.allowed.has(model),
+        || {
+            let today = hook.spending.spend.today(weak.upgrade().as_deref(), true);
+            spent.set(Some(today));
+            today
+        },
+        || chooser::plan_models(&basis, refuse),
+    );
+    let spent = spent.get();
+    if let Some(spent) = spent {
+        hook.spending.tell_budget(&basis, spent);
+    }
+    match gate {
+        billing::Gate::Go => Ok(StartPlan::Ready { setup, parent }),
+        billing::Gate::Refuse(why) => Err(why),
+        billing::Gate::Ask { over } => Ok(StartPlan::AskBilling {
+            setup,
+            parent,
+            spent,
+            over,
+        }),
     }
 }
 
@@ -731,7 +761,7 @@ fn prepare(
     request: &StartRequest,
     config: &mut AgentConfig,
 ) -> Result<(), String> {
-    match plan_start(hook, request, config)? {
+    match plan_start(hook, draft_start(hook, request, config)?)? {
         StartPlan::Done => Ok(()),
         StartPlan::Ready { setup, parent } => finish_start(hook, request, config, setup, parent),
         StartPlan::AskBilling { setup, .. } => Err(billing::cant_ask(&setup.llm_config.model)),
@@ -746,7 +776,13 @@ async fn prepare_start(
     config: &mut AgentConfig,
     call: &StartCall,
 ) -> Result<StartOutcome, String> {
-    match plan_start(hook, request, config)? {
+    let draft = draft_start(hook, request, config)?;
+    if !cfg!(test)
+        && matches!(&draft, StartDraft::Chosen(chosen) if chosen.choice.model.provider == arko_ai::Provider::Antigravity)
+    {
+        crate::antigravity::check_recent().await;
+    }
+    match plan_start(hook, draft)? {
         StartPlan::Done => Ok(StartOutcome::Start),
         StartPlan::Ready { setup, parent } => {
             finish_start(hook, request, config, setup, parent)?;

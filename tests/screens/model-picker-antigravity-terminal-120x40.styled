@@ -21,49 +21,50 @@ style 5 116 118 dim
 text 6 "  │ Project │                                                                                             │          │"
 style 6 2 12 dim
 style 6 116 118 dim
-text 7 "  │ Tools   │ Antigravity, on your Google AI plan                                                         │          │"
+text 7 "  │ Tools   │ Claude Code, on your Claude plan  needs Claude Code signed in                               │          │"
 style 7 2 12 dim
-style 7 14 49 bold dim
+style 7 14 46 bold dim
+style 7 46 75 dim
 style 7 116 118 dim
-text 8 "  └─────────│ ▸ agy:gemini-4-neon        agy:neon      now, high effort                                   │──────────┘"
+text 8 "  └─────────│                                                                                             │──────────┘"
 style 8 2 12 dim
-style 8 14 16 fg=cyan
-style 8 16 41 fg=cyan bold
-style 8 41 55 dim
-style 8 55 71 fg=cyan
 style 8 107 118 dim
-text 9 "            │   agy:gemini-4-argon       agy:argon                                                        │"
-style 9 41 55 dim
-text 10 "            │   agy:gemini-4-hydrogen    agy:hydrogen                                                     │"
-style 10 41 55 dim
-text 11 "            │   agy:gemini-3.8-flash     agy:flash                                                        │"
-style 11 41 55 dim
-text 12 "            │   agy:claude-opus-5-5      agy:opus                                                         │"
-style 12 41 55 dim
-text 13 "            │   agy:claude-sonnet-5-5    agy:sonnet                                                       │"
-style 13 41 55 dim
-text 14 "            │   agy:gpt-oss-120b-medium  agy:gpt-oss                                                      │"
-style 14 41 55 dim
-text 15 "            │                                                                                             │"
-text 16 "            │ Claude Code, on your Claude plan  needs Claude Code signed in                               │"
-style 16 14 46 bold dim
-style 16 46 75 dim
-text 17 "            │                                                                                             │"
-text 18 "            │ Anthropic API, billed per token  needs ANTHROPIC_API_KEY                                    │"
-style 18 14 45 bold dim
-style 18 45 70 dim
-text 19 "            │                                                                                             │"
-text 20 "            │ OpenAI, on your ChatGPT plan  needs a ChatGPT login or OPENAI_API_KEY                       │"
-style 20 14 42 bold dim
-style 20 42 83 dim
-text 21 "            │                                                                                             │"
-text 22 "            │ Google Gemini, billed per token  needs GEMINI_API_KEY                                       │"
-style 22 14 45 bold dim
-style 22 45 67 dim
-text 23 "            │                                                                                             │"
-text 24 "            │ OpenRouter, billed per token  needs OPENROUTER_API_KEY                                      │"
-style 24 14 42 bold dim
-style 24 42 68 dim
+text 9 "            │ Anthropic API, billed per token  needs ANTHROPIC_API_KEY                                    │"
+style 9 14 45 bold dim
+style 9 45 70 dim
+text 10 "            │                                                                                             │"
+text 11 "            │ OpenAI, on your ChatGPT plan  needs a ChatGPT login or OPENAI_API_KEY                       │"
+style 11 14 42 bold dim
+style 11 42 83 dim
+text 12 "            │                                                                                             │"
+text 13 "            │ Google Gemini, billed per token  needs GEMINI_API_KEY                                       │"
+style 13 14 45 bold dim
+style 13 45 67 dim
+text 14 "            │                                                                                             │"
+text 15 "            │ OpenRouter, billed per token  needs OPENROUTER_API_KEY                                      │"
+style 15 14 42 bold dim
+style 15 42 68 dim
+text 16 "            │                                                                                             │"
+text 17 "            │ Antigravity, on your Google AI plan  signed in (Google AI Pro)                              │"
+style 17 14 49 bold dim
+style 17 49 76 dim
+text 18 "            │ ▸ agy:gemini-4-neon        agy:neon      now, high effort                                   │"
+style 18 14 16 fg=cyan
+style 18 16 41 fg=cyan bold
+style 18 41 55 dim
+style 18 55 71 fg=cyan
+text 19 "            │   agy:gemini-4-argon       agy:argon                                                        │"
+style 19 41 55 dim
+text 20 "            │   agy:gemini-4-hydrogen    agy:hydrogen                                                     │"
+style 20 41 55 dim
+text 21 "            │   agy:gemini-3.8-flash     agy:flash                                                        │"
+style 21 41 55 dim
+text 22 "            │   agy:claude-opus-5-5      agy:opus                                                         │"
+style 22 41 55 dim
+text 23 "            │   agy:claude-sonnet-5-5    agy:sonnet                                                       │"
+style 23 41 55 dim
+text 24 "            │   agy:gpt-oss-120b-medium  agy:gpt-oss                                                      │"
+style 24 41 55 dim
 text 25 "            │                                                                                             │"
 text 26 "            │ Another model                                                                               │"
 style 26 14 27 bold dim

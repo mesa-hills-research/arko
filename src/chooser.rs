@@ -23,8 +23,8 @@
 //! The call's `skills` and `mcp` (or the profile's) narrow what the worker
 //! has to the names its starter can give, as [`narrowing`] says.
 //!
-//! The start hook ([`crate::crew`]) calls [`choose_in`] for each start and
-//! records the result with the run, so the profile's file is read once.
+//! The start hook ([`crate::crew`]) picks the model and reads the profile once.
+//! It records the finished setup with the run.
 
 use std::collections::BTreeMap;
 
@@ -157,7 +157,8 @@ pub fn choose(
 /// start. `starter` is the setup recorded for the worker that starts it, none
 /// for the main agent and for a worker with no record. `servers` are the
 /// session's MCP servers now.
-pub fn choose_in(
+#[cfg(test)]
+fn choose_in(
     basis: &Basis,
     request: &StartRequest,
     refuse: Option<&Refuse>,
@@ -165,11 +166,45 @@ pub fn choose_in(
     starter: Option<&WorkerSetup>,
     servers: &[ServerFacts],
 ) -> Result<WorkerSetup, String> {
-    let chosen = choose_at(basis, request, refuse, family, starter, servers);
-    if family.depth > 1 {
-        return chosen.map_err(|why| for_a_worker(&why));
+    select(basis, request, family)?.finish(basis, refuse, starter, servers)
+}
+
+/// The model and profile chosen before checking that the model can start.
+pub(crate) struct Selection {
+    pub model: Model,
+    found: Option<Found>,
+    call: Call,
+    family: Family,
+    may_nest: bool,
+}
+
+impl Selection {
+    pub(crate) fn finish(
+        self,
+        basis: &Basis,
+        refuse: Option<&Refuse>,
+        starter: Option<&WorkerSetup>,
+        servers: &[ServerFacts],
+    ) -> Result<WorkerSetup, String> {
+        let family = self.family;
+        to_starter(family, finish_choice(self, basis, refuse, starter, servers))
     }
-    chosen
+}
+
+pub(crate) fn select(
+    basis: &Basis,
+    request: &StartRequest,
+    family: Family,
+) -> Result<Selection, String> {
+    to_starter(family, select_for(basis, request, family))
+}
+
+fn to_starter<T>(family: Family, choice: Result<T, String>) -> Result<T, String> {
+    if family.depth > 1 {
+        choice.map_err(|why| for_a_worker(&why))
+    } else {
+        choice
+    }
 }
 
 /// A refusal as a worker reads it. A worker that starts workers has no
@@ -203,14 +238,7 @@ pub(crate) fn for_a_worker(why: &str) -> String {
     .replace("Ask the user to ", "Tell your lead to ask the user to ")
 }
 
-fn choose_at(
-    basis: &Basis,
-    request: &StartRequest,
-    refuse: Option<&Refuse>,
-    family: Family,
-    starter: Option<&WorkerSetup>,
-    servers: &[ServerFacts],
-) -> Result<WorkerSetup, String> {
+fn select_for(basis: &Basis, request: &StartRequest, family: Family) -> Result<Selection, String> {
     let call = Call::of(&request.parameters)?;
     // A worker starts workers only as deep as the user allows.
     if family.depth > 1 {
@@ -277,6 +305,31 @@ fn choose_at(
     {
         return Err(crate::antigravity::UNSUPPORTED_HOST.to_string());
     }
+    Ok(Selection {
+        model,
+        found,
+        call,
+        family,
+        may_nest,
+    })
+}
+
+fn finish_choice(
+    choice: Selection,
+    basis: &Basis,
+    refuse: Option<&Refuse>,
+    starter: Option<&WorkerSetup>,
+    servers: &[ServerFacts],
+) -> Result<WorkerSetup, String> {
+    let Selection {
+        model,
+        found,
+        call,
+        family,
+        may_nest,
+    } = choice;
+    let profile = found.as_ref().map(|found| &found.profile);
+    let profile_name = profile.map(|profile| profile.name.as_str());
     let model_name = providers::model_name(&model);
     let same_model = providers::resolve_model(&basis.worker.model)
         .is_ok_and(|session| providers::model_name(&session) == model_name);

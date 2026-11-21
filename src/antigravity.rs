@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use arko_agents::AntigravitySettings;
 use arko_ai::antigravity as agy;
@@ -14,7 +15,6 @@ pub(crate) use agy::SignInProblem as Problem;
 pub(crate) const INSTALL: &str = "Antigravity installed";
 pub(crate) const SIGN_IN: &str = "Antigravity signed in";
 pub(crate) const UPDATE: &str = "Antigravity updated";
-pub(crate) const CHECK: &str = "Antigravity sign-in checked";
 pub(crate) const MODEL_ACCESS: &str = "access on your Google AI plan";
 pub(crate) const UNSUPPORTED_HOST: &str = "This app can't run agy: models.";
 
@@ -27,11 +27,12 @@ pub(crate) fn action(needs: &str) -> Option<&'static str> {
         INSTALL => Some(INSTALL_ACTION),
         SIGN_IN => Some(SIGN_IN_ACTION),
         UPDATE => Some(UPDATE_ACTION),
-        CHECK => Some("Check Antigravity from `arko --setup`."),
         MODEL_ACCESS => Some("Choose another Antigravity model."),
         _ => None,
     }
 }
+
+pub(crate) const CHECK_FAILED: &str = "Couldn't check Antigravity sign-in.";
 
 pub(crate) fn problem_text(problem: &Problem) -> String {
     match problem {
@@ -41,7 +42,7 @@ pub(crate) fn problem_text(problem: &Problem) -> String {
             "Antigravity CLI {found} is too old for Arko, which needs {}. {UPDATE_ACTION}",
             agy::MINIMUM_VERSION
         ),
-        Problem::Failed(error) => format!("Couldn't check Antigravity sign-in. {error}"),
+        Problem::Failed(error) => format!("{CHECK_FAILED} {error}"),
     }
 }
 
@@ -51,21 +52,63 @@ pub(crate) struct Ready {
     models: BTreeMap<String, ModelOffer>,
 }
 
-type Status = Result<Ready, Problem>;
-static STATUS: RwLock<Option<Arc<Status>>> = RwLock::new(None);
+pub(crate) type Status = Result<Ready, Problem>;
+const RECENT: Duration = Duration::from_secs(10);
+static STATUS: RwLock<Option<(Instant, Arc<Status>)>> = RwLock::new(None);
 
-pub(crate) fn status() -> Option<Arc<Status>> {
+fn last_check() -> Option<(Instant, Arc<Status>)> {
     STATUS
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
 }
 
+pub(crate) fn status() -> Option<Arc<Status>> {
+    #[cfg(test)]
+    if let Ok(status) = TEST_STATUS.try_with(Arc::clone) {
+        return Some(status);
+    }
+    last_check().map(|(_, status)| status)
+}
+
+pub(crate) fn recent() -> Option<Arc<Status>> {
+    last_check()
+        .filter(|(at, _)| at.elapsed() < RECENT)
+        .map(|(_, status)| status)
+}
+
+pub(crate) async fn check_recent() -> Arc<Status> {
+    if let Some(status) = recent() {
+        status
+    } else {
+        check().await
+    }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_STATUS: Arc<Status>;
+}
+
+#[cfg(test)]
+pub(crate) fn test_offer(id: &str, name: &str, levels: &[&str]) -> Arc<Status> {
+    Arc::new(Ok(Ready {
+        #[cfg(feature = "tui")]
+        tier: Some("Google AI Pro".to_string()),
+        models: model_offers(vec![agy::AvailableModel {
+            id: id.to_string(),
+            name: name.to_string(),
+            thought_levels: levels.iter().map(|level| level.to_string()).collect(),
+        }]),
+    }))
+}
+
 pub(crate) async fn check() -> Arc<Status> {
     let status = Arc::new(probe().await);
     *STATUS
         .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status.clone());
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((Instant::now(), status.clone()));
     status
 }
 
@@ -122,7 +165,21 @@ pub(crate) fn needs() -> Option<String> {
         None | Some(Err(Problem::Missing)) => Some(INSTALL.to_string()),
         Some(Err(Problem::SignedOut)) => Some(SIGN_IN.to_string()),
         Some(Err(Problem::Outdated { .. })) => Some(UPDATE.to_string()),
-        Some(Err(Problem::Failed(_))) => Some(CHECK.to_string()),
+        Some(Err(problem @ Problem::Failed(_))) => Some(problem_text(problem)),
+    }
+}
+
+#[cfg(feature = "tui")]
+pub(crate) fn status_text(status: &Status) -> String {
+    match status {
+        Ok(ready) => ready.tier.as_ref().map_or_else(
+            || "signed in".to_string(),
+            |tier| format!("signed in ({tier})"),
+        ),
+        Err(Problem::Missing) => "not installed".to_string(),
+        Err(Problem::SignedOut) => "not signed in".to_string(),
+        Err(Problem::Outdated { found }) => format!("{found}, too old"),
+        Err(Problem::Failed(_)) => "couldn't check sign-in".to_string(),
     }
 }
 
@@ -281,6 +338,18 @@ fn figures(windows: &[crate::remote::PlanWindow]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_sign_in_check_keeps_the_reason() {
+        let detail = "The CLI closed before opening a session.";
+        TEST_STATUS.sync_scope(Arc::new(Err(Problem::Failed(detail.to_string()))), || {
+            let needs = needs_model("gemini-4-neon").unwrap();
+            assert_eq!(
+                crate::providers::needs_text("agy:neon", &needs),
+                "Couldn't check Antigravity sign-in. The CLI closed before opening a session."
+            );
+        });
+    }
 
     #[test]
     fn picker_efforts_come_from_each_advertised_model() {

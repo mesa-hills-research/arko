@@ -1236,13 +1236,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             };
             out.line(&format!("  Claude Code         {claude}"));
             let agy = antigravity::check_at_setup()?;
-            let status = match agy.as_ref() {
-                Ok(ready) => agy_sign_in(ready),
-                Err(antigravity::Problem::Missing) => "not installed".to_string(),
-                Err(antigravity::Problem::SignedOut) => "not signed in".to_string(),
-                Err(antigravity::Problem::Outdated { found }) => format!("{found}, too old"),
-                Err(antigravity::Problem::Failed(_)) => "couldn't check sign-in".to_string(),
-            };
+            let status = antigravity::status_text(&agy);
             out.line(&format!("  Antigravity         {status}"));
             let voyage = match lookup(VOYAGE_KEY) {
                 None => "not set (search indexes are keyword-only)".to_string(),
@@ -1531,14 +1525,6 @@ fn claude_code_ready(out: &Output, ready: &claude_code::Ready) -> Result<(), Str
 }
 
 #[cfg(feature = "tui")]
-fn agy_sign_in(ready: &antigravity::Ready) -> String {
-    ready.tier.as_ref().map_or_else(
-        || "signed in".to_string(),
-        |tier| format!("signed in ({tier})"),
-    )
-}
-
-#[cfg(feature = "tui")]
 fn ask_antigravity(
     out: &Output,
     editor: &mut Editor,
@@ -1547,9 +1533,13 @@ fn ask_antigravity(
     let mut problem = known.cloned();
     loop {
         if problem.is_none() {
-            match antigravity::check_at_setup()?.as_ref() {
-                Ok(ready) => {
-                    out.line(&format!("Antigravity is {}.", agy_sign_in(ready)));
+            let status = antigravity::check_at_setup()?;
+            match status.as_ref() {
+                Ok(_) => {
+                    out.line(&format!(
+                        "Antigravity is {}.",
+                        antigravity::status_text(&status)
+                    ));
                     return Ok(());
                 }
                 Err(found) => problem = Some(found.clone()),

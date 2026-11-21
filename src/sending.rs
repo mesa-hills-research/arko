@@ -501,6 +501,17 @@ impl Harness {
             reply.accept(Delivery::Command, None);
             return false;
         }
+        if !cfg!(test)
+            && self.providers.antigravity.helper_command.is_some()
+            && let Some(("/model", argument)) = split_live_command(command)
+            && let Ok(crate::model_command::Request::Set { target, model, .. }) =
+                crate::model_command::parse(argument)
+            && (phase == Phase::Idle || target == crate::model_command::Target::Workers)
+            && crate::agents::resolve_model(&model)
+                .is_ok_and(|model| model.provider == arko_ai::Provider::Antigravity)
+        {
+            crate::antigravity::check_recent().await;
+        }
         // A new conversation that carries this one over. It went once the
         // switch was made (the old model's report written or skipped).
         if phase == Phase::Idle

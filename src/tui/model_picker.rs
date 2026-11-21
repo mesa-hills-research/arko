@@ -64,6 +64,11 @@ pub enum Step {
     /// OpenRouter's models, filtered by what is typed (by name and slug),
     /// with the one selected among those that match.
     Browse { filter: String, selected: usize },
+    /// The Antigravity model chosen before its account check, or its refusal.
+    Antigravity {
+        model: String,
+        error: Option<String>,
+    },
     /// The efforts `model` takes. `selected` past them is Back. `last` is
     /// the one it ran at last (found as the step opens, since drawing reads
     /// no file).
@@ -104,6 +109,9 @@ pub struct ModelPicker {
     /// How each model billed per token is billed (`API, $5/$25`), by name.
     /// The plans' models have none.
     pub billing: std::collections::BTreeMap<String, String>,
+    /// Antigravity's sign-in on the group heading, when the host supports it.
+    antigravity: Option<String>,
+    checking_antigravity: bool,
     /// The filter and the model the browse step was on, while the efforts
     /// of a model chosen there are open. Back goes there.
     via_browse: Option<(String, usize)>,
@@ -221,8 +229,62 @@ impl ModelPicker {
             recent,
             summary,
             billing,
+            antigravity: None,
+            checking_antigravity: false,
             via_browse: None,
             new_conversation: target == Target::Main && models.started,
+        }
+    }
+
+    /// Reserves Antigravity's rows before opening the picker. Only the heading
+    /// changes when the check ends.
+    pub fn add_antigravity(&mut self, status: Option<&crate::antigravity::Status>) {
+        let selected = self.rows.get(self.selected).cloned();
+        self.rows.retain(|row| match row {
+            Row::Group(name) | Row::Unavailable { group: name, .. } => {
+                name != providers::ANTIGRAVITY_GROUP
+            }
+            Row::Model { name, .. } => !providers::is_antigravity_name(name),
+            _ => true,
+        });
+        let at = self.rows.len() - 1; // Before Another model.
+        self.rows.splice(
+            at..at,
+            std::iter::once(Row::Group(providers::ANTIGRAVITY_GROUP.to_string())).chain(
+                providers::AGY_MODELS
+                    .iter()
+                    .map(|(name, alias)| Row::Model {
+                        name: name.to_string(),
+                        alias,
+                    }),
+            ),
+        );
+        self.selected = self
+            .rows
+            .iter()
+            .position(
+                |row| matches!(row, Row::Model {name, ..} if !self.follows && name == &self.model),
+            )
+            .or_else(|| {
+                selected
+                    .as_ref()
+                    .and_then(|row| self.rows.iter().position(|candidate| candidate == row))
+            })
+            .or_else(|| self.rows.iter().position(Row::selectable))
+            .unwrap_or(0);
+        self.checking_antigravity = status.is_none();
+        self.antigravity = Some(status.map_or_else(
+            || "checking sign-in…".to_string(),
+            crate::antigravity::status_text,
+        ));
+    }
+
+    pub fn antigravity_checked(&mut self, status: &crate::antigravity::Status) -> Outcome {
+        self.checking_antigravity = false;
+        self.antigravity = Some(crate::antigravity::status_text(status));
+        match &self.step {
+            Step::Antigravity { model, error: None } => self.efforts(model.clone()),
+            _ => Outcome::Stay,
         }
     }
 
@@ -264,17 +326,17 @@ impl ModelPicker {
         };
         if self.new_conversation {
             return match &self.step {
-                Step::Efforts { model, .. } => {
+                Step::Efforts { model, .. } | Step::Antigravity { model, .. } => {
                     format!("New conversation's effort on {}", label(model))
                 }
                 _ => "New conversation's model".to_string(),
             };
         }
         match (&self.target, &self.step) {
-            (Target::Main, Step::Efforts { model, .. }) => {
+            (Target::Main, Step::Efforts { model, .. } | Step::Antigravity { model, .. }) => {
                 format!("Main agent's effort on {}", label(model))
             }
-            (Target::Workers, Step::Efforts { model, .. }) => {
+            (Target::Workers, Step::Efforts { model, .. } | Step::Antigravity { model, .. }) => {
                 format!("Workers' effort on {}", label(model))
             }
             (Target::Main, Step::Browse { .. }) => "Main agent's model on OpenRouter".to_string(),
@@ -290,6 +352,18 @@ impl ModelPicker {
         let Ok(model) = providers::resolve_model(&name) else {
             return Outcome::Stay;
         };
+        if self.antigravity.is_some() && model.provider == arko_ai::Provider::Antigravity {
+            let needs = (!self.checking_antigravity)
+                .then(|| crate::antigravity::needs_model(&model.id))
+                .flatten();
+            if self.checking_antigravity || needs.is_some() {
+                self.step = Step::Antigravity {
+                    error: needs.map(|needs| providers::needs_text(&name, &needs)),
+                    model: name,
+                };
+                return Outcome::Stay;
+            }
+        }
         let efforts = providers::efforts(&model);
         if efforts.is_empty() {
             return self.apply(&name, None);
@@ -446,6 +520,11 @@ impl ModelPicker {
                         match providers::resolve_model(&name) {
                             Err(problem) => *error = Some(problem),
                             Ok(model) => {
+                                if self.antigravity.is_some()
+                                    && model.provider == arko_ai::Provider::Antigravity
+                                {
+                                    return self.efforts(providers::model_name(&model));
+                                }
                                 match needs(&self.reachable, &providers::model_name(&model)) {
                                     Some(needs) => {
                                         *error = Some(providers::needs_text(
@@ -459,6 +538,12 @@ impl ModelPicker {
                         }
                     }
                     _ => {}
+                }
+                Outcome::Stay
+            }
+            Step::Antigravity { .. } => {
+                if close {
+                    self.step = Step::Models;
                 }
                 Outcome::Stay
             }
@@ -517,13 +602,6 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
             Span::styled(format!("{} ", glyphs::render("▸")), theme.accent())
         } else {
             Span::raw("  ")
-        }
-    };
-    let heading = |name: &str| {
-        if name == providers::ANTIGRAVITY_GROUP && text_width(name) + 2 > inner_width {
-            "Antigravity, Google AI plan".to_string()
-        } else {
-            name.to_string()
         }
     };
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -589,10 +667,15 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             lines.push(Line::default());
                         }
                         let mut spans = vec![Span::styled(
-                            heading(name),
+                            name.clone(),
                             theme.dim().add_modifier(Modifier::BOLD),
                         )];
                         // What the OpenRouter settings do to its models.
+                        if name == providers::ANTIGRAVITY_GROUP
+                            && let Some(status) = &picker.antigravity
+                        {
+                            spans.push(Span::styled(format!("  {status}"), theme.dim()));
+                        }
                         if name.starts_with("OpenRouter")
                             && let Some(summary) = &picker.summary
                         {
@@ -605,7 +688,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             lines.push(Line::default());
                         }
                         lines.push(Line::from(vec![
-                            Span::styled(heading(group), theme.dim().add_modifier(Modifier::BOLD)),
+                            Span::styled(group.clone(), theme.dim().add_modifier(Modifier::BOLD)),
                             Span::styled(format!("  needs {needs}"), theme.dim()),
                         ]));
                     }
@@ -823,6 +906,21 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                 }
             }
         }
+        Step::Antigravity { error, .. } => {
+            keys = &[("Esc", "back")];
+            let (text, style) = error
+                .as_deref()
+                .map_or(("Checking sign-in…", theme.dim()), |error| {
+                    (error, theme.error())
+                });
+            for line in wrap::wrap(
+                &[Span::styled(text.to_string(), style)],
+                inner_width.saturating_sub(2),
+                0,
+            ) {
+                lines.push(Line::from(line));
+            }
+        }
         Step::Efforts {
             model,
             efforts,
@@ -872,8 +970,14 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
         }
     }
     // (The list of models doesn't change the box's height as it filters.)
-    let wanted = match picker.step {
+    let wanted = match &picker.step {
         Step::Browse { .. } => (lines.len() + header.len() + 4).max(14),
+        Step::Antigravity { model, .. } | Step::Efforts { model, .. }
+            if providers::is_antigravity_name(model) =>
+        {
+            // Four offered efforts, a blank row, Back, and the frame.
+            (lines.len() + 4).max(10)
+        }
         _ => lines.len() + 4,
     };
     let height = (wanted as u16).min(area.height);
@@ -922,6 +1026,51 @@ mod tests {
         crate::tui::golden::rows(width, height, |frame| {
             draw(frame, &Theme::terminal(), frame.area(), picker)
         })
+    }
+
+    #[test]
+    fn checking_antigravity_keeps_the_rows_and_the_chosen_model_in_place() {
+        let models = Models {
+            main: "agy:gemini-4-neon".to_string(),
+            main_effort: "high".to_string(),
+            ..Models::default()
+        };
+        let mut picker =
+            ModelPicker::open(Target::Main, &models, |_| Some("not configured".into()));
+        picker.add_antigravity(None);
+        let before = picker.rows.clone();
+        let selected = picker.selected;
+        assert!(
+            screen(&picker)
+                .iter()
+                .any(|line| line.contains("checking sign-in…"))
+        );
+        assert_eq!(
+            picker.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false),
+            Outcome::Stay
+        );
+        assert!(matches!(picker.step, Step::Antigravity { error: None, .. }));
+        let title_row = |picker: &ModelPicker| {
+            screen(picker)
+                .iter()
+                .position(|line| line.contains("Main agent's effort on agy:neon"))
+                .unwrap()
+        };
+        let title_before = title_row(&picker);
+        let ready =
+            crate::antigravity::test_offer("gemini-4-neon", "Gemini 4 Neon", &["low", "high"]);
+        crate::antigravity::TEST_STATUS.sync_scope(ready.clone(), || {
+            assert_eq!(picker.antigravity_checked(&ready), Outcome::Stay);
+            assert_eq!(picker.rows, before);
+            assert_eq!(picker.selected, selected);
+            assert_eq!(title_row(&picker), title_before);
+            assert!(matches!(&picker.step, Step::Efforts { efforts, selected: 1, .. } if efforts == &[Effort::Low, Effort::High]));
+            assert_eq!(picker.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true), Outcome::Stay);
+            assert!(screen(&picker).iter().any(|line| line.contains("signed in (Google AI Pro)")));
+            picker.selected = picker.rows.iter().position(|row| matches!(row, Row::Model { alias: "agy:argon", .. })).unwrap();
+            assert_eq!(picker.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false), Outcome::Stay);
+            assert!(matches!(&picker.step, Step::Antigravity { error: Some(error), .. } if error.contains("Choose another Antigravity model.")));
+        });
     }
 
     #[test]
