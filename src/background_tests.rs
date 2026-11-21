@@ -2201,3 +2201,308 @@ async fn every_offered_tool_moves_as_the_runtime_offers_it() {
     harness.crew.clone().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// `/jobs` lists timed, session and standing monitors with their lifetime and
+/// paused/active state without a bogus countdown for session or standing ones,
+/// `monitor_minutes_left` returns `None` for non-expiring monitors, and
+/// `/jobs stop N` stops a standing monitor even while paused.
+#[cfg(unix)]
+#[tokio::test]
+async fn jobs_lists_and_stops_session_and_standing_monitors() {
+    struct ToggleWorkers {
+        running: std::sync::atomic::AtomicBool,
+        changes: tokio::sync::watch::Sender<u64>,
+    }
+
+    impl ToggleWorkers {
+        fn new(running: bool) -> Arc<Self> {
+            Arc::new(Self {
+                running: std::sync::atomic::AtomicBool::new(running),
+                changes: tokio::sync::watch::channel(0).0,
+            })
+        }
+
+        fn set(&self, running: bool) {
+            self.running
+                .store(running, std::sync::atomic::Ordering::Release);
+            self.changes.send_modify(|n| *n += 1);
+        }
+    }
+
+    impl arko_agents::terminal::WorkerLiveness for ToggleWorkers {
+        fn has_running_workers(&self, _owner: uuid::Uuid) -> bool {
+            self.running.load(std::sync::atomic::Ordering::Acquire)
+        }
+
+        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.changes.subscribe()
+        }
+    }
+
+    let server =
+        ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m1", "Done.") }))).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let managers = equip(&mut harness, &mut inputs, 0);
+    let mut limits = arko_agents::terminal::MonitorLimits::default();
+    limits.start_wait = Duration::ZERO;
+    managers.jobs.set_monitor_limits(limits).unwrap();
+    let workers = ToggleWorkers::new(false);
+    let liveness: std::sync::Weak<ToggleWorkers> = Arc::downgrade(&workers);
+    managers.jobs.add_worker_liveness(liveness);
+
+    let workspace = temp.path().join("work");
+    let owner = uuid::Uuid::new_v4();
+    let ctx = || arko_agents::TaskContext::new(owner, MAIN, "", &workspace);
+
+    let timed_id = managers
+        .jobs
+        .start_monitor(
+            &ctx(),
+            "sleep 60",
+            arko_agents::terminal::MonitorOptions::lines(Some("ERROR".into())),
+        )
+        .await
+        .unwrap()
+        .job_id;
+    let session_id = managers
+        .jobs
+        .start_monitor(
+            &ctx(),
+            "sleep 61",
+            arko_agents::terminal::MonitorOptions::lines(Some("WARN".into()))
+                .with_lifetime(arko_agents::terminal::MonitorLifetime::Session),
+        )
+        .await
+        .unwrap()
+        .job_id;
+    let standing_id = managers
+        .jobs
+        .start_monitor(
+            &ctx(),
+            "sleep 62",
+            arko_agents::terminal::MonitorOptions::lines(Some("FAIL".into()))
+                .with_lifetime(arko_agents::terminal::MonitorLifetime::Standing),
+        )
+        .await
+        .unwrap()
+        .job_id;
+    let while_workers_id = managers
+        .jobs
+        .start_monitor(
+            &ctx(),
+            "sleep 63",
+            arko_agents::terminal::MonitorOptions::lines(Some("PANIC".into()))
+                .with_lifetime(arko_agents::terminal::MonitorLifetime::WhileWorkersRun),
+        )
+        .await
+        .unwrap()
+        .job_id;
+
+    assert!(harness.monitor_minutes_left(timed_id).is_some());
+    assert!(harness.monitor_minutes_left(while_workers_id).is_some());
+    assert_eq!(harness.monitor_minutes_left(session_id), None);
+    assert_eq!(harness.monitor_minutes_left(standing_id), None);
+
+    let last_jobs_lines = |harness: &mut Harness| -> Vec<String> {
+        let before = shown(&harness.feed).len();
+        harness.jobs_command("");
+        shown(&harness.feed)
+            .into_iter()
+            .skip(before)
+            .filter(|(kind, ..)| kind == "output")
+            .flat_map(|(_, text, _)| {
+                text.lines()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+
+    // With no worker running, the standing monitor starts paused.
+    let lines = last_jobs_lines(&mut harness);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("  monitor  sleep 60 · lines that match ERROR · ends in 30 min")),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line.contains("  monitor  sleep 61 · lines that match WARN · for this session")
+                && !line.contains("ends in")
+        }),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line.contains("  monitor  sleep 62 · lines that match FAIL · standing · paused")
+                && !line.contains("ends in")
+        }),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| {
+            line.contains(
+                "  monitor  sleep 63 · lines that match PANIC · ends in 30 min · while workers run",
+            )
+        }),
+        "{lines:?}"
+    );
+
+    // Starting a worker resumes the standing monitor.
+    workers.set(true);
+    let standing_paused = || {
+        managers
+            .jobs
+            .jobs()
+            .into_iter()
+            .find_map(|job| match job.kind {
+                arko_agents::terminal::JobKind::Monitor(info) if job.job_id == standing_id => {
+                    Some(info.paused)
+                }
+                _ => None,
+            })
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while standing_paused() != Some(false) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("standing monitor resumed");
+
+    let lines = last_jobs_lines(&mut harness);
+    assert!(
+        lines.iter().any(|line| {
+            line.contains("  monitor  sleep 62 · lines that match FAIL · standing · active")
+                && !line.contains("ends in")
+        }),
+        "{lines:?}"
+    );
+
+    // Ending the worker pauses the standing monitor again.
+    workers.set(false);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while standing_paused() != Some(true) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("standing monitor paused again");
+
+    let lines = last_jobs_lines(&mut harness);
+    assert!(
+        lines.iter().any(|line| {
+            line.contains("  monitor  sleep 62 · lines that match FAIL · standing · paused")
+                && !line.contains("ends in")
+        }),
+        "{lines:?}"
+    );
+
+    // Stopping a paused standing monitor via `/jobs stop N` works cleanly.
+    let before = shown(&harness.feed).len();
+    harness.jobs_command("stop 3");
+    let stop_lines: Vec<String> = shown(&harness.feed)
+        .into_iter()
+        .skip(before)
+        .filter(|(kind, ..)| kind == "output")
+        .map(|(_, text, _)| text)
+        .collect();
+    assert!(
+        stop_lines
+            .iter()
+            .any(|line| line == "Stopped job 3 (sleep 62)."),
+        "{stop_lines:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while standing_paused().is_some() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("paused standing monitor stopped");
+
+    managers.shutdown().await;
+}
+
+/// Session and standing monitors (including a paused standing one) stopped on
+/// Arko's shutdown are listed cleanly in `stopped_jobs_words` when reopened.
+#[cfg(unix)]
+#[tokio::test]
+async fn stopped_session_and_standing_monitors_are_reported_on_next_open() {
+    struct IdleWorkers(tokio::sync::watch::Sender<u64>);
+
+    impl arko_agents::terminal::WorkerLiveness for IdleWorkers {
+        fn has_running_workers(&self, _owner: uuid::Uuid) -> bool {
+            false
+        }
+
+        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.0.subscribe()
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let jobs_dir = temp.path().join("jobs");
+    let workspace = temp.path().join("work");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let jobs = arko_agents::terminal::TerminalManager::new(
+        arko_agents::terminal::TerminalConfig::new(jobs_dir.clone()),
+    )
+    .unwrap();
+    let mut limits = arko_agents::terminal::MonitorLimits::default();
+    limits.start_wait = Duration::ZERO;
+    jobs.set_monitor_limits(limits).unwrap();
+    let idle = Arc::new(IdleWorkers(tokio::sync::watch::channel(0).0));
+    let liveness: std::sync::Weak<IdleWorkers> = Arc::downgrade(&idle);
+    jobs.add_worker_liveness(liveness);
+
+    let owner = uuid::Uuid::new_v4();
+    let ctx = || arko_agents::TaskContext::new(owner, MAIN, "", &workspace);
+    let session_id = jobs
+        .start_monitor(
+            &ctx(),
+            "sleep 61",
+            arko_agents::terminal::MonitorOptions::lines(Some("WARN".into()))
+                .with_lifetime(arko_agents::terminal::MonitorLifetime::Session),
+        )
+        .await
+        .unwrap()
+        .job_id;
+    let standing_id = jobs
+        .start_monitor(
+            &ctx(),
+            "sleep 62",
+            arko_agents::terminal::MonitorOptions::lines(Some("FAIL".into()))
+                .with_lifetime(arko_agents::terminal::MonitorLifetime::Standing),
+        )
+        .await
+        .unwrap()
+        .job_id;
+
+    jobs.shutdown().await;
+    drop(jobs);
+
+    let reopened = arko_agents::terminal::TerminalManager::new(
+        arko_agents::terminal::TerminalConfig::new(jobs_dir),
+    )
+    .unwrap();
+    let words = stopped_jobs_words(&reopened.interrupted_at_open());
+    assert!(
+        words.contains(&format!(
+            "- the session monitor of `sleep 61` (lines that match `WARN`, job {}…)",
+            &session_id.to_string()[..8]
+        )),
+        "{words}"
+    );
+    assert!(
+        words.contains(&format!(
+            "- the standing monitor of `sleep 62` (lines that match `FAIL`, job {}…)",
+            &standing_id.to_string()[..8]
+        )),
+        "{words}"
+    );
+    reopened.shutdown().await;
+}

@@ -474,6 +474,7 @@ pub mod tests {
             watching: None,
             alerts: None,
             expires_at: None,
+            paused: false,
         };
         store.job(job.clone());
         assert_eq!(actions(&call, &store, &[5]), (false, Some("j1".into())));
@@ -551,6 +552,7 @@ pub mod tests {
                 watching: None,
                 alerts: None,
                 expires_at: None,
+                paused: false,
             });
         }
         assert_eq!(store.running_jobs(), ["j1", "j2"]);

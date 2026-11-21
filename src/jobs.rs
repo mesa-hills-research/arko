@@ -36,8 +36,8 @@ pub(crate) fn follow(
     tokio::spawn(async move {
         // The jobs running, as the feed has them, with their owners.
         let mut known: HashMap<Uuid, Uuid> = HashMap::new();
-        // The monitors' alerts and ends, as the feed has them.
-        let mut monitors: HashMap<Uuid, (u32, i64)> = HashMap::new();
+        // The monitors' alerts, ends (if any) and paused states, as the feed has them.
+        let mut monitors: HashMap<Uuid, (u32, Option<i64>, bool)> = HashMap::new();
         // A job that finished, which may have ended before it was seen run.
         let mut just_ended: Option<terminal::JobFinished> = None;
         loop {
@@ -101,7 +101,7 @@ fn sync(
     agent_of: &dyn Fn(Uuid) -> String,
     jobs: &TerminalManager,
     known: &mut HashMap<Uuid, Uuid>,
-    monitors: &mut HashMap<Uuid, (u32, i64)>,
+    monitors: &mut HashMap<Uuid, (u32, Option<i64>, bool)>,
 ) {
     let running = jobs.jobs();
     for job in &running {
@@ -109,9 +109,9 @@ fn sync(
             feed.job_started(start(agent_of, job));
         }
         if let terminal::JobKind::Monitor(info) = &job.kind {
-            let now = (info.alerts, unix_ms(info.expires_at));
+            let now = (info.alerts, monitor_expires_at(info), info.paused);
             if monitors.insert(job.job_id, now) != Some(now) {
-                feed.job_changed(job.job_id, now.0, now.1);
+                feed.monitor_changed(job.job_id, now.0, now.1, now.2);
             }
         }
     }
@@ -132,10 +132,31 @@ fn sync(
     }
 }
 
+/// Whether a monitor with `lifetime` has an expiry timer.
+pub(crate) fn monitor_expires(lifetime: terminal::MonitorLifetime) -> bool {
+    matches!(
+        lifetime,
+        terminal::MonitorLifetime::Timed | terminal::MonitorLifetime::WhileWorkersRun
+    )
+}
+
+/// When `info` ends in Unix milliseconds, or `None` for session and standing
+/// monitors, which do not expire.
+fn monitor_expires_at(info: &terminal::MonitorInfo) -> Option<i64> {
+    monitor_expires(info.lifetime).then(|| unix_ms(info.expires_at))
+}
+
 /// `job` as the feed takes it.
 fn start(agent_of: &dyn Fn(Uuid) -> String, job: &JobInfo) -> JobStart {
     let started = chrono::Utc::now().timestamp_millis()
         - i64::try_from(job.started.elapsed().as_millis()).unwrap_or(0);
+    let (monitor, paused) = match &job.kind {
+        terminal::JobKind::Monitor(info) => (
+            Some((watching(&info.trigger, false), monitor_expires_at(info))),
+            info.paused,
+        ),
+        _ => (None, false),
+    };
     JobStart {
         id: job.job_id,
         agent: agent_of(job.owner),
@@ -147,12 +168,8 @@ fn start(agent_of: &dyn Fn(Uuid) -> String, job: &JobInfo) -> JobStart {
         },
         label: job.label.clone(),
         started_at: started,
-        monitor: match &job.kind {
-            terminal::JobKind::Monitor(info) => {
-                Some((watching(&info.trigger, false), unix_ms(info.expires_at)))
-            }
-            _ => None,
-        },
+        monitor,
+        paused,
     }
 }
 
@@ -480,5 +497,188 @@ mod tests {
         follower.abort();
         let ended = ended.unwrap_or_else(|_| panic!("the line still reads {:?}", line()));
         assert!(ended.starts_with("finished in the background"), "{ended}");
+    }
+
+    struct ToggleWorkers {
+        running: std::sync::atomic::AtomicBool,
+        changes: tokio::sync::watch::Sender<u64>,
+    }
+
+    impl ToggleWorkers {
+        fn new(running: bool) -> Arc<Self> {
+            Arc::new(Self {
+                running: std::sync::atomic::AtomicBool::new(running),
+                changes: tokio::sync::watch::channel(0).0,
+            })
+        }
+
+        fn set(&self, running: bool) {
+            self.running
+                .store(running, std::sync::atomic::Ordering::Release);
+            self.changes.send_modify(|n| *n += 1);
+        }
+    }
+
+    impl terminal::WorkerLiveness for ToggleWorkers {
+        fn has_running_workers(&self, _owner: Uuid) -> bool {
+            self.running.load(std::sync::atomic::Ordering::Acquire)
+        }
+
+        fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.changes.subscribe()
+        }
+    }
+
+    /// `follow` keeps `JobSummary::expires_at` empty for session and standing
+    /// monitors, mirrors standing `paused` transitions onto the feed and its
+    /// call line, and ends a paused standing monitor cleanly when stopped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn follow_syncs_session_and_standing_monitors() {
+        let temp = tempfile::tempdir().unwrap();
+        let jobs =
+            TerminalManager::new(terminal::TerminalConfig::new(temp.path().join("jobs"))).unwrap();
+        let mut limits = terminal::MonitorLimits::default();
+        limits.start_wait = Duration::ZERO;
+        jobs.set_monitor_limits(limits).unwrap();
+        let workers = ToggleWorkers::new(false);
+        let liveness: Weak<ToggleWorkers> = Arc::downgrade(&workers);
+        jobs.add_worker_liveness(liveness);
+
+        let feed = remote::Feed::new("main");
+        let follower = follow(feed.clone(), Arc::downgrade(&jobs), |_| {
+            remote::MAIN_AGENT.to_string()
+        });
+        let owner = Uuid::new_v4();
+        let call = Uuid::new_v4();
+        let mut params = HashMap::new();
+        params.insert("command".to_string(), serde_json::json!("sleep 60"));
+        params.insert("lasts".to_string(), serde_json::json!("standing"));
+        feed.event(
+            &event(AgentEvent::ToolCallFormatted {
+                tool_call_id: call,
+                tool_name: "monitor_start".into(),
+                parameters: params,
+            }),
+            None,
+        );
+
+        let session_id = jobs
+            .start_monitor(
+                &arko_agents::TaskContext::new(owner, "main", "", temp.path()),
+                "sleep 61",
+                terminal::MonitorOptions::lines(Some("WARN".into()))
+                    .with_lifetime(terminal::MonitorLifetime::Session),
+            )
+            .await
+            .unwrap()
+            .job_id;
+        let standing = jobs
+            .start_monitor(
+                &arko_agents::TaskContext::new(owner, "main", "", temp.path()),
+                "sleep 60",
+                terminal::MonitorOptions::lines(Some("ERROR".into()))
+                    .with_lifetime(terminal::MonitorLifetime::Standing),
+            )
+            .await
+            .unwrap();
+        let standing_id = standing.job_id;
+        feed.event(
+            &event(AgentEvent::ToolResult {
+                tool_call_id: call,
+                tool_name: "monitor_start".into(),
+                output: standing.summary,
+                receipt: None,
+            }),
+            None,
+        );
+
+        let job_summary = |id: Uuid| {
+            feed.subscribe()
+                .0
+                .jobs
+                .into_iter()
+                .find(|job| job.id == id.to_string())
+        };
+        let call_outcome = || {
+            feed.subscribe()
+                .0
+                .items
+                .into_iter()
+                .find(|item| item.kind == remote::Kind::Call)
+                .and_then(|item| item.outcome)
+        };
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let (Some(sess), Some(stand)) =
+                    (job_summary(session_id), job_summary(standing_id))
+                    && stand.paused
+                    && call_outcome().as_deref() == Some("monitoring · paused")
+                {
+                    assert_eq!(sess.expires_at, None);
+                    assert!(!sess.paused);
+                    assert_eq!(stand.expires_at, None);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("feed synced initial session and paused standing monitors");
+
+        // Starting a worker resumes the standing monitor.
+        workers.set(true);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(stand) = job_summary(standing_id)
+                    && !stand.paused
+                    && call_outcome().as_deref() == Some("monitoring")
+                {
+                    assert_eq!(stand.expires_at, None);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("feed showed standing monitor active");
+
+        // Ending the worker pauses it again.
+        workers.set(false);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(stand) = job_summary(standing_id)
+                    && stand.paused
+                    && call_outcome().as_deref() == Some("monitoring · paused")
+                {
+                    assert_eq!(stand.expires_at, None);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("feed showed standing monitor paused again");
+
+        // Stopping it while paused ends it cleanly in the feed.
+        jobs.stop_for_user(owner, standing_id).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(stand) = job_summary(standing_id)
+                    && stand.state == remote::JobState::Stopped
+                    && !stand.paused
+                    && call_outcome().as_deref() == Some("stopped")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("feed showed stopped standing monitor");
+
+        follower.abort();
+        jobs.shutdown().await;
     }
 }

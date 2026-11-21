@@ -3767,6 +3767,7 @@ mod tests {
             label: "index_create".into(),
             started_at: 0,
             monitor: None,
+            paused: false,
         });
         let events = read_until(&mut stream, &mut buffer, |name, _| name == "job").await;
         let (_, summary) = events.last().unwrap();

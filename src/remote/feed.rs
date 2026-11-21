@@ -813,8 +813,11 @@ pub struct JobStart {
     pub label: String,
     /// When it started, in Unix milliseconds.
     pub started_at: i64,
-    /// What a monitor watches, and when it ends (Unix milliseconds).
-    pub monitor: Option<(String, i64)>,
+    /// What a monitor watches, and when it ends (Unix milliseconds), if it
+    /// expires.
+    pub monitor: Option<(String, Option<i64>)>,
+    /// True when a standing monitor starts paused waiting for a worker.
+    pub paused: bool,
 }
 
 impl JobStart {
@@ -834,6 +837,7 @@ impl JobStart {
             label: label.into(),
             started_at: now_ms(),
             monitor: None,
+            paused: false,
         }
     }
 
@@ -850,9 +854,19 @@ impl JobStart {
     }
 
     /// The job is a monitor that watches `watching` until `expires_at`
-    /// (Unix milliseconds).
-    pub fn monitoring(mut self, watching: impl Into<String>, expires_at: i64) -> Self {
-        self.monitor = Some((watching.into(), expires_at));
+    /// (Unix milliseconds), or with no expiry when `None`.
+    pub fn monitoring(
+        mut self,
+        watching: impl Into<String>,
+        expires_at: impl Into<Option<i64>>,
+    ) -> Self {
+        self.monitor = Some((watching.into(), expires_at.into()));
+        self
+    }
+
+    /// Whether a standing monitor starts paused waiting for a worker.
+    pub fn paused(mut self, paused: bool) -> Self {
+        self.paused = paused;
         self
     }
 }
@@ -1662,7 +1676,13 @@ fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
         ))
     });
     match job.state {
-        JobState::Running => (CallStatus::Ok, format!("{}{alerts}", render::MONITORING)),
+        JobState::Running => {
+            let paused = if job.paused { " · paused" } else { "" };
+            (
+                CallStatus::Ok,
+                format!("{}{paused}{alerts}", render::MONITORING),
+            )
+        }
         JobState::Expired => (
             CallStatus::Ok,
             match ran {
@@ -3025,7 +3045,10 @@ impl Feed {
                 }
             }
         }
-        let (watching, expires_at) = start.monitor.unzip();
+        let (watching, expires_at) = match start.monitor {
+            Some((watching, expires_at)) => (Some(watching), expires_at),
+            None => (None, None),
+        };
         let summary = JobSummary {
             id,
             agent: start.agent,
@@ -3039,12 +3062,22 @@ impl Feed {
             alerts: watching.is_some().then_some(0),
             watching,
             expires_at,
+            paused: start.paused,
         };
         if let Some(call) = start.tool_call.and_then(|call| state.calls.get_mut(&call)) {
             call.job = Some(summary.clone());
         }
         state.jobs.push(summary.clone());
-        self.publish(&mut state, Update::Job(summary));
+        self.publish(&mut state, Update::Job(summary.clone()));
+        if summary.kind == JobKind::Monitor {
+            let mut lines = state.lines_naming(&summary.id);
+            if let Some(item) = summary.call {
+                lines.push((summary.agent.clone(), item));
+            }
+            for (agent, item) in lines {
+                self.follow_monitor(&mut state, &agent, item, &summary);
+            }
+        }
     }
 
     /// The background job `id` ended as `ended`, with `outcome` in a few
@@ -3075,6 +3108,7 @@ impl Feed {
         job.state = ended;
         job.ended_at = Some(now);
         job.outcome = outcome;
+        job.paused = false;
         let job = job.clone();
         self.publish(&mut state, Update::Job(job.clone()));
         // The call that started it, if its result hasn't come, keeps how
@@ -3127,21 +3161,36 @@ impl Feed {
     }
 
     /// The monitor `id` alerted `alerts` times so far and ends at
-    /// `expires_at` (Unix milliseconds). Its summary goes out, and the line
-    /// of the call that started it says so.
-    pub fn job_changed(&self, id: Uuid, alerts: u32, expires_at: i64) {
+    /// `expires_at` (Unix milliseconds), or has no expiry when `None`. Its
+    /// summary goes out, and the line of the call that started it says so.
+    pub fn job_changed(&self, id: Uuid, alerts: u32, expires_at: impl Into<Option<i64>>) {
+        self.update_monitor(id, alerts, expires_at.into(), None);
+    }
+
+    /// The monitor `id` alerted `alerts` times so far, ends at `expires_at`
+    /// (Unix milliseconds, or `None` for session and standing monitors), and
+    /// is paused waiting for a worker when `paused` is true.
+    pub fn monitor_changed(&self, id: Uuid, alerts: u32, expires_at: Option<i64>, paused: bool) {
+        self.update_monitor(id, alerts, expires_at, Some(paused));
+    }
+
+    fn update_monitor(&self, id: Uuid, alerts: u32, expires_at: Option<i64>, paused: Option<bool>) {
         let mut state = self.lock();
         let id = id.to_string();
         let Some(job) = state.jobs.iter_mut().find(|job| job.id == id) else {
             return;
         };
+        let next_paused = paused.unwrap_or(job.paused);
         if !job.state.is_running()
-            || (job.alerts == Some(alerts) && job.expires_at == Some(expires_at))
+            || (job.alerts == Some(alerts)
+                && job.expires_at == expires_at
+                && job.paused == next_paused)
         {
             return;
         }
         job.alerts = Some(alerts);
-        job.expires_at = Some(expires_at);
+        job.expires_at = expires_at;
+        job.paused = next_paused;
         let job = job.clone();
         self.publish(&mut state, Update::Job(job.clone()));
         let mut lines = state.lines_naming(&id);
@@ -5095,6 +5144,7 @@ mod tests {
             label: "mcp__search__lookup".into(),
             started_at: now_ms() - 240_000,
             monitor: None,
+            paused: false,
         });
         // Twice, so a job the feed has is left alone.
         feed.job_started(JobStart {
@@ -5105,6 +5155,7 @@ mod tests {
             label: "again".into(),
             started_at: now_ms(),
             monitor: None,
+            paused: false,
         });
         let jobs = feed.subscribe().0.jobs;
         assert_eq!(jobs.len(), 1);
@@ -5166,6 +5217,7 @@ mod tests {
                 label: "mcp__search__lookup".into(),
                 started_at: now_ms(),
                 monitor: None,
+                paused: false,
             });
             feed.event(
                 &event(
@@ -5227,6 +5279,7 @@ mod tests {
             label: "mcp__search__lookup".into(),
             started_at: now_ms() - 240_000,
             monitor: None,
+            paused: false,
         });
         feed.job_ended(job, JobState::Finished, None);
         result(&feed, call, job);
@@ -5702,6 +5755,7 @@ mod tests {
             label: "npm run dev".into(),
             started_at: now_ms(),
             monitor: None,
+            paused: false,
         });
         feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
         let after = call_item(&feed, "npm run dev");
@@ -5720,6 +5774,7 @@ mod tests {
             watching: None,
             alerts: None,
             expires_at: None,
+            paused: false,
         };
         let merged = merged(vec![
             Update::Job(summary(JobState::Running)),
@@ -8819,6 +8874,7 @@ mod tests {
             watching: None,
             alerts: Some(alerts),
             expires_at: None,
+            paused: false,
         };
         assert_eq!(monitor_outcome(&monitor(0)).1, "command exited");
         assert_eq!(monitor_outcome(&monitor(1)).1, "command exited · 1 alert");
@@ -8840,6 +8896,167 @@ mod tests {
                 "(1 event not shown)",
                 "(2 events not shown)"
             ]
+        );
+    }
+
+    /// Session and standing monitors carry no expiry in `JobSummary`, track
+    /// `paused` cleanly over the wire, and keep the call's line in step
+    /// regardless of whether the tool result or `job_started` arrives first.
+    #[test]
+    fn standing_and_session_monitors_omit_expiry_and_track_paused() {
+        let start_call = |feed: &Feed, call: Uuid, command: &str, lasts: &str| {
+            let mut parameters = HashMap::new();
+            parameters.insert("command".to_string(), serde_json::json!(command));
+            parameters.insert("lasts".to_string(), serde_json::json!(lasts));
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: call,
+                        tool_name: "monitor_start".into(),
+                        parameters,
+                    },
+                ),
+                None,
+            );
+        };
+        let finish_call = |feed: &Feed, call: Uuid, output: String| {
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: call,
+                        tool_name: "monitor_start".into(),
+                        output,
+                        receipt: None,
+                    },
+                ),
+                None,
+            );
+        };
+
+        // ToolResult arrives before job_started for a standing monitor that starts paused.
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        start_call(&feed, call, "df -h /", "standing");
+        finish_call(
+            &feed,
+            call,
+            format!(
+                "Monitor {job} started. It runs `df -h /` every 60 s and alerts you when its result changes, whenever your workers run. It is paused until a worker starts."
+            ),
+        );
+        feed.job_started(
+            JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "df -h /")
+                .made_by(call)
+                .monitoring("a check every 60 s", None)
+                .paused(true),
+        );
+        let summary = feed.subscribe().0.jobs[0].clone();
+        assert_eq!(summary.expires_at, None);
+        assert!(summary.paused);
+        let wire = serde_json::to_value(&summary).unwrap();
+        assert!(wire.get("expires_at").is_none(), "{wire}");
+        assert_eq!(wire["paused"], true);
+        assert_eq!(
+            call_item(&feed, "monitor $ df -h /").outcome.as_deref(),
+            Some("monitoring · paused")
+        );
+
+        // Active, then alerts, then paused again, then stopped.
+        feed.monitor_changed(job, 0, None, false);
+        let active = feed.subscribe().0.jobs[0].clone();
+        assert!(!active.paused);
+        assert_eq!(active.expires_at, None);
+        let wire_active = serde_json::to_value(&active).unwrap();
+        assert!(wire_active.get("paused").is_none(), "{wire_active}");
+        let roundtrip: JobSummary = serde_json::from_value(wire_active).unwrap();
+        assert!(!roundtrip.paused);
+        assert_eq!(
+            call_item(&feed, "monitor $ df -h /").outcome.as_deref(),
+            Some("monitoring")
+        );
+
+        feed.monitor_changed(job, 2, None, false);
+        assert_eq!(
+            call_item(&feed, "monitor $ df -h /").outcome.as_deref(),
+            Some("monitoring · 2 alerts")
+        );
+
+        feed.monitor_changed(job, 2, None, true);
+        assert_eq!(
+            call_item(&feed, "monitor $ df -h /").outcome.as_deref(),
+            Some("monitoring · paused · 2 alerts")
+        );
+
+        // job_changed without paused preserves the existing paused state.
+        feed.job_changed(job, 3, None);
+        assert!(feed.subscribe().0.jobs[0].paused);
+        assert_eq!(
+            call_item(&feed, "monitor $ df -h /").outcome.as_deref(),
+            Some("monitoring · paused · 3 alerts")
+        );
+
+        feed.job_ended(job, JobState::Stopped, None);
+        let ended = feed.subscribe().0.jobs[0].clone();
+        assert!(!ended.paused);
+        assert_eq!(ended.state, JobState::Stopped);
+        assert_eq!(
+            call_item(&feed, "monitor $ df -h /").outcome.as_deref(),
+            Some("stopped · 3 alerts")
+        );
+
+        // job_started arrives before ToolResult for a paused standing monitor,
+        // and a session monitor starts active with no expiry.
+        let feed = Feed::new("main");
+        let (call_s, job_s) = (Uuid::new_v4(), Uuid::new_v4());
+        start_call(&feed, call_s, "tail -f app.log", "standing");
+        feed.job_started(
+            JobStart::new(job_s, MAIN_AGENT, JobKind::Monitor, "tail -f app.log")
+                .made_by(call_s)
+                .monitoring("lines that match ERROR", None)
+                .paused(true),
+        );
+        finish_call(
+            &feed,
+            call_s,
+            format!(
+                "Monitor {job_s} started. It runs `tail -f app.log` and alerts you of lines that match `ERROR`, whenever your workers run. It is paused until a worker starts."
+            ),
+        );
+        assert_eq!(
+            call_item(&feed, "monitor $ tail -f app.log")
+                .outcome
+                .as_deref(),
+            Some("monitoring · paused")
+        );
+
+        let (call_sess, job_sess) = (Uuid::new_v4(), Uuid::new_v4());
+        start_call(&feed, call_sess, "free -m", "session");
+        feed.job_started(
+            JobStart::new(job_sess, MAIN_AGENT, JobKind::Monitor, "free -m")
+                .made_by(call_sess)
+                .monitoring("a check every 60 s", None),
+        );
+        finish_call(
+            &feed,
+            call_sess,
+            format!(
+                "Monitor {job_sess} started. It runs `free -m` every 60 s and alerts you when its result changes, for this session."
+            ),
+        );
+        let sess = feed
+            .subscribe()
+            .0
+            .jobs
+            .into_iter()
+            .find(|j| j.id == job_sess.to_string())
+            .unwrap();
+        assert_eq!(sess.expires_at, None);
+        assert!(!sess.paused);
+        assert_eq!(
+            call_item(&feed, "monitor $ free -m").outcome.as_deref(),
+            Some("monitoring")
         );
     }
 }

@@ -675,11 +675,18 @@ fn monitor_settings(parameters: &Parameters) -> String {
     if flag(parameters, "once") {
         parts.push("once".to_string());
     }
-    if text(parameters, "lasts").trim() == "while_workers_run" {
-        parts.push("while workers run".to_string());
-    } else {
-        let minutes = number("expires_minutes").unwrap_or(30);
-        parts.push(format!("for {minutes} min"));
+    let lasts = text(parameters, "lasts")
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_");
+    match lasts.as_str() {
+        "while_workers_run" => parts.push("while workers run".to_string()),
+        "session" => parts.push("for this session".to_string()),
+        "standing" => parts.push("standing".to_string()),
+        _ => {
+            let minutes = number("expires_minutes").unwrap_or(30);
+            parts.push(format!("for {minutes} min"));
+        }
     }
     parts.join(", ")
 }
@@ -3795,5 +3802,46 @@ mod tests {
         let words = command_words_kept(&command, "");
         assert_eq!(words.words, command);
         assert!(words.kept);
+    }
+
+    /// A `monitor_start` call's detail names its lifetime for timed,
+    /// while-workers-run, session and standing monitors without inventing a
+    /// countdown for the non-expiring ones.
+    #[test]
+    fn monitor_settings_describes_all_lifetimes() {
+        assert_eq!(
+            monitor_settings(&params(&[
+                ("every_seconds", Value::from(15)),
+                ("alert_when", Value::from("success")),
+            ])),
+            "every 15 s, when it starts succeeding, for 30 min"
+        );
+        assert_eq!(
+            monitor_settings(&params(&[
+                ("pattern", Value::from("ERROR")),
+                ("lasts", Value::from("while_workers_run")),
+            ])),
+            "lines that match ERROR, while workers run"
+        );
+        assert_eq!(
+            monitor_settings(&params(&[
+                ("every_seconds", Value::from(60)),
+                ("lasts", Value::from("session")),
+            ])),
+            "every 60 s, when its result changes, for this session"
+        );
+        assert_eq!(
+            monitor_settings(&params(&[
+                ("every_seconds", Value::from(60)),
+                ("alert_when", Value::from("failure")),
+                ("once", Value::from(true)),
+                ("lasts", Value::from("standing")),
+            ])),
+            "every 60 s, when it starts failing, once, standing"
+        );
+        assert_eq!(
+            monitor_settings(&params(&[("lasts", Value::from("while-workers-run"))])),
+            "every line, while workers run"
+        );
     }
 }

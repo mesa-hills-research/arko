@@ -559,9 +559,13 @@ pub struct JobSummary {
     /// How many of its agent's notes a monitor's alerts went in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alerts: Option<u32>,
-    /// When a monitor ends, as last armed (Unix milliseconds).
+    /// When a monitor ends, as last armed (Unix milliseconds), or none for
+    /// session and standing monitors.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// True while a standing monitor is paused waiting for a worker to start.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
 }
 
 // ----- what the page reads -----

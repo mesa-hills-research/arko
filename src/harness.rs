@@ -122,17 +122,35 @@ impl Managers {
     }
 }
 
-/// What `/jobs` says of a running monitor, meaning what it watches, its alerts and
-/// when it ends ("lines that match error · 3 alerts · ends in 22 min").
+/// What `/jobs` says of a running monitor, meaning what it watches, its alerts
+/// and its lifetime or state ("lines that match error · 3 alerts · ends in 22
+/// min", "a check every 60 s · for this session", "a check every 60 s ·
+/// standing · paused").
 fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
+    use arko_agents::terminal::MonitorLifetime;
     let mut parts = vec![crate::jobs::watching(&info.trigger, false)];
     if info.alerts > 0 {
         parts.push(plural(info.alerts, "alert", "alerts"));
     }
-    parts.push(match minutes_left(info.expires_at) {
+    let ends_in = |expires_at| match minutes_left(expires_at) {
         0 => "ends in less than a minute".to_string(),
         minutes => format!("ends in {minutes} min"),
-    });
+    };
+    match info.lifetime {
+        MonitorLifetime::Timed => parts.push(ends_in(info.expires_at)),
+        MonitorLifetime::WhileWorkersRun => {
+            if info.expires_at > std::time::SystemTime::now() {
+                parts.push(ends_in(info.expires_at));
+            }
+            parts.push("while workers run".to_string());
+        }
+        MonitorLifetime::Session => parts.push("for this session".to_string()),
+        MonitorLifetime::Standing => {
+            parts.push("standing".to_string());
+            parts.push(if info.paused { "paused" } else { "active" }.to_string());
+        }
+        _ => {}
+    }
     parts.join(" · ")
 }
 
@@ -4714,7 +4732,7 @@ impl Harness {
     }
 
     /// How many minutes monitor `job` has left (0 for less than one), while
-    /// it runs.
+    /// it runs and has an expiry timer.
     fn monitor_minutes_left(&self, job: uuid::Uuid) -> Option<u64> {
         let info = self
             .background
@@ -4727,7 +4745,7 @@ impl Harness {
                 }
                 _ => None,
             })?;
-        Some(minutes_left(info.expires_at))
+        crate::jobs::monitor_expires(info.lifetime).then(|| minutes_left(info.expires_at))
     }
 
     /// The main agent's run, once its conversation started.
@@ -5704,11 +5722,18 @@ fn stopped_jobs_words(jobs: &[arko_agents::terminal::JobInfo]) -> String {
                 arko_agents::terminal::JobKind::Call { tool_name } => {
                     format!("- your {tool_name} call (job {id}…)")
                 }
-                arko_agents::terminal::JobKind::Monitor(info) => format!(
-                    "- the monitor of `{}` ({}, job {id}…)",
-                    jobs_label(&job.label),
-                    crate::jobs::watching(&info.trigger, true)
-                ),
+                arko_agents::terminal::JobKind::Monitor(info) => {
+                    let kind = match info.lifetime {
+                        arko_agents::terminal::MonitorLifetime::Standing => "standing monitor",
+                        arko_agents::terminal::MonitorLifetime::Session => "session monitor",
+                        _ => "monitor",
+                    };
+                    format!(
+                        "- the {kind} of `{}` ({}, job {id}…)",
+                        jobs_label(&job.label),
+                        crate::jobs::watching(&info.trigger, true)
+                    )
+                }
                 _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
                 _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
             }
