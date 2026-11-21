@@ -48,6 +48,7 @@ mod claude_code;
 #[cfg(feature = "tui")]
 mod cli;
 pub mod code_mode;
+mod command_memory;
 pub mod commands;
 mod context;
 mod conversations;

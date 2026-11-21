@@ -79,7 +79,7 @@ pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 pub const THEME: &str = "ARKO_THEME";
 /// The settings a `.env` file can hold. It may set others, which are left
 /// alone.
-const DOTENV_KEYS: [&str; 18] = [
+const DOTENV_KEYS: [&str; 19] = [
     ANTHROPIC_KEY,
     OPENAI_KEY,
     GEMINI_KEY,
@@ -98,6 +98,7 @@ const DOTENV_KEYS: [&str; 18] = [
     THEME,
     crate::remote::HOST_VARIABLE,
     crate::index::LIMITS_SETTING,
+    crate::command_memory::SETTING,
 ];
 
 /// What was entered on the setup screen, in the keys menu or in an app's

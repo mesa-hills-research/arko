@@ -72,7 +72,8 @@ impl Managers {
     /// the shell's commands kept in the foreground. Set
     /// [`background`](Self::background) before making the tools.
     pub(crate) fn open(session: &Session, shell: &Shell) -> Result<Self, String> {
-        let mut config = TerminalConfig::new(session.jobs_dir());
+        let mut config = TerminalConfig::new(session.jobs_dir())
+            .with_memory_max_bytes(crate::command_memory::limit()?);
         config.shell = shell.program.clone();
         config.shell_args = shell.job_args.clone();
         let jobs = TerminalManager::new(config).map_err(|error| {
@@ -6751,6 +6752,7 @@ pub(crate) mod tests {
             questions: questions.into(),
             asked: Vec::new(),
             wait: true,
+            context_arrived: arko_agents::ContextSignal::never(),
         }
     }
 
