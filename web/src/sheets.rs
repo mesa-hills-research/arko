@@ -586,19 +586,6 @@ fn SettingsBody() -> impl IntoView {
         </section>
 
         <section class="group">
-            <h3>"Extra rules"</h3>
-            <Options label="Extra rules" key="rules" options=option_list(&words::RULES)
-                chosen=Signal::derive(move || s().extra_rules.unwrap_or_else(|| "off".into()))
-                disabled=Signal::derive(started)
-                choose=move |key: String| {
-                    let want = key.clone();
-                    settings.command(format!("/extra-rules {key}"), "rules", Some(Box::new(move |s| s.extra_rules.as_deref() == Some(want.as_str()))), Some(("rules", key)));
-                } />
-            <p class="setting-about">{move || if started() { "The session keeps this." } else { "It changes before the conversation starts." }}</p>
-            <Note key="rules" />
-        </section>
-
-        <section class="group">
             <h3>"Project instructions"</h3>
             <Options label="Project instructions" key="project" options=option_list(&words::PROJECT)
                 chosen=Signal::derive(move || s().project_instructions.unwrap_or_else(|| "one".into()))

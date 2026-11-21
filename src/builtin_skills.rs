@@ -33,7 +33,7 @@ pub(crate) const BUILTIN: [Builtin; 4] = [
     Builtin {
         name: "prose",
         text: include_str!("builtin_skills/prose/SKILL.md"),
-        pre_loaded: true,
+        pre_loaded: false,
     },
     Builtin {
         name: "ponytail",
@@ -385,9 +385,9 @@ mod tests {
         }
     }
 
-    /// `prose` is pre-loaded and the others load on demand. A skill with
-    /// `pre_loaded` set has its whole text in the instructions, as the skill
-    /// system does for `auto_load: true`.
+    /// All built-in skills load on demand. A skill with `pre_loaded` set has
+    /// its whole text in the instructions, as the skill system does for
+    /// `auto_load: true`.
     #[test]
     fn a_pre_loaded_skill_is_in_the_instructions_and_the_others_load_on_demand() {
         use arko_agents::{EmbeddedSkill, SkillManager, SkillsConfig};
@@ -396,7 +396,7 @@ mod tests {
             .filter(|skill| skill.pre_loaded)
             .map(|skill| skill.name)
             .collect();
-        assert_eq!(pre_loaded, ["prose"]);
+        assert!(pre_loaded.is_empty(), "{pre_loaded:?}");
         let text = "---\nname: x\ndescription: An x.\n---\n\nDo x.\n";
         let skill = |name: &'static str, pre_loaded| Builtin {
             name,
@@ -426,17 +426,15 @@ mod tests {
         assert_eq!(context.on_demand_skills[0].description, "An x.");
     }
 
-    /// `worker-choice` loads on demand, and tells the agent to ask the user
-    /// before it starts a worker billed per token, even where the session's
-    /// worker billing would start one.
+    /// `worker-choice` loads on demand and respects the session's worker
+    /// billing instead of overriding it.
     #[test]
-    fn worker_choice_asks_the_user_before_a_worker_billed_per_token() {
+    fn worker_choice_follows_the_sessions_worker_billing() {
         let skill = find("worker-choice").unwrap();
         assert!(!skill.pre_loaded);
         let text = skill.text.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(text.contains(
-            "Before starting a worker billed per token (an API key, OpenRouter, Gemini), ask the user and wait for a yes for that worker. Ask even when the session's worker billing would start it without asking."
-        ));
+        assert!(text.contains("following the session's worker billing"));
+        assert!(!text.contains("Ask even when the session's worker billing"));
     }
 
     #[test]

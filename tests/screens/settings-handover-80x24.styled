@@ -15,83 +15,81 @@ style 1 5 75 fg=#dedede bg=#101010
 style 1 75 76 fg=#303030 bg=#101010
 style 1 76 78 fg=#303030 bg=#131313
 style 1 78 80 fg=#dedede bg=#131313
-text 2 "  │ │                                                                      │ │"
+text 2 "  │ │   API prices         on   off                                        │ │"
 style 2 0 2 fg=#dedede bg=#131313
 style 2 2 4 fg=#303030 bg=#131313
 style 2 4 5 fg=#303030 bg=#101010
-style 2 5 75 fg=#dedede bg=#101010
+style 2 5 26 fg=#dedede bg=#101010
+style 2 26 30 fg=#9d9d9d bg=#101010
+style 2 30 31 fg=#dedede bg=#101010
+style 2 31 36 fg=#f2f9ff bg=#006ee5
+style 2 36 75 fg=#dedede bg=#101010
 style 2 75 76 fg=#303030 bg=#101010
 style 2 76 78 fg=#303030 bg=#131313
 style 2 78 80 fg=#dedede bg=#131313
-text 3 "  │ │ Session                                                              │ │"
+text 3 "  │ │                                                                      │ │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 4 fg=#303030 bg=#131313
 style 3 4 5 fg=#303030 bg=#101010
-style 3 5 6 fg=#dedede bg=#101010
-style 3 6 13 fg=#9d9d9d bg=#101010 bold
-style 3 13 75 fg=#dedede bg=#101010
+style 3 5 75 fg=#dedede bg=#101010
 style 3 75 76 fg=#303030 bg=#101010
 style 3 76 78 fg=#303030 bg=#131313
 style 3 78 80 fg=#dedede bg=#131313
-text 4 "  │ │   Outside            on   off                                        │ │"
+text 4 "  │ │ Session                                                              │ │"
 style 4 0 2 fg=#dedede bg=#131313
 style 4 2 4 fg=#303030 bg=#131313
 style 4 4 5 fg=#303030 bg=#101010
-style 4 5 26 fg=#dedede bg=#101010
-style 4 26 30 fg=#9d9d9d bg=#101010
-style 4 30 31 fg=#dedede bg=#101010
-style 4 31 36 fg=#f2f9ff bg=#006ee5
-style 4 36 75 fg=#dedede bg=#101010
+style 4 5 6 fg=#dedede bg=#101010
+style 4 6 13 fg=#9d9d9d bg=#101010 bold
+style 4 13 75 fg=#dedede bg=#101010
 style 4 75 76 fg=#303030 bg=#101010
 style 4 76 78 fg=#303030 bg=#131313
 style 4 78 80 fg=#dedede bg=#131313
-text 5 "  │ │   Background        ←  off  →                                        │ │"
+text 5 "  │ │   Outside            on   off                                        │ │"
 style 5 0 2 fg=#dedede bg=#131313
 style 5 2 4 fg=#303030 bg=#131313
 style 5 4 5 fg=#303030 bg=#101010
 style 5 5 26 fg=#dedede bg=#101010
-style 5 26 28 fg=#9d9d9d bg=#101010
-style 5 28 33 fg=#f2f9ff bg=#006ee5
-style 5 33 35 fg=#9d9d9d bg=#101010
-style 5 35 75 fg=#dedede bg=#101010
+style 5 26 30 fg=#9d9d9d bg=#101010
+style 5 30 31 fg=#dedede bg=#101010
+style 5 31 36 fg=#f2f9ff bg=#006ee5
+style 5 36 75 fg=#dedede bg=#101010
 style 5 75 76 fg=#303030 bg=#101010
 style 5 76 78 fg=#303030 bg=#131313
 style 5 78 80 fg=#dedede bg=#131313
-text 6 "  │ │   Monitor wakes     ←  auto  →                                       │ │"
+text 6 "  │ │   Background        ←  off  →                                        │ │"
 style 6 0 2 fg=#dedede bg=#131313
 style 6 2 4 fg=#303030 bg=#131313
 style 6 4 5 fg=#303030 bg=#101010
 style 6 5 26 fg=#dedede bg=#101010
 style 6 26 28 fg=#9d9d9d bg=#101010
-style 6 28 34 fg=#f2f9ff bg=#006ee5
-style 6 34 36 fg=#9d9d9d bg=#101010
-style 6 36 75 fg=#dedede bg=#101010
+style 6 28 33 fg=#f2f9ff bg=#006ee5
+style 6 33 35 fg=#9d9d9d bg=#101010
+style 6 35 75 fg=#dedede bg=#101010
 style 6 75 76 fg=#303030 bg=#101010
 style 6 76 78 fg=#303030 bg=#131313
 style 6 78 80 fg=#dedede bg=#131313
-text 7 "  │ │   Text replies       on   off                                        │ │"
+text 7 "  │ │   Monitor wakes     ←  auto  →                                       │ │"
 style 7 0 2 fg=#dedede bg=#131313
 style 7 2 4 fg=#303030 bg=#131313
 style 7 4 5 fg=#303030 bg=#101010
 style 7 5 26 fg=#dedede bg=#101010
-style 7 26 30 fg=#9d9d9d bg=#101010
-style 7 30 31 fg=#dedede bg=#101010
-style 7 31 36 fg=#f2f9ff bg=#006ee5
+style 7 26 28 fg=#9d9d9d bg=#101010
+style 7 28 34 fg=#f2f9ff bg=#006ee5
+style 7 34 36 fg=#9d9d9d bg=#101010
 style 7 36 75 fg=#dedede bg=#101010
 style 7 75 76 fg=#303030 bg=#101010
 style 7 76 78 fg=#303030 bg=#131313
 style 7 78 80 fg=#dedede bg=#131313
-text 8 "  └─│   Extra rules        small   all   off                               │─┘"
+text 8 "  └─│   Text replies       on   off                                        │─┘"
 style 8 0 2 fg=#dedede bg=#131313
 style 8 2 4 fg=#303030 bg=#131313
 style 8 4 5 fg=#303030 bg=#101010
 style 8 5 26 fg=#dedede bg=#101010
-style 8 26 33 fg=#9d9d9d bg=#101010
-style 8 33 34 fg=#dedede bg=#101010
-style 8 34 39 fg=#9d9d9d bg=#101010
-style 8 39 40 fg=#dedede bg=#101010
-style 8 40 45 fg=#f2f9ff bg=#006ee5
-style 8 45 75 fg=#dedede bg=#101010
+style 8 26 30 fg=#9d9d9d bg=#101010
+style 8 30 31 fg=#dedede bg=#101010
+style 8 31 36 fg=#f2f9ff bg=#006ee5
+style 8 36 75 fg=#dedede bg=#101010
 style 8 75 76 fg=#303030 bg=#101010
 style 8 76 78 fg=#303030 bg=#131313
 style 8 78 80 fg=#dedede bg=#131313

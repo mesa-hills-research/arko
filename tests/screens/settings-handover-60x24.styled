@@ -12,64 +12,58 @@ style 1 1 2 fg=#303030 bg=#101010
 style 1 2 58 fg=#dedede bg=#101010
 style 1 58 59 fg=#303030 bg=#101010
 style 1 59 60 fg=#dedede bg=#131313
-text 2 " │ Session                                                │"
+text 2 " │                                                        │"
 style 2 0 1 fg=#dedede bg=#131313
 style 2 1 2 fg=#303030 bg=#101010
-style 2 2 3 fg=#dedede bg=#101010
-style 2 3 10 fg=#9d9d9d bg=#101010 bold
-style 2 10 58 fg=#dedede bg=#101010
+style 2 2 58 fg=#dedede bg=#101010
 style 2 58 59 fg=#303030 bg=#101010
 style 2 59 60 fg=#dedede bg=#131313
-text 3 " │   Outside            on   off                          │"
+text 3 " │ Session                                                │"
 style 3 0 1 fg=#dedede bg=#131313
 style 3 1 2 fg=#303030 bg=#101010
-style 3 2 23 fg=#dedede bg=#101010
-style 3 23 27 fg=#9d9d9d bg=#101010
-style 3 27 28 fg=#dedede bg=#101010
-style 3 28 33 fg=#f2f9ff bg=#006ee5
-style 3 33 58 fg=#dedede bg=#101010
+style 3 2 3 fg=#dedede bg=#101010
+style 3 3 10 fg=#9d9d9d bg=#101010 bold
+style 3 10 58 fg=#dedede bg=#101010
 style 3 58 59 fg=#303030 bg=#101010
 style 3 59 60 fg=#dedede bg=#131313
-text 4 " │   Background        ←  off  →                          │"
+text 4 " │   Outside            on   off                          │"
 style 4 0 1 fg=#dedede bg=#131313
 style 4 1 2 fg=#303030 bg=#101010
 style 4 2 23 fg=#dedede bg=#101010
-style 4 23 25 fg=#9d9d9d bg=#101010
-style 4 25 30 fg=#f2f9ff bg=#006ee5
-style 4 30 32 fg=#9d9d9d bg=#101010
-style 4 32 58 fg=#dedede bg=#101010
+style 4 23 27 fg=#9d9d9d bg=#101010
+style 4 27 28 fg=#dedede bg=#101010
+style 4 28 33 fg=#f2f9ff bg=#006ee5
+style 4 33 58 fg=#dedede bg=#101010
 style 4 58 59 fg=#303030 bg=#101010
 style 4 59 60 fg=#dedede bg=#131313
-text 5 " │   Monitor wakes     ←  auto  →                         │"
+text 5 " │   Background        ←  off  →                          │"
 style 5 0 1 fg=#dedede bg=#131313
 style 5 1 2 fg=#303030 bg=#101010
 style 5 2 23 fg=#dedede bg=#101010
 style 5 23 25 fg=#9d9d9d bg=#101010
-style 5 25 31 fg=#f2f9ff bg=#006ee5
-style 5 31 33 fg=#9d9d9d bg=#101010
-style 5 33 58 fg=#dedede bg=#101010
+style 5 25 30 fg=#f2f9ff bg=#006ee5
+style 5 30 32 fg=#9d9d9d bg=#101010
+style 5 32 58 fg=#dedede bg=#101010
 style 5 58 59 fg=#303030 bg=#101010
 style 5 59 60 fg=#dedede bg=#131313
-text 6 " │   Text replies       on   off                          │"
+text 6 " │   Monitor wakes     ←  auto  →                         │"
 style 6 0 1 fg=#dedede bg=#131313
 style 6 1 2 fg=#303030 bg=#101010
 style 6 2 23 fg=#dedede bg=#101010
-style 6 23 27 fg=#9d9d9d bg=#101010
-style 6 27 28 fg=#dedede bg=#101010
-style 6 28 33 fg=#f2f9ff bg=#006ee5
+style 6 23 25 fg=#9d9d9d bg=#101010
+style 6 25 31 fg=#f2f9ff bg=#006ee5
+style 6 31 33 fg=#9d9d9d bg=#101010
 style 6 33 58 fg=#dedede bg=#101010
 style 6 58 59 fg=#303030 bg=#101010
 style 6 59 60 fg=#dedede bg=#131313
-text 7 " │   Extra rules        small   all   off                 │"
+text 7 " │   Text replies       on   off                          │"
 style 7 0 1 fg=#dedede bg=#131313
 style 7 1 2 fg=#303030 bg=#101010
 style 7 2 23 fg=#dedede bg=#101010
-style 7 23 30 fg=#9d9d9d bg=#101010
-style 7 30 31 fg=#dedede bg=#101010
-style 7 31 36 fg=#9d9d9d bg=#101010
-style 7 36 37 fg=#dedede bg=#101010
-style 7 37 42 fg=#f2f9ff bg=#006ee5
-style 7 42 58 fg=#dedede bg=#101010
+style 7 23 27 fg=#9d9d9d bg=#101010
+style 7 27 28 fg=#dedede bg=#101010
+style 7 28 33 fg=#f2f9ff bg=#006ee5
+style 7 33 58 fg=#dedede bg=#101010
 style 7 58 59 fg=#303030 bg=#101010
 style 7 59 60 fg=#dedede bg=#131313
 text 8 " │   Keep warm         ←  off  →                          │"

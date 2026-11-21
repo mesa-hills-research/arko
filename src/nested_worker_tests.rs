@@ -1218,11 +1218,10 @@ async fn the_depth_and_the_models_setting_apply_to_the_next_start() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// A worker that starts many workers at once, each in a worktree of its own,
-/// stays within its eight. The starts pass the hook together, before any
-/// worktree exists, so each has to find its place taken.
+/// A worker can start more than eight isolated workers together without a
+/// per-worker cap.
 #[tokio::test]
-async fn a_worker_starting_many_isolated_workers_together_stays_within_its_limit() {
+async fn a_worker_can_start_many_isolated_workers_together() {
     let mut script = Script::new(true);
     script.r1_together = Some((12, true));
     let server = script.serve().await;
@@ -1253,22 +1252,14 @@ async fn a_worker_starting_many_isolated_workers_together_stays_within_its_limit
         .iter()
         .filter(|answer| answer.contains("in an isolated workspace"))
         .count();
-    let refused = answers
-        .iter()
-        .filter(|answer| {
-            answer.contains(
-                "You already have 8 workers running or queued, the most one worker can have.",
-            )
-        })
-        .count();
-    assert_eq!((started, refused), (8, 4), "{answers:?}");
+    assert_eq!(started, 12, "{answers:?}");
     let own = harness
         .workflow()
         .subagents()
         .into_iter()
         .filter(|run| run.handle != "r1")
         .count();
-    assert_eq!(own, 8);
+    assert_eq!(own, 12);
     let crew = harness.crew.clone().unwrap();
     crew.stop_all("done");
     crew.shutdown().await;

@@ -161,21 +161,6 @@ pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in th
 pub const KEEP_OUT_OF_GIT_NAME: &str = "Keep agents' project files out of git";
 pub const KEEP_OUT_OF_GIT_ABOUT: &str = "Skills, MCP servers and worker profiles that agents save in the project's .arko folder stay out of git. Off removes Arko's .gitignore from that folder.";
 
-/// Who gets the extra rules for small models, as `/extra-rules` takes it.
-pub const RULES: [(&str, &str, &str); 3] = [
-    (
-        "small",
-        "Small models",
-        "Agents on small models (Haiku, luna) get a few extra rules in their instructions.",
-    ),
-    (
-        "all",
-        "Every agent",
-        "Every agent gets the extra rules for small models.",
-    ),
-    ("off", "Off", "No agent gets them."),
-];
-
 /// Which of the project's instruction files the agents get, as
 /// `/project-instructions` takes it.
 pub const PROJECT: [(&str, &str, &str); 3] = [

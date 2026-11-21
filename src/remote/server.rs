@@ -3245,7 +3245,6 @@ mod tests {
                 handover_at: 200_000,
                 workers_handover_at: 150_000,
                 text_replies: true,
-                extra_rules: crate::agents::ExtraRules::All,
                 project_instructions: crate::project::Files::Both,
                 worker_project_instructions: true,
                 background_after: 600,
@@ -3393,10 +3392,9 @@ mod tests {
         assert_eq!(
             (
                 settings.cc_compact,
-                settings.extra_rules.as_deref(),
                 settings.project_instructions.as_deref()
             ),
-            (Some(false), Some("all"), Some("both"))
+            (Some(false), Some("both"))
         );
         assert_eq!(
             (
@@ -3963,8 +3961,8 @@ mod tests {
         let mut buffer = String::new();
         read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
 
-        lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
-        feed.notice(Level::Info, "Extra rules for small models are set to all.");
+        lock(&meter.0).settings.project_instructions = crate::project::Files::Both;
+        feed.notice(Level::Info, "Project instructions are set to both.");
         let answer = read_until(&mut stream, &mut buffer, |name, _| name == "item").await;
         // The status goes out with the answer, not with the check a while
         // later, however busy the machine is.
@@ -3972,7 +3970,7 @@ mod tests {
         let status = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
         assert!(answered.elapsed() < Duration::from_millis(500));
         assert_eq!((answer.len(), status.len()), (1, 1));
-        assert_eq!(status[0].1["settings"]["extra_rules"], "all");
+        assert_eq!(status[0].1["settings"]["project_instructions"], "both");
     }
 
     /// A setting can change, and the status check send the new value, just
@@ -3989,16 +3987,16 @@ mod tests {
         let mut buffer = String::new();
         read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
 
-        lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
+        lock(&meter.0).settings.project_instructions = crate::project::Files::Both;
         read_until(&mut stream, &mut buffer, |name, data| {
-            name == "status" && data["settings"]["extra_rules"] == "all"
+            name == "status" && data["settings"]["project_instructions"] == "both"
         })
         .await;
-        feed.notice(Level::Info, "Extra rules for small models are set to all.");
+        feed.notice(Level::Info, "Project instructions are set to both.");
         let events = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["item", "status"]);
-        assert_eq!(events[1].1["settings"]["extra_rules"], "all");
+        assert_eq!(events[1].1["settings"]["project_instructions"], "both");
     }
 
     /// The status carries the main agent's prompt cache once its lifetime

@@ -1085,9 +1085,17 @@ async fn a_worker_started_after_a_skills_change_has_the_new_skills() {
 #[tokio::test]
 async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
     let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("skills");
+    let always = folder.join("always-on");
+    std::fs::create_dir_all(&always).unwrap();
+    std::fs::write(
+        always.join("SKILL.md"),
+        "---\nname: always-on\ndescription: Always loaded.\nauto_load: true\n---\n\nAlways active.\n",
+    )
+    .unwrap();
     let (mut harness, mut inputs, _sender, _server, seen) =
         setup_reading(temp.path(), |who, body| {
-            // It asks for prose, a name that is no skill and ponytail, one at
+            // It asks for always-on, a name that is no skill and ponytail, one at
             // a time, then is done.
             let asked = body.matches("function_call_output").count();
             let call = |name: &str| {
@@ -1098,7 +1106,7 @@ async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
                 )
             };
             match asked {
-                0 => call("prose"),
+                0 => call("always-on"),
                 1 => call("proze"),
                 2 => call("ponytail"),
                 _ => complete(&format!("w{who}"), "Worker done."),
@@ -1108,7 +1116,7 @@ async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
     super::built_in_skills::configure(
         &mut harness,
         crate::builtin_skills::BuiltinSkills::default(),
-        Vec::new(),
+        vec![folder],
     );
     harness.open(false).unwrap();
     harness.start_new_workers();
@@ -1134,7 +1142,7 @@ async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
     assert_eq!(
         results[0],
         format!(
-            "Skill 'prose' not found. Available skills:\n- ponytail\n- ui-taste\n- worker-choice\n\n{note}"
+            "Skill 'always-on' not found. Available skills:\n- ponytail\n- prose\n- ui-taste\n- worker-choice\n\n{note}"
         )
     );
     assert!(results[1].starts_with("Skill 'proze' not found. Available skills:\n- ponytail"));

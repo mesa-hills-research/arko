@@ -9,7 +9,7 @@ use tokio::sync::{Notify, broadcast, watch};
 
 use arko_workflows::prelude::*;
 
-use crate::agents::{ExtraRules, WORKER};
+use crate::agents::WORKER;
 use crate::crew::Crew;
 use crate::lock;
 use crate::ui::Stats;
@@ -36,9 +36,6 @@ pub(crate) struct Gauges {
     /// The agents on `cc:` models compact instead of handing over, as the
     /// harness last published it.
     pub(crate) cc_compact: std::sync::atomic::AtomicBool,
-    /// Which agents get the extra rules for small models, as the harness
-    /// last published it.
-    pub(crate) extra_rules: Mutex<ExtraRules>,
     /// Who chooses the workers' models, and how many levels of workers the
     /// session allows, as the harness last published them.
     pub(crate) worker_models: Mutex<crate::agents::ModelChoice>,
@@ -300,7 +297,6 @@ impl remote::Meter for Gauges {
         let models = lock(&self.models).clone();
         let keep_warm = *lock(&self.keep_warm);
         let route = lock(&self.keep_warm_route).clone();
-        let extra_rules = *lock(&self.extra_rules);
         let worker_models = *lock(&self.worker_models);
         let monitor_wakes = *lock(&self.monitor_wakes);
         let conversations = lock(&self.conversations).clone();
@@ -416,7 +412,6 @@ impl remote::Meter for Gauges {
                 workers_handover_at,
                 text_replies: self.text_replies.load(std::sync::atomic::Ordering::Relaxed),
                 cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
-                extra_rules,
                 worker_models,
                 worker_billing,
                 api_budget,
@@ -632,7 +627,6 @@ mod tests {
             keys: keys::Keys::new(Arc::new(arko_ai::LLMClient::new()), None, None, None),
             text_replies: Default::default(),
             cc_compact: Default::default(),
-            extra_rules: Default::default(),
             worker_models: Default::default(),
             billing: Default::default(),
             monitor_wakes: Default::default(),

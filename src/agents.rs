@@ -94,66 +94,6 @@ impl std::fmt::Display for Effort {
     }
 }
 
-/// Which agents get the extra rules for small models in their
-/// instructions. Each agent goes by its own model, so a worker on a small
-/// model under a lead on a large one gets them, and the lead doesn't.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ExtraRules {
-    /// Agents on small models, such as Haiku and luna. New sessions start
-    /// with this.
-    Small,
-    /// Every agent, whatever its model.
-    All,
-    /// No agent. Sessions saved before the rules existed have them off, as
-    /// their saved agents were built.
-    #[default]
-    Off,
-}
-
-impl ExtraRules {
-    pub const ALL: [ExtraRules; 3] = [ExtraRules::Small, ExtraRules::All, ExtraRules::Off];
-
-    /// The name `/extra-rules` takes and shows.
-    pub fn name(self) -> &'static str {
-        match self {
-            ExtraRules::Small => "small",
-            ExtraRules::All => "all",
-            ExtraRules::Off => "off",
-        }
-    }
-
-    pub fn parse(text: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|rules| rules.name().eq_ignore_ascii_case(text.trim()))
-    }
-
-    /// Who gets the rules, as Arko tells the user.
-    pub fn describe(self) -> &'static str {
-        match self {
-            ExtraRules::Small => "only agents on small models (Haiku, luna) get them",
-            ExtraRules::All => "every agent gets them",
-            ExtraRules::Off => "no agent gets them",
-        }
-    }
-
-    /// Whether an agent on `model` gets them.
-    pub fn for_model(self, model: &ModelSettings) -> bool {
-        match self {
-            ExtraRules::Small => {
-                resolve_model(&model.model).is_ok_and(|model| providers::is_small(&model))
-            }
-            ExtraRules::All => true,
-            ExtraRules::Off => false,
-        }
-    }
-
-    pub fn is_off(&self) -> bool {
-        *self == ExtraRules::Off
-    }
-}
-
 /// Who picks the model of a worker (the `worker_models` setting). The hook
 /// that starts each worker enforces it, so it changes at any time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -351,9 +291,6 @@ pub struct AgentSettings<'a> {
     /// conversation at the handover size, else they hand over (see
     /// `Settings::cc_handover`).
     pub cc_compact: bool,
-    /// Which agents get the extra rules for small models, each by its own
-    /// model.
-    pub extra_rules: ExtraRules,
     /// A chat's agent (no tools), or an agent at work.
     pub mode: crate::session::Mode,
     /// A chat's instructions from the user, if any.
@@ -407,7 +344,6 @@ impl<'a> AgentSettings<'a> {
             indexes: &[],
             text_replies: settings.text_replies,
             cc_compact: !settings.cc_handover,
-            extra_rules: settings.extra_rules,
             mode: settings.mode,
             chat_instructions: settings.chat_instructions.as_deref(),
             monitors: true,
@@ -438,7 +374,6 @@ impl<'a> AgentSettings<'a> {
             indexes: &[],
             text_replies: false,
             cc_compact: true,
-            extra_rules: ExtraRules::Off,
             mode: crate::session::Mode::Agent,
             chat_instructions: None,
             monitors: true,
@@ -728,11 +663,6 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     if settings.max_workers > 0 {
         instructions.push_str(&worker_instructions(settings));
     }
-    if settings.extra_rules.for_model(settings.main)
-        && let Some(rules) = extra_rules(settings)
-    {
-        instructions.push_str(&rules);
-    }
     let mut tool_config = tool_config(tools, settings.tools);
     tool_config.text_reply_ends_task = settings.text_replies;
     // It may ask with wait false when no answer could change its work.
@@ -813,11 +743,6 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
          Use `message_user` only to reply to the user after they write to you directly. Send everything else to your lead with `message_agent` (to `lead`), which is how it hears from you before your report. Send it key progress, a question that needs its answer, a blocker or a result, and leave out routine steps such as \"reading the files now\". Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n",
     );
     instructions.push_str(&tool_instructions(settings, true));
-    if settings.extra_rules.for_model(settings.worker)
-        && let Some(rules) = extra_rules(settings)
-    {
-        instructions.push_str(&rules);
-    }
     let mut builder = AgentConfig::builder(
         WORKER.into(),
         "worker".into(),
@@ -890,7 +815,7 @@ fn main_instructions(settings: &AgentSettings) -> String {
          {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work, or in your reply if your turn is ending anyway.{waiting} Use `message_user` too for anything they must know before you finish. Never repeat in your reply, or beside a call, what a message already said. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. Text beside your calls reaches them too, but text meant for them can slip into your thinking, so an answer to them goes in `message_user` or your reply. {ending}\n\n\
-         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). A question still open needs no new `ask_user`, and its answer reaches you as a note. If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n\n\
+         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`. A user message may answer open questions (`(This message answers q3.)`) or list those still open (`(Still open: q5.)`). Don't re-ask a question that is still open. If Arko runs without a terminal, `ask_user` says so and you decide.\n\n\
          {kept_notes}\n"
     )
 }
@@ -898,20 +823,16 @@ fn main_instructions(settings: &AgentSettings) -> String {
 /// The Tools section and the sections of the tools the session has, for
 /// the main agent or (`worker`) a worker.
 fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
-    let uses = if settings.index_tools.is_empty() {
-        "searching (prefer `rg`), building, testing, git, and running programs"
-    } else {
-        "building, testing, git, running programs, and searching text with `rg` (to find code or docs to read, start with `index_search`: see Search indexes below)"
-    };
+    let uses = "searching (prefer `rg`), building, testing, git, and running programs";
     // A worker's monitors stop with its run, and its alerts reach it only
     // while it works.
     let monitors = match (settings.monitors, worker) {
         (false, _) => "",
         (true, false) => {
-            " Use `monitor_start` instead of polling, for anything you would otherwise check again and again: a server's or a build's output showing an error, a check that starts passing (`curl -sf localhost:3000/health`), free disk space or memory falling under a limit while big builds or workers run, a file appearing, a CI run ending. Start one as soon as the risk or the wait begins, without being asked. Its alerts reach you as notes while you work, and start a turn while you wait for the user."
+            " Use `monitor_start` instead of polling, as soon as a wait or watch begins, without being asked. Its alerts start a turn while you wait for the user."
         }
         (true, true) => {
-            " Use `monitor_start` instead of polling, for anything you would otherwise check again and again: a server's or a build's output showing an error, a check that starts passing (`curl -sf localhost:3000/health`), free disk space or memory falling under a limit while big builds run, a file appearing, a CI run ending. Start one as soon as the risk or the wait begins, without being asked. Its alerts reach you as notes while you work. Your monitors stop when your run ends."
+            " Use `monitor_start` instead of polling, as soon as a wait or watch begins, without being asked. Your monitors stop when your run ends."
         }
     };
     // Under `--tools code`, the tools code calls, in its order.
@@ -941,29 +862,14 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
          A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access. The file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
     );
     if !settings.index_tools.is_empty() {
-        text.push_str(
-            "\n# Search indexes\n\
-             When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else. Before you reach for `rg`, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you're looking for and search with mode `semantic`. It finds the code even when the words differ from yours (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and the results show where it lives and how it works. Use mode `hybrid` for where a name is defined, or a name together with words about it. Use mode `lexical` for every use of a name or an exact string, such as a function's callers or an error message. It lists each place that holds it as written, grouped by file. `rg` is for regexes, punctuation alone, text inside a longer name, and files no index covers. Read files once the searches have shown you where to look.\n\n",
-        );
-        text.push_str(&known_indexes(settings.indexes));
-        // A worker's worktree is a checkout elsewhere, so the index of the
-        // lead's working directory doesn't cover it, and workers on every
-        // model searched there without naming it.
-        if worker
-            && let Some(project) = settings
-                .indexes
-                .iter()
-                .take(INDEXES_NAMED)
-                .find(|known| known.place.is_some())
-        {
-            text.push_str(&format!(
-                "\n\nIf you work in a worktree of your own, no index covers it. To search the project, name its index (`index: {}`): the results show the lead's copies of the files, which are at the same paths in your worktree.",
-                project.name
-            ));
+        text.push_str("\n# Search indexes\n");
+        if settings.indexes.iter().any(|known| known.place.is_some()) {
+            text.push_str(
+                "Use `index_search` when searching indexed code or docs by meaning or for full definitions.\n\n",
+            );
         }
-        text.push_str(
-            "\n\nTo search another project, use its index instead of running `rg` there. When a non-trivial project you work in has no index, create one with `index_create`.\n",
-        );
+        text.push_str(&known_indexes(settings.indexes));
+        text.push('\n');
     }
     if worker && settings.mcp_for_workers {
         text.push_str(
@@ -1009,41 +915,53 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     text
 }
 
-/// The indexes the session started with, for the Search indexes section, meaning
-/// the working directory's first, at most [`INDEXES_NAMED`] of them. When
-/// none is the working directory, holds it or lies in it, that is said
-/// outright, because smaller models search anyway when only a label is missing.
+/// The indexes covering or inside the working directory, plus the count of any
+/// remaining indexes (`index_status` lists all of them). When none covers the
+/// working directory, tells the agent to use `rg` or create one first.
 fn known_indexes(indexes: &[index::Known]) -> String {
     if indexes.is_empty() {
-        return "There were no indexes when this session started.".to_string();
+        return "No index covers the working directory (there were no indexes when this session started). Search it with `rg`, or create one with `index_create`.".to_string();
     }
-    let mut text = String::from("The indexes when this session started:");
-    for known in indexes.iter().take(INDEXES_NAMED) {
-        text.push_str(&format!(
-            "\n- `{}`: {}, `{}`",
-            known.name,
-            known.kind,
-            known.root.display()
-        ));
-        if let Some(place) = known.place {
-            text.push_str(&format!(" ({place})"));
+    let local: Vec<&index::Known> = indexes
+        .iter()
+        .filter(|known| known.place.is_some())
+        .collect();
+    let other = indexes.len() - local.len();
+    let mut text = if local.is_empty() {
+        "No index covers the working directory, so `index_search` can't search it. Search it with `rg`, or create its index with `index_create` first.".to_string()
+    } else {
+        let mut out = String::from("Indexes for this working directory:");
+        for known in local.iter().take(INDEXES_NAMED) {
+            out.push_str(&format!(
+                "\n- `{}`: {}, `{}`",
+                known.name,
+                known.kind,
+                known.root.display()
+            ));
+            if let Some(place) = known.place {
+                out.push_str(&format!(" ({place})"));
+            }
         }
-    }
-    if indexes.len() > INDEXES_NAMED {
+        if local.len() > INDEXES_NAMED {
+            out.push_str(&format!(
+                "\n- and {} more (`index_status` lists them)",
+                local.len() - INDEXES_NAMED
+            ));
+        }
+        out
+    };
+    if other > 0 {
+        let noun = if other == 1 { "index" } else { "indexes" };
         text.push_str(&format!(
-            "\n- and {} more (`index_status` lists them)",
-            indexes.len() - INDEXES_NAMED
+            "\nPlus {other} other {noun} (`index_status` lists them)."
         ));
-    }
-    if indexes.iter().all(|known| known.place.is_none()) {
-        text.push_str("\nNone of them covers the working directory.");
     }
     text
 }
 
 /// What the main agent is told of choosing a worker's model (see
 /// `worker_options`).
-const CHOOSING: &str = "A worker runs on the session's worker model unless you choose a profile, or a model and effort. Pick the weakest model that does the job, and a model from another maker for a second opinion. `worker_options` lists the profiles and the models usable now with their prices. Set `cache` to `long` for a worker you will send more work to after it reports, and to `short` for a one-off.";
+const CHOOSING: &str = "A worker runs on the session's worker model unless you choose a profile, or a model and effort. Use a strong plan model for open-ended work and debugging, a smaller model for bounded or mechanical work, and a model from another maker for a second opinion. `worker_options` lists the profiles and the models usable now with their prices. Set `cache` to `long` for a worker you will send more work to after it reports, and to `short` for a one-off.";
 
 /// What the main agent is told of saving skills, in its Skills section.
 pub(crate) const SAVING_SKILLS: &str = "\n\nSave a skill with `add_skill` when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool, and change one an agent saved with `edit_skill`. Give models an exact id for a workaround tied to one release, and a short name or pattern for advice that should carry over to the family's next release.";
@@ -1194,30 +1112,6 @@ fn worker_instructions(settings: &AgentSettings) -> String {
         ModelChoice::Session => text.push_str(&cache_paragraph(settings)),
     }
     text
-}
-
-/// The extra rules for agents on small models (see [`ExtraRules`]), when
-/// any applies, meaning short commands for what the large models do without being
-/// told. Each comes from a mistake the small models made in Arko's evals
-/// (`evals/`) that the large ones didn't.
-pub(crate) fn extra_rules(settings: &AgentSettings) -> Option<String> {
-    let mut rules: Vec<&str> = Vec::new();
-    if !settings.index_tools.is_empty() {
-        // luna searched anyway, and the search failed.
-        if settings.indexes.iter().all(|known| known.place.is_none()) {
-            rules.push(
-                "No index covers the working directory, so `index_search` can't search it. Search it with `rg`, or create its index with `index_create` first.",
-            );
-        }
-    }
-    if rules.is_empty() {
-        return None;
-    }
-    let mut text = String::from("\n# Extra rules\n");
-    for rule in rules {
-        text.push_str(&format!("- {rule}\n"));
-    }
-    Some(text)
 }
 
 #[cfg(test)]
@@ -1843,11 +1737,7 @@ mod tests {
                     .instructions
                     .contains("from these folders: `/work/.claude/skills`")
             );
-            assert!(
-                config
-                    .instructions
-                    .contains("begin every task with `index_search`")
-            );
+            assert!(config.instructions.contains("# Search indexes"));
         }
     }
 
@@ -1874,10 +1764,6 @@ mod tests {
                 }
                 let told = |text: &str| config.instructions.contains(text);
                 assert_eq!(told("Use `monitor_start` instead of polling"), offered);
-                assert_eq!(
-                    told("free disk space or memory falling under a limit"),
-                    offered
-                );
                 // Only the main agent waits for the user. A worker's
                 // monitors stop with its run.
                 assert_eq!(
@@ -1911,16 +1797,21 @@ mod tests {
         }
     }
 
-    /// Before `rg`, both agents ask whether they know the symbols or exact
-    /// strings they look for, and describe the behaviour in `semantic` mode
-    /// when they don't. `hybrid` is for definitions, `lexical` for every use
-    /// of a name and for exact strings, and `rg` for regexes. The search tool
-    /// says the same in its description and its `mode`.
+    /// Both prompts keep `# Search indexes` light (without forcing `index_search`
+    /// ahead of `rg`), while `index_search`'s description and optional `mode`
+    /// parameter explain semantic, hybrid and `rg` lexical usage once.
     #[tokio::test]
-    async fn the_search_rule_is_the_same_in_both_prompts_and_the_tool() {
+    async fn the_search_rule_is_deduplicated_between_prompts_and_tool() {
         let opus = model("opus", false);
+        let indexes = [index::Known {
+            name: "arko".into(),
+            kind: "code",
+            root: "/work/arko".into(),
+            place: Some("the working directory"),
+        }];
         let settings = AgentSettings {
             index_tools: crate::index::TOOL_NAMES,
+            indexes: &indexes,
             ..AgentSettings::for_test(&opus, &opus)
         };
         for config in [
@@ -1928,12 +1819,10 @@ mod tests {
             worker_config(&settings).unwrap(),
         ] {
             let prompt = &config.instructions;
-            for rule in [
-                "begin every task with `index_search`, before anything else. Before you reach for `rg`, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you're looking for and search with mode `semantic`.",
-                "Use mode `hybrid` for where a name is defined, or a name together with words about it. Use mode `lexical` for every use of a name or an exact string, such as a function's callers or an error message. It lists each place that holds it as written, grouped by file. `rg` is for regexes, punctuation alone, text inside a longer name, and files no index covers.",
-            ] {
-                assert!(prompt.contains(rule), "{rule}");
-            }
+            assert!(prompt.contains(
+                "Use `index_search` when searching indexed code or docs by meaning or for full definitions."
+            ));
+            assert!(!prompt.contains("begin every task with `index_search`"));
         }
         let temp = tempfile::tempdir().unwrap();
         let indexes = crate::index::Indexes::open(temp.path(), temp.path(), None, false).unwrap();
@@ -1943,37 +1832,39 @@ mod tests {
             .find(|tool| tool.name() == "index_search")
             .unwrap()
             .definition();
-        assert!(definition.description.contains(
-            "Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want"
-        ));
-        assert!(definition.description.contains("with mode `semantic`"));
-        assert!(definition.description.contains(
-            "Every use of a name or an exact string (a function's callers, an error message) takes `lexical`."
-        ));
-        assert!(definition.description.contains(
-            "Use rg/grep for regexes, punctuation alone, text inside a longer name, and files no index covers."
-        ));
+        assert!(
+            definition
+                .description
+                .contains("semantic search by meaning")
+        );
+        assert!(definition.description.contains("finding full definitions"));
+        assert!(
+            definition
+                .description
+                .contains("`rg`/grep is fine as the default")
+        );
         let mode = definition
             .parameters
             .iter()
             .find(|param| param.name == "mode")
             .unwrap();
+        assert!(!mode.required, "mode should default to hybrid");
         for rule in [
-            "`semantic` when you don't know the symbols or strings and describe the behaviour in your own words",
-            "`hybrid` for where a name is defined",
-            "`lexical` for every place that holds a name or an exact string as written",
-            "words in the docs and Markdown files of a code index",
+            "Default `hybrid`",
+            "`semantic`",
+            "`lexical`",
+            "`rg`/grep is fine as the default",
         ] {
             assert!(mode.description.contains(rule), "{rule}");
         }
         indexes.shutdown().await;
     }
 
-    /// With the index tools, both agents are told to read code through
-    /// `index_search` before `rg`, and which indexes there are, meaning the working
-    /// directory's first, at most `INDEXES_NAMED`.
+    /// `known_indexes` lists only indexes covering or inside the working
+    /// directory plus a short count of the rest, and only adds the short
+    /// `index_search` note when a local index is present.
     #[test]
-    fn the_index_section_names_the_indexes_and_puts_search_before_rg() {
+    fn the_index_section_lists_only_local_indexes_and_count_of_rest() {
         let opus = model("opus", false);
         let plain = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(plain.instructions.contains("searching (prefer `rg`)"));
@@ -1983,21 +1874,15 @@ mod tests {
             ..AgentSettings::for_test(&opus, &opus)
         };
         let config = main_config(&none).unwrap();
-        assert!(!config.instructions.contains("searching (prefer `rg`)"));
+        assert!(config.instructions.contains("searching (prefer `rg`)"));
         assert!(
-            config
+            !config
                 .instructions
-                .contains("to find code or docs to read, start with `index_search`")
+                .contains("Use `index_search` when searching indexed code")
         );
-        // And to explore with it at the start of every task.
         assert!(config.instructions.contains(
-            "When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else."
+            "No index covers the working directory (there were no indexes when this session started)."
         ));
-        assert!(
-            config
-                .instructions
-                .contains("There were no indexes when this session started.")
-        );
 
         let known = |name: &str, root: &str, place: Option<&'static str>| index::Known {
             name: name.into(),
@@ -2013,20 +1898,17 @@ mod tests {
             indexes: &indexes,
             ..none
         };
-        let list = "The indexes when this session started:\n- `arko`: code, `/work/arko` (the working directory)\n- `arko_framework`: code, `/work/arko_framework`\n\n";
-        assert!(
-            main_config(&with)
-                .unwrap()
-                .instructions
-                .contains(&format!("{list}To search another project, use its index"))
-        );
-        // A worker is told how to search from a worktree of its own, which
-        // no index covers, by the index of the lead's working directory.
-        assert!(worker_config(&with).unwrap().instructions.contains(&format!(
-            "{list}If you work in a worktree of your own, no index covers it. To search the project, name its index (`index: arko`): the results show the lead's copies of the files, which are at the same paths in your worktree.\n\nTo search another project"
-        )));
+        let section = "# Search indexes\nUse `index_search` when searching indexed code or docs by meaning or for full definitions.\n\nIndexes for this working directory:\n- `arko`: code, `/work/arko` (the working directory)\nPlus 1 other index (`index_status` lists them).\n";
+        assert!(main_config(&with).unwrap().instructions.contains(section));
+        // Unrelated indexes aren't dumped by name, and worktrees resolve automatically.
         assert!(
             !main_config(&with)
+                .unwrap()
+                .instructions
+                .contains("arko_framework")
+        );
+        assert!(
+            !worker_config(&with)
                 .unwrap()
                 .instructions
                 .contains("worktree of your own, no index")
@@ -2040,25 +1922,10 @@ mod tests {
             ..none
         })
         .unwrap();
-        let last = format!("`i{:02}`", INDEXES_NAMED - 1);
-        assert!(config.instructions.contains(&last), "{last}");
-        let first_left_out = format!("`i{INDEXES_NAMED:02}`");
-        assert!(!config.instructions.contains(&first_left_out));
+        assert!(!config.instructions.contains("`i00`"));
         assert!(config.instructions.contains(
-            "- and 3 more (`index_status` lists them)\nNone of them covers the working directory.\n\nTo search another project"
+            "# Search indexes\nNo index covers the working directory, so `index_search` can't search it. Search it with `rg`, or create its index with `index_create` first.\nPlus 23 other indexes (`index_status` lists them).\n"
         ));
-        // With no index of the lead's working directory, there's none to
-        // name from a worktree.
-        let worker = worker_config(&AgentSettings {
-            indexes: &many,
-            ..none
-        })
-        .unwrap();
-        assert!(
-            !worker
-                .instructions
-                .contains("worktree of your own, no index")
-        );
         // Said only when no index is the working directory, holds it or
         // lies in it.
         for place in ["holds the working directory", "in the working directory"] {
@@ -2072,7 +1939,15 @@ mod tests {
             })
             .unwrap();
             assert!(
-                !config.instructions.contains("None of them covers"),
+                !config
+                    .instructions
+                    .contains("No index covers the working directory"),
+                "{place}"
+            );
+            assert!(
+                config
+                    .instructions
+                    .contains("Plus 1 other index (`index_status` lists them)."),
                 "{place}"
             );
         }
@@ -2130,162 +2005,6 @@ mod tests {
         assert!(!worker.instructions.contains("complete_task"));
         // Named once, as the way to the lead.
         assert_eq!(worker.instructions.matches("message_agent").count(), 1);
-    }
-
-    /// The extra rules go to agents on small models, each agent by its own
-    /// model. A worker on Haiku under a lead on Opus gets them, and the
-    /// lead doesn't. `All` gives them to every agent and `Off` to none.
-    #[test]
-    fn each_agent_gets_the_extra_rules_by_its_own_model() {
-        let opus = model("cc:opus", false);
-        let haiku = model("cc:claude-haiku-5-5", false);
-        let luna = model("luna", false);
-        let has = |config: AgentConfig| config.instructions.contains("# Extra rules");
-        let with = |main, worker, extra_rules| AgentSettings {
-            extra_rules,
-            index_tools: crate::index::TOOL_NAMES,
-            ..AgentSettings::for_test(main, worker)
-        };
-        let mixed = with(&opus, &haiku, ExtraRules::Small);
-        assert!(!has(main_config(&mixed).unwrap()));
-        assert!(has(worker_config(&mixed).unwrap()));
-        let mixed = with(&luna, &opus, ExtraRules::Small);
-        assert!(has(main_config(&mixed).unwrap()));
-        assert!(!has(worker_config(&mixed).unwrap()));
-        let all = with(&opus, &opus, ExtraRules::All);
-        assert!(has(main_config(&all).unwrap()));
-        assert!(has(worker_config(&all).unwrap()));
-        let off = with(&luna, &haiku, ExtraRules::Off);
-        assert!(!has(main_config(&off).unwrap()));
-        assert!(!has(worker_config(&off).unwrap()));
-    }
-
-    /// Each rule is given where it applies. The one about a working
-    /// directory no index covers only then, and none without the index
-    /// tools, which leaves no section at all.
-    #[test]
-    fn the_extra_rules_say_only_what_applies() {
-        let luna = model("luna", false);
-        let without = AgentSettings {
-            extra_rules: ExtraRules::Small,
-            ..AgentSettings::for_test(&luna, &luna)
-        };
-        assert!(
-            !main_config(&without)
-                .unwrap()
-                .instructions
-                .contains("# Extra rules")
-        );
-        let uncovered = AgentSettings {
-            index_tools: crate::index::TOOL_NAMES,
-            ..without
-        };
-        let text = main_config(&uncovered).unwrap().instructions;
-        assert!(text.contains(
-            "# Extra rules\n- No index covers the working directory, so `index_search` can't search it."
-        ));
-        let indexes = [index::Known {
-            name: "work".into(),
-            kind: "code",
-            root: "/work".into(),
-            place: Some("the working directory"),
-        }];
-        let covered = AgentSettings {
-            indexes: &indexes,
-            ..uncovered
-        };
-        // Then no rule applies, and there is no section.
-        let text = worker_config(&covered).unwrap().instructions;
-        assert!(!text.contains("# Extra rules"), "{text}");
-    }
-
-    /// Haiku and luna are small on every route, also with OpenRouter's
-    /// `:floor`, `:nitro` or `:free`, and the others aren't. A name that only
-    /// resembles one, such as a "-v2" variant, another suffix or a fine-tune
-    /// on OpenRouter, is not small.
-    #[test]
-    fn small_models_are_haiku_and_luna_on_any_route() {
-        let small = |name: &str| ExtraRules::Small.for_model(&model(name, false));
-        for name in [
-            "claude-haiku-5-5",
-            "haiku",
-            "cc:claude-haiku-5-5",
-            "cc:haiku",
-            "claude-haiku-4-5-20251001",
-            "cc:claude-haiku-4-5-20251001",
-            "openrouter:anthropic/claude-haiku-5.5",
-            "openrouter:anthropic/claude-haiku-4.5",
-            "luna",
-            "gpt-6-luna",
-            "gpt-5.6-luna",
-            "openrouter:openai/gpt-6-luna",
-            "openrouter:openai/gpt-5.6-luna",
-            "openrouter:openai/gpt-6-luna:floor",
-            "openrouter:anthropic/claude-haiku-5.5:free",
-            "openrouter:anthropic/claude-haiku-4.5:nitro",
-            "openrouter:openai/gpt-5.6-luna:nitro",
-        ] {
-            assert!(small(name), "{name}");
-        }
-        for name in [
-            "opus",
-            "cc:opus",
-            "fable",
-            "mythos",
-            "cc:mythos",
-            "sonnet",
-            "sol",
-            "astra",
-            "terra",
-            "gemini",
-            "flash",
-            "openrouter:anthropic/claude-opus-5.5",
-            "openrouter:anthropic/claude-haiku-5.5-v2",
-            "openrouter:anthropic/claude-haiku-5.5:preview",
-            "openrouter:anthropic/claude-haiku-5.5:free:floor",
-            "openrouter:someorg/haiku-finetune",
-            "openrouter:someorg/claude-haiku-5.5:free",
-            "openrouter:openai/gpt-6-luna-preview",
-            "openrouter:openai/gpt-6-luna:online",
-            "openrouter:openai/gpt-6-luna:beta",
-            "openrouter:OpenAI/GPT-6-Luna:floor",
-            "openrouter:luna-something",
-        ] {
-            assert!(!small(name), "{name}");
-        }
-        // A name that is no model gets no extra rules either.
-        let unknown = ModelSettings {
-            model: "luna-something".into(),
-            ..model("luna", false)
-        };
-        assert!(!ExtraRules::Small.for_model(&unknown));
-    }
-
-    /// With the default, the large models' configurations (and so what
-    /// they are sent) are the same as without the rules.
-    #[test]
-    fn the_default_leaves_large_models_as_they_were() {
-        for name in [
-            "opus", "cc:opus", "cc:fable", "sonnet", "sol", "astra", "terra", "gemini",
-        ] {
-            let big = model(name, false);
-            let configs = |extra_rules| {
-                let with = AgentSettings {
-                    extra_rules,
-                    index_tools: crate::index::TOOL_NAMES,
-                    ..AgentSettings::for_test(&big, &big)
-                };
-                (
-                    serde_json::to_value(main_config(&with).unwrap()).unwrap(),
-                    serde_json::to_value(worker_config(&with).unwrap()).unwrap(),
-                )
-            };
-            assert_eq!(
-                configs(ExtraRules::Small),
-                configs(ExtraRules::Off),
-                "{name}"
-            );
-        }
     }
 
     /// A resumed session builds the same configuration, which the
@@ -2519,9 +2238,9 @@ mod tests {
     }
 
     #[test]
-    fn the_lead_waits_for_decisions_before_acting_on_defaults() {
+    fn the_lead_uses_ask_user_for_decisions_without_duplicating_the_tool_description() {
         let opus = model("opus", false);
-        let question = "When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come.";
+        let question = "When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`.";
         for text_replies in [true, false] {
             let config = main_config(&AgentSettings {
                 text_replies,
@@ -2533,7 +2252,7 @@ mod tests {
             assert!(
                 config
                     .instructions
-                    .contains("Close questions that no longer matter with `close_questions`.")
+                    .contains("Don't re-ask a question that is still open.")
             );
             assert!(!config.instructions.contains("Pass `wait: true` only"));
         }

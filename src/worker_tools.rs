@@ -725,7 +725,7 @@ fn worker_options_definition() -> ToolDefinition {
 fn save_worker_profile_definition() -> ToolDefinition {
     ToolDefinition {
         name: SAVE_WORKER_PROFILE.into(),
-        description: "Saves a worker profile that start_agent takes by name. It is kept with the project for later sessions, unless scope says session (this session only) or user (every project). The user is asked first, except for a session profile and a project profile in a folder git ignores.".into(),
+        description: "Saves a worker profile for start_agent. The user approves project and user profiles, except a project profile in a git-ignored folder.".into(),
         output_based_example: None,
         parameters: vec![
             text_parameter(
@@ -740,7 +740,7 @@ fn save_worker_profile_definition() -> ToolDefinition {
             ),
             text_parameter(
                 "model",
-                "A model as start_agent takes it. Without one, the session's worker model.",
+                "A model as start_agent takes it. Omit for the session's worker model.",
                 false,
             ),
             text_parameter(
@@ -750,22 +750,22 @@ fn save_worker_profile_definition() -> ToolDefinition {
             ),
             text_parameter(
                 "instructions",
-                "Standing instructions for every worker with this profile, up to 4000 characters. The task goes in start_agent's task.",
+                "Standing instructions for workers with this profile, up to 4000 characters. Per-run work goes in start_agent's task.",
                 false,
             ),
             text_parameter(
                 SKILLS_PARAM,
-                "Skill names separated by commas, from your own. Workers with this profile get only these, as far as the agent that starts them has them, and none gives them no skills. Left out, they get their starter's.",
+                "Comma-separated skill names from your own, or none. Omit to inherit the starter's.",
                 false,
             ),
             text_parameter(
                 MCP_PARAM,
-                "MCP server names separated by commas, from your own. Workers with this profile reach only these, as far as the agent that starts them has them, and none gives them no servers. Left out, they get their starter's.",
+                "Comma-separated MCP server names from your own, or none. Omit to inherit the starter's.",
                 false,
             ),
             text_parameter(
                 "scope",
-                "project (the default, kept with the project), session (this session only) or user (every project).",
+                "project (default, kept with the project), session (this session only), or user (every project).",
                 false,
             ),
         ],

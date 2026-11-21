@@ -36,11 +36,11 @@ use serde_json::Value;
 mod narrowing;
 pub use narrowing::{Available, check_profile_names};
 
-use crate::agents::{self, Effort, ExtraRules, ModelChoice, ModelSettings};
+use crate::agents::{self, Effort, ModelChoice, ModelSettings};
 use crate::billing::WorkerBilling;
 use crate::crew::{
-    CACHE_PARAM, EFFORT_PARAM, MAX_OWN_WORKERS, MCP_PARAM, MODEL_PARAM, NESTED_PARAM,
-    NESTED_TOOL_NAMES, PROFILE_PARAM, Refuse, SKILLS_PARAM, WorkerSetup,
+    CACHE_PARAM, EFFORT_PARAM, MCP_PARAM, MODEL_PARAM, NESTED_PARAM, NESTED_TOOL_NAMES,
+    PROFILE_PARAM, Refuse, SKILLS_PARAM, WorkerSetup,
 };
 use crate::profiles::{self, Cache, Found};
 use crate::providers;
@@ -65,10 +65,6 @@ pub struct Basis {
     pub choice: ModelChoice,
     /// How many levels of workers the session allows (`/worker-depth`).
     pub worker_depth: u32,
-    /// Which agents get the extra rules for small models, and their text
-    /// (none when no rule applies to this session).
-    pub extra_rules: ExtraRules,
-    pub rules_text: Option<String>,
     /// Whether a worker may run on a model billed per token
     /// (`/worker-billing`), and the daily API budget (`/api-budget`). The
     /// start hook holds each start to them ([`crate::billing::gate`]).
@@ -89,14 +85,11 @@ pub struct Family {
     /// How deep the new worker is, 1 for a worker of the main agent and 2
     /// for a worker of that worker.
     pub depth: u32,
-    /// The workers its starter has running or queued, when the starter is a
-    /// worker.
-    pub live: usize,
 }
 
 impl Family {
     /// A start by the main agent.
-    pub const MAIN: Self = Self { depth: 1, live: 0 };
+    pub const MAIN: Self = Self { depth: 1 };
 }
 
 /// What a call to `start_agent` asks for.
@@ -219,19 +212,13 @@ fn choose_at(
     servers: &[ServerFacts],
 ) -> Result<WorkerSetup, String> {
     let call = Call::of(&request.parameters)?;
-    // A worker starts workers only as deep as the user allows, and no more
-    // than it can keep track of.
+    // A worker starts workers only as deep as the user allows.
     if family.depth > 1 {
         let level = family.depth - 1;
         if level >= basis.worker_depth {
             return Err(format!(
                 "Workers can't start workers here. The user allows {} of workers (/worker-depth), and you are at level {level}. Do the work yourself, or tell your lead what you need.",
                 levels(basis.worker_depth)
-            ));
-        }
-        if family.live >= MAX_OWN_WORKERS {
-            return Err(format!(
-                "You already have {MAX_OWN_WORKERS} workers running or queued, the most one worker can have. Wait for some of them with wait_for_agents, or stop one you don't need with stop_agent, then start the next."
             ));
         }
     }
@@ -352,12 +339,6 @@ fn choose_at(
             .iter()
             .map(|name| name.to_string())
             .collect();
-    }
-    if let Some(rules) = &basis.rules_text
-        && basis.extra_rules.for_model(&worker)
-        && !basis.extra_rules.for_model(&basis.worker)
-    {
-        context.push(rules.trim().to_string());
     }
     setup.context_added = (!context.is_empty()).then(|| context.join("\n\n"));
     setup.profile = profile_name.map(str::to_string);

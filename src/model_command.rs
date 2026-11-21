@@ -14,7 +14,7 @@
 use arko_ai::{Model, Provider};
 use arko_workflows::notes::{Note, NoteSource};
 
-use crate::agents::{self, AgentSettings, Effort, ExtraRules, MAIN, ModelSettings};
+use crate::agents::{self, AgentSettings, Effort, MAIN, ModelSettings};
 use crate::crew::{NewWorkers, WorkerSetup};
 use crate::providers::{self, OpenAiAuth};
 use crate::remote::{self, Level, Source};
@@ -107,12 +107,8 @@ impl Harness {
         self.setting_reply(result, source, changed);
     }
 
-    fn reply_settings(&self) -> (bool, bool, ExtraRules) {
-        (
-            self.settings.text_replies,
-            self.settings.cc_handover,
-            self.settings.extra_rules,
-        )
+    fn reply_settings(&self) -> (bool, bool) {
+        (self.settings.text_replies, self.settings.cc_handover)
     }
 
     pub(crate) fn setting_reply(
@@ -368,92 +364,6 @@ impl Harness {
         Ok(format!(
             "Agents in Claude Code now {what} at the handover size. {}.",
             crate::ui::sentence(agents::cc_text(on))
-        ))
-    }
-
-    /// `/extra-rules`, typed at the prompt, sent from the page or chosen in
-    /// the settings, says which agents get the extra rules for small models,
-    /// and with `small`, `all` or `off` changes that before the conversation
-    /// starts (the agents are built again). Once it has started, the
-    /// session keeps it, as it keeps the main agent's model.
-    pub(crate) fn extra_rules_command(&mut self, argument: &str, source: Source) {
-        let before = self.reply_settings();
-        let result = match argument {
-            "" => Ok(self.extra_rules_line()),
-            other => match ExtraRules::parse(other) {
-                Some(rules) => self.set_extra_rules(rules),
-                None => Err("/extra-rules takes small, all or off (/extra-rules off).".to_string()),
-            },
-        };
-        let changed = before != self.reply_settings();
-        self.setting_reply(result, source, changed);
-    }
-
-    /// Who gets the extra rules, as `/extra-rules` says it.
-    fn extra_rules_line(&self) -> String {
-        let rules = self.settings.extra_rules;
-        let text = format!(
-            "Extra rules for small models are set to {}, so {}. {}",
-            rules.name(),
-            rules.describe(),
-            self.extra_rules_here()
-        );
-        if self.conversation_started() {
-            format!("{text} The session keeps this.")
-        } else {
-            format!(
-                "{text} /extra-rules small, all or off changes that before the conversation starts."
-            )
-        }
-    }
-
-    /// Which of this session's agents get the extra rules, meaning the main agent
-    /// by its model, and the workers by the model new ones start on.
-    fn extra_rules_here(&self) -> String {
-        let rules = self.settings.extra_rules;
-        let main = rules.for_model(&self.settings.main);
-        if self.settings.max_workers == 0 || self.crew.is_none() {
-            return if main {
-                "The main agent gets them.".to_string()
-            } else {
-                "The main agent doesn't get them.".to_string()
-            };
-        }
-        let workers = rules.for_model(&self.settings.worker);
-        match (main, workers) {
-            (true, true) => "The main agent and the workers get them.",
-            (true, false) => "The main agent gets them, and the workers don't.",
-            (false, true) => "The workers get them, and the main agent doesn't.",
-            (false, false) => "Neither the main agent nor the workers get them.",
-        }
-        .to_string()
-    }
-
-    /// Who gets the extra rules, before the conversation starts, and the agents
-    /// are built again with them.
-    fn set_extra_rules(&mut self, rules: ExtraRules) -> Result<String, String> {
-        if self.settings.extra_rules == rules {
-            return Ok(format!(
-                "Extra rules for small models are set to {} already, so {}. {}",
-                rules.name(),
-                rules.describe(),
-                self.extra_rules_here()
-            ));
-        }
-        if self.conversation_started() {
-            return Ok(format!(
-                "The session keeps its extra rules, so {}. A new session takes --extra-rules or --no-extra-rules.",
-                self.settings.extra_rules.describe()
-            ));
-        }
-        let mut settings = self.settings.clone();
-        settings.extra_rules = rules;
-        self.rebuild_agents(settings)?;
-        Ok(format!(
-            "Extra rules for small models are now set to {}, so {}. {}",
-            rules.name(),
-            rules.describe(),
-            self.extra_rules_here()
         ))
     }
 
@@ -727,20 +637,6 @@ impl Harness {
         settings: &Settings,
         setup: &providers::Setup,
     ) -> std::sync::Arc<crate::chooser::Basis> {
-        let known = self
-            .indexes
-            .as_ref()
-            .map(|indexes| indexes.known(&settings.workspace))
-            .unwrap_or_default();
-        let agent_settings = AgentSettings {
-            index_tools: if self.indexes.is_some() {
-                index::TOOL_NAMES
-            } else {
-                &[]
-            },
-            indexes: &known,
-            ..AgentSettings::for_session(settings, setup)
-        };
         std::sync::Arc::new(crate::chooser::Basis {
             roots: crate::profiles::Roots::new(&self.root)
                 .workspace(&settings.workspace)
@@ -752,8 +648,6 @@ impl Harness {
             handover_at: settings.handover_at,
             choice: settings.worker_models,
             worker_depth: settings.worker_depth,
-            extra_rules: settings.extra_rules,
-            rules_text: agents::extra_rules(&agent_settings),
             billing: settings.worker_billing,
             api_budget: settings.api_budget,
             available: crate::chooser::Available {
@@ -785,7 +679,6 @@ impl Harness {
             !self.settings.cc_handover,
             std::sync::atomic::Ordering::Relaxed,
         );
-        *lock(&self.gauges.extra_rules) = self.settings.extra_rules;
         *lock(&self.gauges.worker_models) = self.settings.worker_models;
         *lock(&self.gauges.billing) = (self.settings.worker_billing, self.settings.api_budget);
         *lock(&self.gauges.monitor_wakes) = self.settings.monitor_wakes;

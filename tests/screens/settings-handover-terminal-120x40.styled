@@ -68,39 +68,36 @@ style 19 54 56 dim
 text 20 "                        │   Text replies       on   off                                        │"
 style 20 46 50 dim
 style 20 51 56 reverse
-text 21 "                        │   Extra rules        small   all   off                               │"
-style 21 46 53 dim
-style 21 54 59 dim
-style 21 60 65 reverse
-text 22 "                        │   Keep warm         ←  off  →                                        │"
-style 22 46 48 dim
-style 22 48 53 reverse
-style 22 53 55 dim
-text 23 "                        │   Web page           on   off                                        │"
-style 23 46 50 dim
-style 23 51 56 reverse
-text 24 "                        │                                                                      │"
-text 25 "                        │ Handover                                                             │"
-style 25 26 34 bold dim
-text 26 "                        │ ▸ Main agent        ←  250k  →                                       │"
-style 26 26 28 fg=cyan
-style 26 28 46 fg=cyan bold
-style 26 46 48 dim
-style 26 48 54 reverse
-style 26 54 56 dim
-text 27 "                        │                     The input size at which the main agent writes    │"
-style 27 46 91 dim
-text 28 "                        │                     a report of its work and goes on from it,        │"
-style 28 46 87 dim
-text 29 "                        │                     fresh. /handover does it now.                    │"
-style 29 46 75 dim
-text 30 "                        │                                                                      │"
-text 31 "                        │ Project instructions                                                 │"
-style 31 26 46 bold dim
-text 32 "                        │   Files              one   both   off                                │"
-style 32 46 51 reverse
-style 32 52 58 dim
-style 32 59 64 dim
+text 21 "                        │   Keep warm         ←  off  →                                        │"
+style 21 46 48 dim
+style 21 48 53 reverse
+style 21 53 55 dim
+text 22 "                        │   Web page           on   off                                        │"
+style 22 46 50 dim
+style 22 51 56 reverse
+text 23 "                        │                                                                      │"
+text 24 "                        │ Handover                                                             │"
+style 24 26 34 bold dim
+text 25 "                        │ ▸ Main agent        ←  250k  →                                       │"
+style 25 26 28 fg=cyan
+style 25 28 46 fg=cyan bold
+style 25 46 48 dim
+style 25 48 54 reverse
+style 25 54 56 dim
+text 26 "                        │                     The input size at which the main agent writes    │"
+style 26 46 91 dim
+text 27 "                        │                     a report of its work and goes on from it,        │"
+style 27 46 87 dim
+text 28 "                        │                     fresh. /handover does it now.                    │"
+style 28 46 75 dim
+text 29 "                        │                                                                      │"
+text 30 "                        │ Project instructions                                                 │"
+style 30 26 46 bold dim
+text 31 "                        │   Files              one   both   off                                │"
+style 31 46 51 reverse
+style 31 52 58 dim
+style 31 59 64 dim
+text 32 "                        │                                                                      │"
 text 33 "                        │                                                                      │"
 text 34 "                        └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
 style 34 54 59 reverse

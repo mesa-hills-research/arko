@@ -130,7 +130,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, keep warm, models for workers, worker depth, worker retry cap, message copies, whether agents ask before adding MCP servers, whether they ask before saving project skills, whether agents' project files stay out of git, whether the repository root's profiles are read, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, keep warm, models for workers, worker depth, worker retry cap, message copies, whether agents ask before adding MCP servers, whether they ask before saving project skills, whether agents' project files stay out of git, whether the repository root's profiles are read, text replies, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
     ),
     Command {
         name: "/model",
@@ -319,13 +319,6 @@ pub const COMMANDS: &[Command] = &[
         name: "/cc-compact",
         args: "on|off",
         about: "whether agents on cc: models have Claude Code compact the conversation at the handover size (on) or hand over as on other providers (off). It changes before the conversation starts",
-        aliases: &[],
-        runs: Runs::Session,
-    },
-    Command {
-        name: "/extra-rules",
-        args: "small|all|off",
-        about: "which agents get the extra rules for small models in their instructions, those on small models (small), every agent (all) or none (off). It changes before the conversation starts",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -535,7 +528,6 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/jobs", &["stop"], &["all"]),
     ("/text-replies", &[], ON_OFF),
     ("/cc-compact", &[], ON_OFF),
-    ("/extra-rules", &[], &["small", "all", "off"]),
     (
         "/project-instructions",
         &[],

@@ -824,25 +824,27 @@ impl Indexes {
 
     /// Every readable index, for the agents' instructions, meaning those of the
     /// working directory (`workspace`) first, then the others, each group by
-    /// name, so the same indexes give the same list.
+    /// name, so the same indexes give the same list. When `workspace` is in a
+    /// git worktree with no index of its own, falls back to its main repository.
     pub fn known(&self, workspace: &Path) -> Vec<Known> {
-        let workspace = workspace
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.to_path_buf());
+        let workspace = canonicalize_best_effort(workspace);
+        let place_for = |root: &Path, dir: &Path| {
+            if root == dir {
+                Some("the working directory")
+            } else if dir.starts_with(root) {
+                Some("holds the working directory")
+            } else if root.starts_with(dir) {
+                Some("in the working directory")
+            } else {
+                None
+            }
+        };
         let mut known: Vec<Known> = self
             .all()
             .into_iter()
             .map(|found| {
                 let root = found.manifest.root;
-                let place = if root == workspace {
-                    Some("the working directory")
-                } else if workspace.starts_with(&root) {
-                    Some("holds the working directory")
-                } else if root.starts_with(&workspace) {
-                    Some("in the working directory")
-                } else {
-                    None
-                };
+                let place = place_for(&root, &workspace);
                 Known {
                     name: found.manifest.name,
                     kind: found.manifest.kind.as_str(),
@@ -851,21 +853,43 @@ impl Indexes {
                 }
             })
             .collect();
+        if known.iter().all(|item| item.place.is_none())
+            && let Some(wt) = worktree_of(&workspace)
+        {
+            let mapped = wt.rebase(&workspace);
+            for item in &mut known {
+                item.place = place_for(&item.root, &mapped);
+            }
+        }
         known.sort_by(|a, b| {
             (a.place.is_none(), &a.name, &a.root).cmp(&(b.place.is_none(), &b.name, &b.root))
         });
         known
     }
 
-    /// The indexes whose root contains `dir` or lies in it.
+    /// The indexes whose root contains `dir` or lies in it. When none matches
+    /// directly and `dir` is inside a git worktree, falls back to its main
+    /// repository.
     pub fn related(&self, dir: &Path) -> Vec<Found> {
-        let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-        self.all()
-            .into_iter()
-            .filter(|found| {
-                dir.starts_with(&found.manifest.root) || found.manifest.root.starts_with(&dir)
-            })
-            .collect()
+        let dir = canonicalize_best_effort(dir);
+        let all = self.all();
+        let find = |target: &Path| -> Vec<Found> {
+            all.iter()
+                .filter(|found| {
+                    target.starts_with(&found.manifest.root)
+                        || found.manifest.root.starts_with(target)
+                })
+                .cloned()
+                .collect()
+        };
+        let direct = find(&dir);
+        if !direct.is_empty() {
+            return direct;
+        }
+        if let Some(wt) = worktree_of(&dir) {
+            return find(&wt.rebase(&dir));
+        }
+        direct
     }
 
     /// The index `name` names, meaning its name, its id, or a path (relative to `cwd`)
@@ -887,7 +911,7 @@ impl Indexes {
         if let Some(found) = all.iter().find(|found| found.layout.id() == name) {
             return Ok(found.clone());
         }
-        if let Ok(path) = store::absolute(Path::new(name), cwd).canonicalize() {
+        let match_path = |path: &Path| -> Option<Result<Found, String>> {
             // The deepest root that holds the path.
             let root = all
                 .iter()
@@ -906,19 +930,30 @@ impl Indexes {
                 .filter(|found| Some(&found.manifest.root) == root.as_ref())
                 .collect();
             match matching.as_slice() {
-                [one] => return Ok((*one).clone()),
-                [] => {}
+                [one] => Some(Ok((*one).clone())),
+                [] => None,
                 many => {
                     let names: Vec<&str> = many
                         .iter()
                         .map(|found| found.manifest.name.as_str())
                         .collect();
-                    return Err(format!(
+                    Some(Err(format!(
                         "{} has several indexes ({}), so name one",
                         many[0].manifest.root.display(),
                         names.join(", ")
-                    ));
+                    )))
                 }
+            }
+        };
+        if let Ok(path) = store::absolute(Path::new(name), cwd).canonicalize() {
+            if let Some(result) = match_path(&path) {
+                return result;
+            }
+            if inside
+                && let Some(wt) = worktree_of(&path)
+                && let Some(result) = match_path(&wt.rebase(&path))
+            {
+                return result;
             }
         }
         let names: Vec<&str> = all
@@ -1701,7 +1736,8 @@ impl Indexes {
         if query.is_empty() {
             return Err("the query is empty".into());
         }
-        let cwd = args.cwd.canonicalize().unwrap_or_else(|_| args.cwd.clone());
+        let cwd = canonicalize_best_effort(&args.cwd);
+        let cwd_worktree = worktree_of(&cwd);
         // Lexical asked for is an exact search, whose matches are all
         // equally right, so it has no most.
         let exact = args.mode == Some(ModeArg::Lexical);
@@ -1710,9 +1746,9 @@ impl Indexes {
             .as_deref()
             .map(str::trim)
             .filter(|after| !after.is_empty());
-        if !exact && (args.exhaustive || args.ignore_case || after.is_some()) {
+        if !exact && after.is_some() {
             return Err(
-                "exhaustive, ignore_case and after are for mode lexical, whose results hold the query as written, in path order"
+                "after is for mode lexical, whose results hold the query as written, in path order"
                     .into(),
             );
         }
@@ -1721,6 +1757,7 @@ impl Indexes {
         let limit = match exact {
             true if args.exhaustive => usize::MAX,
             true => limit,
+            false if args.exhaustive => MAX_LIMIT,
             false => limit.min(MAX_LIMIT),
         };
         let prefix = args
@@ -1737,8 +1774,7 @@ impl Indexes {
             .filter(|name| !name.is_empty());
         let place = match (named, prefix) {
             (None, Some(prefix)) => {
-                let wanted = store::absolute(Path::new(prefix), &cwd);
-                wanted.canonicalize().unwrap_or(wanted)
+                canonicalize_best_effort(&store::absolute(Path::new(prefix), &cwd))
             }
             _ => cwd.clone(),
         };
@@ -1755,18 +1791,16 @@ impl Indexes {
             let root = &target.manifest.root;
             let mut filter = Filter::default();
             if let Some(prefix) = prefix {
-                let wanted = store::absolute(Path::new(prefix), &cwd);
-                let wanted = wanted.canonicalize().unwrap_or(wanted);
-                match wanted.strip_prefix(root) {
-                    Ok(relative) => {
-                        let relative = relative.to_string_lossy().replace('\\', "/");
-                        if !relative.is_empty() {
-                            filter = filter.with_path_prefix(relative);
+                match resolve_prefix(prefix, &cwd, cwd_worktree.as_ref(), root, named.is_some()) {
+                    Ok(resolved) => {
+                        if let Ok(relative) = resolved.strip_prefix(root) {
+                            let relative = relative.to_string_lossy().replace('\\', "/");
+                            if !relative.is_empty() {
+                                filter = filter.with_path_prefix(relative);
+                            }
                         }
                     }
-                    // The prefix contains the whole index.
-                    Err(_) if root.starts_with(&wanted) => {}
-                    Err(_) if targets.len() == 1 => {
+                    Err(wanted) if targets.len() == 1 => {
                         return Err(format!(
                             "{} is outside the index {} ({})",
                             wanted.display(),
@@ -2103,6 +2137,19 @@ impl Indexes {
         cwd: &Path,
     ) -> Result<Vec<IndexReport>, String> {
         let scanned = match name.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) if Path::new(name) == Path::new(".") => {
+                let related = self.related(cwd);
+                if related.is_empty() {
+                    return Err(self.no_index_message(cwd));
+                }
+                related
+                    .into_iter()
+                    .map(|found| store::Scanned {
+                        layout: found.layout,
+                        manifest: Ok(found.manifest),
+                    })
+                    .collect()
+            }
             Some(name) => {
                 let found = self.resolve(name, cwd)?;
                 vec![store::Scanned {
@@ -2841,6 +2888,143 @@ pub fn describe_dense(info: &DenseIndexInfo) -> &'static str {
         EmbedState::Embedding => "incomplete",
         EmbedState::CapReached => "incomplete (a run stopped at its cap)",
     }
+}
+
+/// A git linked worktree's checkout root and the main repository root that
+/// owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Worktree {
+    root: PathBuf,
+    main_root: PathBuf,
+}
+
+impl Worktree {
+    /// Maps a path inside this worktree to the corresponding path in its
+    /// main repository.
+    fn rebase(&self, path: &Path) -> PathBuf {
+        match path.strip_prefix(&self.root) {
+            Ok(relative) if relative.as_os_str().is_empty() => self.main_root.clone(),
+            Ok(relative) => self.main_root.join(relative),
+            Err(_) => self.main_root.clone(),
+        }
+    }
+}
+
+/// Canonicalizes `path` if it exists, or canonicalizes its deepest existing
+/// ancestor and appends the remaining components.
+fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    if let Ok(canon) = path.canonicalize() {
+        return canon;
+    }
+    let mut tail = Vec::new();
+    let mut cursor = path;
+    while let Some(parent) = cursor.parent() {
+        if let Some(name) = cursor.file_name() {
+            tail.push(name.to_os_string());
+        }
+        if let Ok(mut canon) = parent.canonicalize() {
+            for part in tail.into_iter().rev() {
+                canon.push(part);
+            }
+            return canon;
+        }
+        cursor = parent;
+    }
+    path.to_path_buf()
+}
+
+/// If `path` (or an ancestor) is a git linked worktree (`.git` file pointing
+/// into `.../.git/worktrees/<name>`), returns its worktree root and main
+/// repository root. Stops at a regular `.git` directory.
+fn worktree_of(path: &Path) -> Option<Worktree> {
+    let start = if path.is_file() { path.parent()? } else { path };
+    let start = canonicalize_best_effort(start);
+    for ancestor in start.ancestors() {
+        let dot_git = ancestor.join(".git");
+        let Ok(meta) = std::fs::metadata(&dot_git) else {
+            continue;
+        };
+        if meta.is_dir() {
+            return None;
+        }
+        if !meta.is_file() {
+            continue;
+        }
+        let content = std::fs::read_to_string(&dot_git).ok()?;
+        let gitdir = content
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("gitdir:"))?
+            .trim();
+        if gitdir.is_empty() {
+            return None;
+        }
+        let gitdir = canonicalize_best_effort(&store::absolute(Path::new(gitdir), ancestor));
+        let main_root = main_repo_from_worktree_gitdir(&gitdir)?;
+        let main_root = canonicalize_best_effort(&main_root);
+        return Some(Worktree {
+            root: canonicalize_best_effort(ancestor),
+            main_root,
+        });
+    }
+    None
+}
+
+/// Resolves the main repository root from a worktree's `gitdir`
+/// (`<main>/.git/worktrees/<name>`). Uses `commondir` when present, else
+/// inspects the path components for `.git/worktrees/<name>`.
+fn main_repo_from_worktree_gitdir(gitdir: &Path) -> Option<PathBuf> {
+    if let Ok(common) = std::fs::read_to_string(gitdir.join("commondir")) {
+        let common = common.trim();
+        if !common.is_empty() {
+            let common_path = canonicalize_best_effort(&store::absolute(Path::new(common), gitdir));
+            if common_path.file_name() == Some(std::ffi::OsStr::new(".git")) {
+                return common_path.parent().map(Path::to_path_buf);
+            }
+        }
+    }
+    let mut cursor = gitdir.parent();
+    while let Some(dir) = cursor {
+        if dir.file_name() == Some(std::ffi::OsStr::new("worktrees")) {
+            let dot_git = dir.parent()?;
+            if dot_git.file_name() == Some(std::ffi::OsStr::new(".git")) {
+                return dot_git.parent().map(Path::to_path_buf);
+            }
+        }
+        cursor = dir.parent();
+    }
+    None
+}
+
+/// Resolves a `path_prefix` against `root`, rebasing through a git worktree
+/// or against `root` when an index was named explicitly with a relative prefix.
+fn resolve_prefix(
+    prefix: &str,
+    cwd: &Path,
+    cwd_worktree: Option<&Worktree>,
+    root: &Path,
+    named: bool,
+) -> Result<PathBuf, PathBuf> {
+    let prefix_path = Path::new(prefix);
+    let wanted = canonicalize_best_effort(&store::absolute(prefix_path, cwd));
+    let in_root = |candidate: &Path| candidate.starts_with(root) || root.starts_with(candidate);
+    if in_root(&wanted) {
+        return Ok(wanted);
+    }
+    if let Some(wt) = worktree_of(&wanted).or_else(|| cwd_worktree.cloned())
+        && wanted.starts_with(&wt.root)
+    {
+        let rebased = wt.rebase(&wanted);
+        if in_root(&rebased) {
+            return Ok(rebased);
+        }
+    }
+    if named && !prefix_path.is_absolute() {
+        let rebased = canonicalize_best_effort(&store::absolute(prefix_path, root));
+        if in_root(&rebased) {
+            return Ok(rebased);
+        }
+    }
+    Err(wanted)
 }
 
 // The tests hold a call with Linux's file descriptors.

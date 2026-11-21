@@ -213,112 +213,106 @@ style 20 51 56 fg=#f2f9ff bg=#006ee5
 style 20 56 95 fg=#dedede bg=#101010
 style 20 95 96 fg=#303030 bg=#101010
 style 20 96 120 fg=#dedede bg=#131313
-text 21 "                        │   Extra rules        small   all   off                               │"
+text 21 "                        │   Keep warm         ←  off  →                                        │"
 style 21 0 24 fg=#dedede bg=#131313
 style 21 24 25 fg=#303030 bg=#101010
 style 21 25 46 fg=#dedede bg=#101010
-style 21 46 53 fg=#9d9d9d bg=#101010
-style 21 53 54 fg=#dedede bg=#101010
-style 21 54 59 fg=#9d9d9d bg=#101010
-style 21 59 60 fg=#dedede bg=#101010
-style 21 60 65 fg=#f2f9ff bg=#006ee5
-style 21 65 95 fg=#dedede bg=#101010
+style 21 46 48 fg=#9d9d9d bg=#101010
+style 21 48 53 fg=#f2f9ff bg=#006ee5
+style 21 53 55 fg=#9d9d9d bg=#101010
+style 21 55 95 fg=#dedede bg=#101010
 style 21 95 96 fg=#303030 bg=#101010
 style 21 96 120 fg=#dedede bg=#131313
-text 22 "                        │   Keep warm         ←  off  →                                        │"
+text 22 "                        │   Web page           on   off                                        │"
 style 22 0 24 fg=#dedede bg=#131313
 style 22 24 25 fg=#303030 bg=#101010
 style 22 25 46 fg=#dedede bg=#101010
-style 22 46 48 fg=#9d9d9d bg=#101010
-style 22 48 53 fg=#f2f9ff bg=#006ee5
-style 22 53 55 fg=#9d9d9d bg=#101010
-style 22 55 95 fg=#dedede bg=#101010
+style 22 46 50 fg=#9d9d9d bg=#101010
+style 22 50 51 fg=#dedede bg=#101010
+style 22 51 56 fg=#f2f9ff bg=#006ee5
+style 22 56 95 fg=#dedede bg=#101010
 style 22 95 96 fg=#303030 bg=#101010
 style 22 96 120 fg=#dedede bg=#131313
-text 23 "                        │   Web page           on   off                                        │"
+text 23 "                        │                                                                      │"
 style 23 0 24 fg=#dedede bg=#131313
 style 23 24 25 fg=#303030 bg=#101010
-style 23 25 46 fg=#dedede bg=#101010
-style 23 46 50 fg=#9d9d9d bg=#101010
-style 23 50 51 fg=#dedede bg=#101010
-style 23 51 56 fg=#f2f9ff bg=#006ee5
-style 23 56 95 fg=#dedede bg=#101010
+style 23 25 95 fg=#dedede bg=#101010
 style 23 95 96 fg=#303030 bg=#101010
 style 23 96 120 fg=#dedede bg=#131313
-text 24 "                        │                                                                      │"
+text 24 "                        │ Handover                                                             │"
 style 24 0 24 fg=#dedede bg=#131313
 style 24 24 25 fg=#303030 bg=#101010
-style 24 25 95 fg=#dedede bg=#101010
+style 24 25 26 fg=#dedede bg=#101010
+style 24 26 34 fg=#9d9d9d bg=#101010 bold
+style 24 34 95 fg=#dedede bg=#101010
 style 24 95 96 fg=#303030 bg=#101010
 style 24 96 120 fg=#dedede bg=#131313
-text 25 "                        │ Handover                                                             │"
+text 25 "                        │ ▸ Main agent        ←  250k  →                                       │"
 style 25 0 24 fg=#dedede bg=#131313
 style 25 24 25 fg=#303030 bg=#101010
 style 25 25 26 fg=#dedede bg=#101010
-style 25 26 34 fg=#9d9d9d bg=#101010 bold
-style 25 34 95 fg=#dedede bg=#101010
+style 25 26 28 fg=#419cff bg=#101010
+style 25 28 46 fg=#419cff bg=#101010 bold
+style 25 46 48 fg=#9d9d9d bg=#101010
+style 25 48 54 fg=#f2f9ff bg=#006ee5
+style 25 54 56 fg=#9d9d9d bg=#101010
+style 25 56 95 fg=#dedede bg=#101010
 style 25 95 96 fg=#303030 bg=#101010
 style 25 96 120 fg=#dedede bg=#131313
-text 26 "                        │ ▸ Main agent        ←  250k  →                                       │"
+text 26 "                        │                     The input size at which the main agent writes    │"
 style 26 0 24 fg=#dedede bg=#131313
 style 26 24 25 fg=#303030 bg=#101010
-style 26 25 26 fg=#dedede bg=#101010
-style 26 26 28 fg=#419cff bg=#101010
-style 26 28 46 fg=#419cff bg=#101010 bold
-style 26 46 48 fg=#9d9d9d bg=#101010
-style 26 48 54 fg=#f2f9ff bg=#006ee5
-style 26 54 56 fg=#9d9d9d bg=#101010
-style 26 56 95 fg=#dedede bg=#101010
+style 26 25 46 fg=#dedede bg=#101010
+style 26 46 91 fg=#9d9d9d bg=#101010
+style 26 91 95 fg=#dedede bg=#101010
 style 26 95 96 fg=#303030 bg=#101010
 style 26 96 120 fg=#dedede bg=#131313
-text 27 "                        │                     The input size at which the main agent writes    │"
+text 27 "                        │                     a report of its work and goes on from it,        │"
 style 27 0 24 fg=#dedede bg=#131313
 style 27 24 25 fg=#303030 bg=#101010
 style 27 25 46 fg=#dedede bg=#101010
-style 27 46 91 fg=#9d9d9d bg=#101010
-style 27 91 95 fg=#dedede bg=#101010
+style 27 46 87 fg=#9d9d9d bg=#101010
+style 27 87 95 fg=#dedede bg=#101010
 style 27 95 96 fg=#303030 bg=#101010
 style 27 96 120 fg=#dedede bg=#131313
-text 28 "                        │                     a report of its work and goes on from it,        │"
+text 28 "                        │                     fresh. /handover does it now.                    │"
 style 28 0 24 fg=#dedede bg=#131313
 style 28 24 25 fg=#303030 bg=#101010
 style 28 25 46 fg=#dedede bg=#101010
-style 28 46 87 fg=#9d9d9d bg=#101010
-style 28 87 95 fg=#dedede bg=#101010
+style 28 46 75 fg=#9d9d9d bg=#101010
+style 28 75 95 fg=#dedede bg=#101010
 style 28 95 96 fg=#303030 bg=#101010
 style 28 96 120 fg=#dedede bg=#131313
-text 29 "                        │                     fresh. /handover does it now.                    │"
+text 29 "                        │                                                                      │"
 style 29 0 24 fg=#dedede bg=#131313
 style 29 24 25 fg=#303030 bg=#101010
-style 29 25 46 fg=#dedede bg=#101010
-style 29 46 75 fg=#9d9d9d bg=#101010
-style 29 75 95 fg=#dedede bg=#101010
+style 29 25 95 fg=#dedede bg=#101010
 style 29 95 96 fg=#303030 bg=#101010
 style 29 96 120 fg=#dedede bg=#131313
-text 30 "                        │                                                                      │"
+text 30 "                        │ Project instructions                                                 │"
 style 30 0 24 fg=#dedede bg=#131313
 style 30 24 25 fg=#303030 bg=#101010
-style 30 25 95 fg=#dedede bg=#101010
+style 30 25 26 fg=#dedede bg=#101010
+style 30 26 46 fg=#9d9d9d bg=#101010 bold
+style 30 46 95 fg=#dedede bg=#101010
 style 30 95 96 fg=#303030 bg=#101010
 style 30 96 120 fg=#dedede bg=#131313
-text 31 "                        │ Project instructions                                                 │"
+text 31 "                        │   Files              one   both   off                                │"
 style 31 0 24 fg=#dedede bg=#131313
 style 31 24 25 fg=#303030 bg=#101010
-style 31 25 26 fg=#dedede bg=#101010
-style 31 26 46 fg=#9d9d9d bg=#101010 bold
-style 31 46 95 fg=#dedede bg=#101010
+style 31 25 46 fg=#dedede bg=#101010
+style 31 46 51 fg=#f2f9ff bg=#006ee5
+style 31 51 52 fg=#dedede bg=#101010
+style 31 52 58 fg=#9d9d9d bg=#101010
+style 31 58 59 fg=#dedede bg=#101010
+style 31 59 64 fg=#9d9d9d bg=#101010
+style 31 64 95 fg=#dedede bg=#101010
 style 31 95 96 fg=#303030 bg=#101010
 style 31 96 120 fg=#dedede bg=#131313
-text 32 "                        │   Files              one   both   off                                │"
+text 32 "                        │                                                                      │"
 style 32 0 24 fg=#dedede bg=#131313
 style 32 24 25 fg=#303030 bg=#101010
-style 32 25 46 fg=#dedede bg=#101010
-style 32 46 51 fg=#f2f9ff bg=#006ee5
-style 32 51 52 fg=#dedede bg=#101010
-style 32 52 58 fg=#9d9d9d bg=#101010
-style 32 58 59 fg=#dedede bg=#101010
-style 32 59 64 fg=#9d9d9d bg=#101010
-style 32 64 95 fg=#dedede bg=#101010
+style 32 25 95 fg=#dedede bg=#101010
 style 32 95 96 fg=#303030 bg=#101010
 style 32 96 120 fg=#dedede bg=#131313
 text 33 "                        │                                                                      │"

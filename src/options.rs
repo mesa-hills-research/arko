@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use crate::agents::{Effort, ExtraRules};
+use crate::agents::Effort;
 use crate::project;
 use crate::providers::OpenAiAuth;
 use crate::remote;
@@ -84,8 +84,6 @@ pub struct Options {
     /// Agents on `cc:` models compact at the handover size, which they do by
     /// default. With `Some(false)` they hand over.
     pub cc_compact: Option<bool>,
-    /// Who gets the extra rules, by default the agents on small models.
-    pub extra_rules: Option<ExtraRules>,
     /// Which tools the agents are offered, by default as `ARKO_TOOLS` says,
     /// else [`Tools::NEW_SESSION`](crate::code_mode::Tools::NEW_SESSION). A
     /// resumed session takes it for the conversations and workers that
@@ -232,7 +230,6 @@ impl Default for Options {
             cache_1h: None,
             text_replies: None,
             cc_compact: None,
-            extra_rules: None,
             tools: None,
             builtin_skills: None,
             builtin_skills_off: None,

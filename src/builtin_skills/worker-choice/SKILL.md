@@ -12,9 +12,9 @@ license: MIT
 
 - Prefer models on the user's plans (Claude Code's `cc:` models, OpenAI models on the ChatGPT
   login) whenever one can do the job.
-- Before starting a worker billed per token (an API key, OpenRouter, Gemini), ask the user and wait
-  for a yes for that worker. Ask even when the session's worker billing would start it without
-  asking. Say which model, why no plan model will do, and roughly what it may cost.
+- Use a model billed per token (an API key, OpenRouter, Gemini) only when no plan model will do,
+  following the session's worker billing. When asking the user first, say which model, why no plan
+  model will do, and roughly what it may cost.
 - Before starting many workers, check how much of each plan is left (`worker_options`). When a
   plan is nearly used up, ask before moving the work to another plan or to the API, and say what
   waiting for the reset would mean instead.

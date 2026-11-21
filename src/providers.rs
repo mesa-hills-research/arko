@@ -412,27 +412,6 @@ pub fn ask_short_cache(model: &Model, generation: &mut GenerationConfig) {
     }
 }
 
-/// The small models, by registry ID, meaning fast, cheap models that do better with
-/// plain, explicit rules than the large ones need (`agents::extra_rules`).
-const SMALL_MODELS: [&str; 4] = [
-    "claude-haiku-5-5",
-    "claude-haiku-4-5-20251001",
-    "gpt-6-luna",
-    "gpt-5.6-luna",
-];
-
-/// Whether `model` is one of [`SMALL_MODELS`], on any route, meaning its registry ID
-/// through the API or `cc:`, or its slug in [`OPENROUTER_EQUIVALENTS`]
-/// through OpenRouter, with or without one of
-/// [`OPENROUTER_ROUTING_SUFFIXES`]. The ID or slug must match exactly.
-pub fn is_small(model: &Model) -> bool {
-    let id = match model.provider {
-        Provider::OpenRouter => openrouter_equivalent(&model.id),
-        _ => Some(model.id.as_str()),
-    };
-    id.is_some_and(|id| SMALL_MODELS.contains(&id))
-}
-
 /// What the session says, once, when OpenAI refuses the reasoning summaries
 /// Arko asks for (the organization isn't verified for them). The framework
 /// sends the request again without them, and no request asks again.
@@ -4229,106 +4208,6 @@ mod tests {
         assert_eq!(briefly(&openrouter), openrouter);
     }
 
-    /// Every small model is small by its ID, its alias, their `cc:` forms
-    /// (Claude models only) and its exact OpenRouter slug, with or without a
-    /// routing suffix.
-    #[test]
-    fn each_small_model_is_small_on_every_route() {
-        for id in SMALL_MODELS {
-            let registered = Model::find(id).unwrap_or_else(|| panic!("{id} isn't registered"));
-            let mut names = vec![id.to_string()];
-            names.extend(
-                ALIASES
-                    .iter()
-                    .filter(|(_, registry)| *registry == id)
-                    .map(|(alias, _)| alias.to_string()),
-            );
-            if registered.provider == Provider::Anthropic {
-                names.extend(names.clone().into_iter().map(|name| format!("cc:{name}")));
-            }
-            let slug = OPENROUTER_EQUIVALENTS
-                .iter()
-                .find(|(registry, _)| *registry == id)
-                .unwrap_or_else(|| panic!("{id} has no OpenRouter slug"))
-                .1;
-            names.push(format!("openrouter:{slug}"));
-            for suffix in OPENROUTER_ROUTING_SUFFIXES {
-                names.push(format!("openrouter:{slug}{suffix}"));
-            }
-            for name in names {
-                let model = resolve_model(&name).unwrap();
-                assert!(is_small(&model), "{name}");
-            }
-        }
-    }
-
-    /// The table holds the Haiku and Luna models the registry has, so a new
-    /// one fails here until someone decides whether it is small.
-    #[test]
-    fn the_small_models_are_the_registered_haiku_and_luna() {
-        let mut registered: Vec<String> = Model::all()
-            .into_iter()
-            .map(|model| model.id)
-            .filter(|id| id.contains("haiku") || id.contains("luna"))
-            .collect();
-        registered.sort();
-        let mut small: Vec<String> = SMALL_MODELS.iter().map(|id| id.to_string()).collect();
-        small.sort();
-        assert_eq!(small, registered);
-        for (id, slug) in OPENROUTER_EQUIVALENTS {
-            assert!(Model::find(id).is_some(), "{id}");
-            assert_eq!(slug.split('/').count(), 2, "{slug}");
-            assert!(!slug.contains([':', '@', '~', ' ']), "{slug}");
-        }
-    }
-
-    /// A name that only resembles a small model is not one, meaning other versions,
-    /// publishers, fine-tunes, variants other than the routing suffixes, two
-    /// suffixes, other letter cases and registry IDs that OpenRouter doesn't
-    /// use as slugs.
-    #[test]
-    fn lookalikes_are_not_small() {
-        for slug in [
-            "anthropic/claude-haiku-5.5-v2",
-            "anthropic/claude-haiku-5.5:preview",
-            "anthropic/claude-haiku-5.5:online",
-            "anthropic/claude-haiku-5.5:beta",
-            "anthropic/claude-haiku-5.5:turbo",
-            "anthropic/claude-haiku-5.5:free:floor",
-            "anthropic/claude-haiku-5.5:Free",
-            "anthropic/claude-haiku-5.5-v2:floor",
-            "someorg/claude-haiku-5.5:free",
-            "anthropic/claude-haiku-5.5@preset/short-answers",
-            "anthropic/claude-haiku-5-5",
-            "anthropic/claude-haiku-5.5-ft-acme",
-            "anthropic/claude-haiku-4.5-20251001",
-            "~anthropic/claude-haiku-latest",
-            "Anthropic/Claude-Haiku-5.5",
-            "someorg/claude-haiku-5.5",
-            "someorg/haiku-finetune",
-            "haiku",
-            "claude-haiku-5-5",
-            "openai/gpt-6-luna-preview",
-            "openai/gpt-6-luna:preview",
-            "openai/gpt-6-luna:online",
-            "openai/gpt-6-luna:nitro:free",
-            "openai/gpt-6-luna:NITRO",
-            "OpenAI/GPT-6-Luna:floor",
-            "openai/gpt-6-luna-ft-acme:nitro",
-            "openai/gpt-6.1-luna",
-            "openai/gpt-5.6-luna-mini",
-            "someorg/luna",
-            "luna",
-            "luna-something",
-            "gpt-6-luna",
-            "openai/gpt-6-sol",
-            "anthropic/claude-opus-5.5",
-        ] {
-            let model = resolve_model(&format!("openrouter:{slug}")).unwrap();
-            assert!(!is_small(&model), "openrouter:{slug}");
-        }
-    }
-
     /// Every row pairs a registry model with a plain `org/name` slug, with no
     /// whitespace and no `:` suffix, and no slug is there twice. An ID is
     /// there twice only for its `-pro` slug, right after its own. Every
@@ -4433,22 +4312,5 @@ mod tests {
             .filter(|slug| !listed.contains(slug))
             .collect();
         assert!(gone.is_empty(), "OpenRouter no longer lists {gone:?}");
-    }
-
-    /// The other models, by every route they have, are not small, and a
-    /// name Arko doesn't know resolves to no model at all.
-    #[test]
-    fn the_other_models_are_not_small() {
-        for model in Model::all() {
-            let small = SMALL_MODELS.contains(&model.id.as_str());
-            assert_eq!(is_small(&model), small, "{}", model.id);
-            if model.provider == Provider::Anthropic {
-                let model = Model::claude_code(model);
-                assert_eq!(is_small(&model), small, "cc:{}", model.id);
-            }
-        }
-        for name in ["luna-something", "haiku-finetune", "claude-haiku-5-5-v2"] {
-            assert!(resolve_model(name).is_err(), "{name}");
-        }
     }
 }

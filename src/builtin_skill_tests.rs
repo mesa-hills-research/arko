@@ -100,7 +100,7 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
     )
     .await;
     assert_eq!(bodies.len(), 2);
-    for name in ["ponytail", "ui-taste"] {
+    for name in ["prose", "ponytail", "ui-taste", "worker-choice"] {
         assert!(bodies[0].contains(&format!("**{name}**")), "{name}");
     }
     assert!(
@@ -111,11 +111,9 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
     // (A description on folded lines reaches the agents whole.)
     assert!(bodies[0].contains("complains about over-engineering."));
     assert!(bodies[0].contains("load_skill"));
-    // Pre-loaded, the text is there from the start, and nothing offers it.
-    assert!(bodies[0].contains("--- BEGIN SKILL: prose ---"));
-    assert!(bodies[0].contains("# Prose"));
-    assert!(!bodies[0].contains("**prose**"));
-    // On demand, the text comes with the call.
+    // Built-in skills load on demand rather than being pre-loaded.
+    assert!(!bodies[0].contains("--- BEGIN SKILL: prose ---"));
+    assert!(!bodies[0].contains("# Prose"));
     assert!(!bodies[0].contains("# Ponytail"));
     assert!(bodies[1].contains("--- BEGIN SKILL: ponytail ---"));
     assert!(bodies[1].contains("# Ponytail"));
@@ -182,24 +180,32 @@ const NOTE: &str =
 #[tokio::test]
 async fn a_not_found_answer_ends_with_a_note_on_active_skills() {
     let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("skills");
+    let always = folder.join("always-on");
+    std::fs::create_dir_all(&always).unwrap();
+    std::fs::write(
+        always.join("SKILL.md"),
+        "---\nname: always-on\ndescription: Always loaded.\nauto_load: true\n---\n\nAlways active.\n",
+    )
+    .unwrap();
     let bodies = turn_loading(
         temp.path(),
         BuiltinSkills::default(),
-        Vec::new(),
-        Some("prose"),
+        vec![folder.clone()],
+        Some("always-on"),
     )
     .await;
     assert_eq!(bodies.len(), 2);
-    assert!(bodies[0].contains("--- BEGIN SKILL: prose ---"));
+    assert!(bodies[0].contains("--- BEGIN SKILL: always-on ---"));
     let answer = format!(
-        "Skill 'prose' not found. Available skills:\\n- ponytail\\n- ui-taste\\n- worker-choice\\n\\n{NOTE}"
+        "Skill 'always-on' not found. Available skills:\\n- ponytail\\n- prose\\n- ui-taste\\n- worker-choice\\n\\n{NOTE}"
     );
     assert!(bodies[1].contains(&answer), "{}", bodies[1]);
     // A name that is no skill is told the same, with the skills to load.
     let bodies = turn_loading(
         temp.path(),
         BuiltinSkills::default(),
-        Vec::new(),
+        vec![folder.clone()],
         Some("proze"),
     )
     .await;
@@ -209,7 +215,7 @@ async fn a_not_found_answer_ends_with_a_note_on_active_skills() {
     let bodies = turn_loading(
         temp.path(),
         BuiltinSkills::default(),
-        Vec::new(),
+        vec![folder],
         Some("ponytail"),
     )
     .await;
@@ -302,10 +308,10 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
     assert_eq!(
         skills,
         [
+            ("prose", true, false),
             ("ponytail", true, false),
             ("ui-taste", true, false),
             ("worker-choice", true, false),
-            ("prose", true, true)
         ]
     );
     assert!(facts.skills.iter().all(|skill: &SkillFacts| {
@@ -373,7 +379,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     // they are built in), and nothing says what replaces what.
     let places = [
         format!("{}, always loaded", always.display()),
-        "built in, always loaded".to_string(),
+        "built in".to_string(),
         folder.join("ui-taste").display().to_string(),
         wide.display().to_string(),
         "built in".to_string(),
@@ -491,7 +497,9 @@ async fn a_saved_conversation_resumes_after_the_built_in_skills_changed() {
         .rfind(|body| body.contains("Second."))
         .unwrap();
     assert!(resumed.contains("**ponytail**"), "left out later");
-    assert!(resumed.contains("# Prose"));
+    assert!(resumed.contains("**prose**"));
+    assert!(resumed.contains("How to write anything someone reads"));
+    assert!(!resumed.contains("Reworded for a later Arko."));
     assert!(!resumed.contains("New text."));
     harness.crew.as_ref().unwrap().shutdown().await;
 }

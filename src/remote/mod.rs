@@ -584,9 +584,6 @@ pub struct LiveSettings {
     /// The agents on `cc:` models compact at the handover size (else they
     /// hand over). It changes only before the conversation starts.
     pub cc_compact: bool,
-    /// Which agents get the extra rules for small models. It changes only
-    /// before the conversation starts.
-    pub extra_rules: crate::agents::ExtraRules,
     /// Which of the project's instruction files the agents get, from the
     /// next conversation and worker on.
     pub project_instructions: crate::project::Files,
@@ -652,7 +649,6 @@ impl Default for LiveSettings {
             workers_handover_at: 0,
             text_replies: false,
             cc_compact: false,
-            extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,
             background_after: 0,

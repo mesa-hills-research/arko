@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::agents::{
-    DEFAULT_WORKER_DEPTH, ExtraRules, MAX_WORKER_DEPTH, ModelChoice, ModelSettings,
-};
+use crate::agents::{DEFAULT_WORKER_DEPTH, MAX_WORKER_DEPTH, ModelChoice, ModelSettings};
 use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
 use crate::project;
@@ -132,10 +130,6 @@ pub struct Settings {
     /// existed, as their saved agents were built.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cc_handover: bool,
-    /// Which agents get the extra rules for small models. Off in sessions
-    /// saved before they existed, as their saved agents were built.
-    #[serde(default, skip_serializing_if = "ExtraRules::is_off")]
-    pub extra_rules: ExtraRules,
     /// Which of the project's instruction files (AGENTS.md, CLAUDE.md) the
     /// agents get. One in sessions saved before the choice, as they gave.
     #[serde(default, skip_serializing_if = "project::Files::is_one")]
@@ -267,7 +261,6 @@ impl Settings {
             own_worker_model: false,
             text_replies: false,
             cc_handover: false,
-            extra_rules: Default::default(),
             project_instructions: Default::default(),
             worker_project_instructions: false,
             background_after: 0,
@@ -1416,5 +1409,26 @@ mod tests {
         );
         assert!(note.ends_with(". Arko goes on without it"), "{note}");
         assert!(data.path().join("fin/sessions").is_dir());
+    }
+
+    /// Old `session.json` files that still hold the removed `extra_rules` field
+    /// deserialize cleanly.
+    #[test]
+    fn old_session_json_with_extra_rules_still_loads() {
+        let model = ModelSettings {
+            model: crate::agents::resolve_model("luna").unwrap().id,
+            effort: crate::agents::Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let mut value =
+            serde_json::to_value(Settings::for_test(Path::new("/work"), &model)).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("extra_rules".into(), serde_json::json!("small"));
+        let loaded: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.workspace, PathBuf::from("/work"));
     }
 }

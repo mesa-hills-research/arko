@@ -1510,7 +1510,6 @@ impl Harness {
             }),
             handover: self.handover_facts(),
             text_replies: settings.text_replies,
-            extra_rules: settings.extra_rules,
             cc_compact: !settings.cc_handover,
             project_files: settings.project_instructions,
             project_workers: self
@@ -2276,7 +2275,6 @@ impl Harness {
             "/handover" => self.handover_command(source),
             "/text-replies" => self.text_replies_command(argument, source),
             "/cc-compact" => self.cc_compact_command(argument, source),
-            "/extra-rules" => self.extra_rules_command(argument, source),
             "/project-instructions" => self.project_command(argument, source),
             "/builtin-skills" => self.builtin_skills_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
@@ -3838,11 +3836,6 @@ impl Harness {
                     "text replies {} ({})",
                     if facts.text_replies { "on" } else { "off" },
                     agents::replies_text(facts.text_replies)
-                )));
-                out.line(&out.dim(&format!(
-                    "extra rules {} ({})",
-                    facts.extra_rules.name(),
-                    facts.extra_rules.describe()
                 )));
                 out.line(&out.dim(&details::project_text(
                     facts.project_files,
@@ -5640,7 +5633,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 /// an argument, meaning `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, `/approve` and `/reject`, which work while the agent
 /// works too.
-pub(crate) const LIVE_COMMANDS: [&str; 31] = [
+pub(crate) const LIVE_COMMANDS: [&str; 30] = [
     "/outside",
     "/model",
     "/handover",
@@ -5651,7 +5644,6 @@ pub(crate) const LIVE_COMMANDS: [&str; 31] = [
     "/session-names",
     "/text-replies",
     "/cc-compact",
-    "/extra-rules",
     "/project-instructions",
     "/builtin-skills",
     "/background-after",
@@ -5811,7 +5803,7 @@ impl ui::Printer for Tee {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::agents::{AgentSettings, Effort, ExtraRules, ModelSettings, resolve_model};
+    use crate::agents::{AgentSettings, Effort, ModelSettings, resolve_model};
     use crate::cli::*;
     use crate::credentials::Need;
     use crate::inputs::*;
@@ -5913,12 +5905,6 @@ pub(crate) mod tests {
     mod text_replies {
         use super::*;
         include!("text_reply_tests.rs");
-    }
-
-    /// The extra rules' end-to-end tests, in their own file.
-    mod extra_rules {
-        use super::*;
-        include!("extra_rules_tests.rs");
     }
 
     /// What agents in Claude Code do at the handover size, end to end, in
@@ -6089,10 +6075,7 @@ pub(crate) mod tests {
             (new.cache_1h, new.cc_compact, new.text_replies),
             (None, None, None)
         );
-        assert_eq!(
-            (new.extra_rules, new.worker_project_instructions),
-            (None, None)
-        );
+        assert_eq!(new.worker_project_instructions, None);
         assert_eq!(
             options(&["-c"], true).unwrap().session,
             SessionChoice::ContinueLatest
@@ -6105,7 +6088,6 @@ pub(crate) mod tests {
             &[
                 "--no-cache-1h",
                 "--cc-compact",
-                "--no-extra-rules",
                 "--no-worker-project-instructions",
                 "--text-replies",
             ],
@@ -6114,7 +6096,6 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(flags.cache_1h, Some(false));
         assert_eq!(flags.cc_compact, Some(true));
-        assert_eq!(flags.extra_rules, Some(ExtraRules::Off));
         assert_eq!(flags.worker_project_instructions, Some(false));
         assert_eq!(flags.text_replies, Some(true));
         assert!(!flags.interactive, "no terminal and no web page");
@@ -7135,7 +7116,6 @@ pub(crate) mod tests {
             keys: keys.clone(),
             text_replies: Default::default(),
             cc_compact: Default::default(),
-            extra_rules: Default::default(),
             worker_models: Default::default(),
             billing: Default::default(),
             monitor_wakes: Default::default(),

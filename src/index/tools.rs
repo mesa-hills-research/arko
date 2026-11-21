@@ -313,25 +313,21 @@ pub(crate) fn parse_search(
     cwd: &Path,
 ) -> Result<SearchArgs, ToolError> {
     let query = required_str(params, "query")?;
-    let mode = required_str(params, "mode")?;
-    let mode = ModeArg::parse(&mode)
-        .ok_or_else(|| invalid("mode", format!("{mode:?}: use semantic, lexical or hybrid")))?;
+    let mode = match str_param(params, "mode") {
+        None => ModeArg::Hybrid,
+        Some(mode) => ModeArg::parse(&mode)
+            .ok_or_else(|| invalid("mode", format!("{mode:?}: use semantic, lexical or hybrid")))?,
+    };
     let limit = count_param(params, "limit")?
         .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX).max(1));
     let exhaustive = bool_param(params, "exhaustive")?.unwrap_or(false);
     let ignore_case = bool_param(params, "ignore_case")?.unwrap_or(false);
     let after = str_param(params, "after");
-    for (name, given) in [
-        ("exhaustive", exhaustive),
-        ("ignore_case", ignore_case),
-        ("after", after.is_some()),
-    ] {
-        if given && mode != ModeArg::Lexical {
-            return Err(invalid(
-                name,
-                "it is for mode lexical, whose results hold the query as written, in path order",
-            ));
-        }
+    if after.is_some() && mode != ModeArg::Lexical {
+        return Err(invalid(
+            "after",
+            "it is for mode lexical, whose results hold the query as written, in path order",
+        ));
     }
     Ok(SearchArgs {
         query,
@@ -1117,12 +1113,11 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 
 // ----- the tools -----
 
-const SEARCH_DESCRIPTION: &str = "Searches Arko's indexes of code and docs by meaning and by words (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
-Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want (\"where are failed requests retried\", \"code that validates config paths\") and search with mode `semantic`. A name's definition takes `hybrid`. Every use of a name or an exact string (a function's callers, an error message) takes `lexical`. Results come back whole where rg gives one line, so one search often replaces several rounds of rg, sed and read_file. \
-Use rg/grep for regexes, punctuation alone, text inside a longer name, and files no index covers. \
-Semantic and hybrid return ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. \
-Lexical lists every chunk that holds the query as written, in path order and grouped by file, each with its scope and the lines that hold the query. Its first line says how many there are in all (\"100 of 340 results\"), and exhaustive=true lists them all. A cut list's note ends with the cursor of its next page, and `after` lists the matches that follow a cursor, `limit` of them or all with exhaustive=true. A page ends after every result at its last place, so a search of several indexes that hold the same file can run over `limit` by up to one less than the number of indexes. Nothing is kept between calls, so a page begins after the cursor's place (a path, line and column) in the files as they are now. An edit above that place can move a match across it, and then the match is listed twice or not at all. \
-Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
+const SEARCH_DESCRIPTION: &str = "Searches Arko's syntax-aware code and docs indexes (keyword BM25 plus Voyage embeddings), returning whole functions, types or doc sections with line numbers. \
+Its main advantage is semantic search by meaning when you don't know the exact symbols, and hybrid search for finding full definitions in one call. For exact text or lexical searches, `rg`/grep is fine as the default. \
+Semantic and hybrid return ranked `path:start-end · scope` results, top results whole and the rest as previews (detail=brief returns locations and snippets only). \
+Lexical lists matching lines grouped by file in path order (exhaustive=true lists all, or page with after). \
+Works for any indexed directory via `index` or `path_prefix`, defaulting to indexes covering the current directory or its git repo (index_status lists all indexes).";
 
 const STATUS_DESCRIPTION: &str = "Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
 
@@ -1317,9 +1312,9 @@ fn search_definition() -> ToolDefinition {
             ),
             param(
                 "mode",
-                "Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words (\"where is the session saved to disk\"). `hybrid` for where a name is defined (`ARKO_HOME`), a name together with words about it (\"Session::save error handling\"), and words in the docs and Markdown files of a code index. `lexical` for every place that holds a name or an exact string as written (`search_blocking` for its callers, an error message), case-sensitive unless ignore_case=true. It finds names and words, so rg is for punctuation alone (`->`) and for text inside a longer name (`block` in `search_blocking`). An index without embeddings searches by words in semantic and hybrid mode too.",
+                "Default `hybrid`: good for finding full definitions (`ARKO_HOME`), a symbol with words about it (\"Session::save error handling\"), and docs/Markdown. `semantic`: describe behaviour in your own words when you don't know the exact symbols (\"where are failed requests retried\"). `lexical`: exact matches of a name or string in path order, case-sensitive unless ignore_case=true (`rg`/grep is fine as the default for lexical, regex, punctuation or substring searches). Indexes without embeddings fall back to keyword search in semantic and hybrid modes.",
                 ToolParameterType::String,
-                true,
+                false,
             ),
             param(
                 "limit",
@@ -1329,25 +1324,25 @@ fn search_definition() -> ToolDefinition {
             ),
             param(
                 "exhaustive",
-                "Lexical mode only. true lists every match, whatever the limit (all that follow the cursor, with `after`).",
+                "In lexical mode, true lists every match whatever the limit (all that follow `after`).",
                 ToolParameterType::Bool,
                 false,
             ),
             param(
                 "after",
-                "Lexical mode only. A cursor from the end of a cut list's note, such as `src/a.rs:804:5`. Lists the matches that follow it, in the same order.",
+                "Lexical mode only. Cursor from the end of a cut list's note, such as `src/a.rs:804:5`, to list the matches that follow it.",
                 ToolParameterType::String,
                 false,
             ),
             param(
                 "ignore_case",
-                "Lexical mode only. true matches the query's ASCII letters in any case.",
+                "In lexical mode, true matches ASCII letters in any case (semantic and hybrid are already case-insensitive).",
                 ToolParameterType::Bool,
                 false,
             ),
             param(
                 "path_prefix",
-                "Only results under this directory or file (absolute, or relative to the current directory; any indexed directory, also outside the current one).",
+                "Only results under this directory or file (absolute, or relative to the current directory or named index).",
                 ToolParameterType::String,
                 false,
             ),

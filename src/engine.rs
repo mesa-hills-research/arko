@@ -552,15 +552,6 @@ impl Engine {
                         ),
                     );
                 }
-                if options.extra_rules.is_some() {
-                    prompter.note(
-                        Level::Warn,
-                        &format!(
-                            "a resumed session keeps its extra rules for small models ({})",
-                            settings.extra_rules.describe()
-                        ),
-                    );
-                }
                 if !settings.workspace.is_dir() {
                     return Err(format!(
                         "the session's working directory {} no longer exists",
@@ -969,7 +960,6 @@ impl Engine {
             keys: keys.clone(),
             text_replies: Default::default(),
             cc_compact: Default::default(),
-            extra_rules: Default::default(),
             worker_models: Default::default(),
             billing: Default::default(),
             monitor_wakes: Default::default(),

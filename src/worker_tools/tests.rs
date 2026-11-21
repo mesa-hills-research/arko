@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::agents::{ExtraRules, ModelSettings, resolve_model};
+use crate::agents::{ModelSettings, resolve_model};
 use crate::crew::{NewWorkers, Setup, WorkerSetup};
 use crate::profiles::Roots;
 use crate::remote;
@@ -30,8 +30,6 @@ fn basis(temp: &std::path::Path, choice: ModelChoice) -> Basis {
         handover_at: 200_000,
         choice,
         worker_depth: 2,
-        extra_rules: ExtraRules::Off,
-        rules_text: None,
         billing: crate::billing::WorkerBilling::Api,
         api_budget: None,
         available: Default::default(),

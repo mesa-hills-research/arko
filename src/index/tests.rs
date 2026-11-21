@@ -1479,26 +1479,35 @@ fn tool_parameters_are_parsed_leniently() {
     .unwrap();
     assert_eq!(search.limit, Some(5_000));
     assert!(search.exhaustive && search.ignore_case);
-    // Only a lexical search's results all hold the query, in one order.
-    for (name, on, off) in [
-        ("exhaustive", json!(true), json!(false)),
-        ("ignore_case", json!(true), json!(false)),
-        ("after", json!("src/a.rs:804:5"), json!("")),
-    ] {
-        for mode in ["hybrid", "semantic"] {
-            let error =
-                tools::parse_search(&params(json!({"query": "q", "mode": mode, name: on})), cwd)
-                    .unwrap_err();
-            assert!(error.to_string().contains("mode lexical"), "{error}");
-        }
-        let off = tools::parse_search(
-            &params(json!({"query": "q", "mode": "hybrid", name: off})),
+    // Only `after` is restricted to lexical mode; `ignore_case` and `exhaustive`
+    // are accepted in semantic and hybrid modes too.
+    for mode in ["hybrid", "semantic"] {
+        let error = tools::parse_search(
+            &params(json!({"query": "q", "mode": mode, "after": "src/a.rs:804:5"})),
             cwd,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("mode lexical"), "{error}");
+        assert!(
+            tools::parse_search(
+                &params(
+                    json!({"query": "q", "mode": mode, "ignore_case": true, "exhaustive": true})
+                ),
+                cwd,
+            )
+            .is_ok()
         );
-        assert!(off.is_ok());
     }
-    // The agent picks the mode every time.
-    assert!(tools::parse_search(&params(json!({"query": "q"})), cwd).is_err());
+    assert!(
+        tools::parse_search(
+            &params(json!({"query": "q", "mode": "hybrid", "after": ""})),
+            cwd,
+        )
+        .is_ok()
+    );
+    // Omitting `mode` defaults to hybrid.
+    let defaulted = tools::parse_search(&params(json!({"query": "q"})), cwd).unwrap();
+    assert_eq!(defaulted.mode, Some(ModeArg::Hybrid));
     assert!(tools::parse_search(&params(json!({"query": "q", "mode": "fuzzy"})), cwd).is_err());
     assert!(tools::parse_search(&params(json!({"query": "  ", "mode": "hybrid"})), cwd).is_err());
 
@@ -3085,12 +3094,21 @@ fn a_lexical_search_lists_100_by_default_and_every_match_when_exhaustive() {
         );
         args.limit = Some(3);
         assert_eq!(indexes.search_blocking(&args).unwrap().hits.len(), 3);
-        for (exhaustive, ignore_case) in [(true, false), (false, true)] {
-            args.exhaustive = exhaustive;
-            args.ignore_case = ignore_case;
-            let error = indexes.search_blocking(&args).unwrap_err();
-            assert!(error.contains("mode lexical"), "{error}");
-        }
+        // `exhaustive` and `ignore_case` are accepted in ranked modes without erroring.
+        args.exhaustive = true;
+        args.ignore_case = false;
+        assert_eq!(
+            indexes.search_blocking(&args).unwrap().hits.len(),
+            50,
+            "{mode:?}"
+        );
+        args.exhaustive = false;
+        args.ignore_case = true;
+        assert_eq!(
+            indexes.search_blocking(&args).unwrap().hits.len(),
+            3,
+            "{mode:?}"
+        );
     }
 
     // The agent's tool says the same.
@@ -3793,13 +3811,15 @@ fn a_cursor_that_is_not_one_is_refused() {
         let mut args = search_args(&root, "fetch a widget", Some(mode));
         args.after = Some("src/part_00.rs:1:1".into());
         let error = indexes.search_blocking(&args).unwrap_err();
-        assert!(error.contains("are for mode lexical"), "{error}");
-        assert!(
-            error.starts_with("exhaustive, ignore_case and after"),
-            "{error}"
-        );
+        assert!(error.contains("is for mode lexical"), "{error}");
+        assert!(error.starts_with("after"), "{error}");
         // (Blank leaves it out.)
         args.after = Some(" ".into());
+        assert!(indexes.search_blocking(&args).is_ok());
+        // `ignore_case` and `exhaustive` do not error outside lexical mode.
+        args.after = None;
+        args.ignore_case = true;
+        args.exhaustive = true;
         assert!(indexes.search_blocking(&args).is_ok());
     }
     fixture.shutdown(&indexes);
@@ -4007,20 +4027,9 @@ fn the_search_tool_pages_by_the_cursor_of_a_cut_list() {
     let error = run(json!({"query": "fetch_widget", "mode": "hybrid", "after": "src/a.rs:1:1"}))
         .unwrap_err();
     assert!(error.to_string().contains("mode lexical"), "{error}");
-    // The description says what the cursor stands for, and that a page may
-    // hold more results than the limit where indexes share a place.
     let definition = tool.definition();
     assert!(
-        definition.description.contains(
-            "A page ends after every result at its last place, so a search of several indexes that hold the same file can run over `limit` by up to one less than the number of indexes."
-        ),
-        "{}",
-        definition.description
-    );
-    assert!(
-        definition
-            .description
-            .contains("Nothing is kept between calls, so a page begins after the cursor's place"),
+        definition.description.contains("page with after"),
         "{}",
         definition.description
     );
@@ -4369,4 +4378,96 @@ fn the_command_takes_a_cursor_that_starts_with_a_dash() {
         };
         assert_eq!(after.as_deref(), Some("-x.rs:1:1"));
     }
+}
+
+#[test]
+fn worktree_resolves_main_repo_index_and_rebases_path_prefix() {
+    let fixture = Fixture::new();
+    let main_repo = fixture.code_project();
+    let other_repo = fixture.docs_project();
+    let indexes = fixture.open(&main_repo, Backend::Hash, false, fast(false));
+    indexes
+        .create_blocking(&create_args(&main_repo, None))
+        .unwrap();
+    indexes
+        .create_blocking(&create_args(&other_repo, None))
+        .unwrap();
+
+    // Set up a git linked worktree structure pointing to `main_repo/.git/worktrees/feat`.
+    let wt_gitdir = main_repo.join(".git/worktrees/feat");
+    std::fs::create_dir_all(&wt_gitdir).unwrap();
+    std::fs::write(wt_gitdir.join("commondir"), "../..\n").unwrap();
+    let worktree = fixture.base.join("wt/feat");
+    std::fs::create_dir_all(worktree.join("src")).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", wt_gitdir.display()),
+    )
+    .unwrap();
+
+    // `known` and `related` fall back to the main repository from the worktree and subdirs.
+    let known = indexes.known(&worktree);
+    assert_eq!(known[0].name, "proj");
+    assert_eq!(known[0].place, Some("the working directory"));
+    let sub_known = indexes.known(&worktree.join("src"));
+    assert_eq!(sub_known[0].name, "proj");
+    assert_eq!(sub_known[0].place, Some("holds the working directory"));
+
+    let related = indexes.related(&worktree);
+    assert_eq!(related.len(), 1);
+    assert_eq!(related[0].manifest.name, "proj");
+
+    // `index_status` with `index: "."` resolves to the main repo index.
+    let reports = indexes.status_blocking(Some("."), &worktree).unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].manifest.as_ref().unwrap().name, "proj");
+    let reports_sub = indexes
+        .status_blocking(Some("."), &worktree.join("src"))
+        .unwrap();
+    assert_eq!(reports_sub.len(), 1);
+    assert_eq!(reports_sub[0].manifest.as_ref().unwrap().name, "proj");
+
+    // Searching from the worktree with no `index` and a relative `path_prefix` finds the main repo index.
+    let mut args = search_args(&worktree, "retry_with_backoff", Some(ModeArg::Lexical));
+    args.path_prefix = Some("src/net.rs".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    let net = main_repo.join("src/net.rs").to_string_lossy().into_owned();
+    assert_eq!(hit_files(&output), vec![net.clone()], "{output:?}");
+
+    // Searching from a worktree subdirectory rebases `path_prefix` accurately too.
+    let mut sub_args = search_args(
+        &worktree.join("src"),
+        "retry_with_backoff",
+        Some(ModeArg::Lexical),
+    );
+    sub_args.path_prefix = Some("net.rs".into());
+    let sub_output = indexes.search_blocking(&sub_args).unwrap();
+    assert_eq!(hit_files(&sub_output), vec![net], "{sub_output:?}");
+
+    // Naming a DIFFERENT index explicitly from a worktree rebases a relative `path_prefix`
+    // against that named index's root instead of failing with "outside the index".
+    let mut cross = search_args(&worktree, "production", Some(ModeArg::Hybrid));
+    cross.index = Some("handbook".into());
+    cross.path_prefix = Some("deploy.md".into());
+    let cross_out = indexes.search_blocking(&cross).unwrap();
+    assert!(
+        !cross_out.hits.is_empty(),
+        "expected hits in handbook/deploy.md, got {cross_out:?}"
+    );
+    assert!(
+        cross_out
+            .hits
+            .iter()
+            .all(|hit| hit.file.ends_with("deploy.md")),
+        "{cross_out:?}"
+    );
+
+    // An escaping relative `path_prefix` on a named index still fails cleanly.
+    let mut escape = search_args(&worktree, "retry", Some(ModeArg::Hybrid));
+    escape.index = Some("handbook".into());
+    escape.path_prefix = Some("../proj/src".into());
+    let err = indexes.search_blocking(&escape).unwrap_err();
+    assert!(err.contains("is outside the index"), "{err}");
+
+    fixture.shutdown(&indexes);
 }

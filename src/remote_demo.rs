@@ -425,7 +425,6 @@ async fn remote_page_demo() {
         keys: harness.keys.clone(),
         text_replies: Default::default(),
         cc_compact: Default::default(),
-        extra_rules: Default::default(),
         worker_models: Default::default(),
         billing: Default::default(),
         monitor_wakes: Default::default(),

@@ -74,32 +74,30 @@ style 21 54 56 dim
 text 22 "                        │   Text replies       on   off                                        │"
 style 22 46 50 dim
 style 22 51 56 reverse
-text 23 "                        │   Extra rules        small   all   off                               │"
-style 23 46 53 dim
-style 23 54 59 dim
-style 23 60 65 reverse
-text 24 "                        │   Keep warm         ←  off  →                                        │"
-style 24 46 48 dim
-style 24 48 53 reverse
-style 24 53 55 dim
-text 25 "                        │   Web page           on   off                                        │"
-style 25 46 50 dim
-style 25 51 56 reverse
-text 26 "                        │                                                                      │"
-text 27 "                        │ Handover                                                             │"
-style 27 26 34 bold dim
-text 28 "                        │   Main agent        ←  250k  →                                       │"
-style 28 46 48 dim
-style 28 48 54 reverse
-style 28 54 56 dim
-text 29 "                        │                                                                      │"
-text 30 "                        │ Project instructions                                                 │"
-style 30 26 46 bold dim
-text 31 "                        │   Files              one   both   off                                │"
-style 31 46 51 reverse
-style 31 52 58 dim
-style 31 59 64 dim
-text 32 "                        │                                                                      │"
+text 23 "                        │   Keep warm         ←  off  →                                        │"
+style 23 46 48 dim
+style 23 48 53 reverse
+style 23 53 55 dim
+text 24 "                        │   Web page           on   off                                        │"
+style 24 46 50 dim
+style 24 51 56 reverse
+text 25 "                        │                                                                      │"
+text 26 "                        │ Handover                                                             │"
+style 26 26 34 bold dim
+text 27 "                        │   Main agent        ←  250k  →                                       │"
+style 27 46 48 dim
+style 27 48 54 reverse
+style 27 54 56 dim
+text 28 "                        │                                                                      │"
+text 29 "                        │ Project instructions                                                 │"
+style 29 26 46 bold dim
+text 30 "                        │   Files              one   both   off                                │"
+style 30 46 51 reverse
+style 30 52 58 dim
+style 30 59 64 dim
+text 31 "                        │                                                                      │"
+text 32 "                        │ Skills                                                               │"
+style 32 26 32 bold dim
 text 33 "                        │                                                                      │"
 text 34 "                        └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
 style 34 54 59 reverse

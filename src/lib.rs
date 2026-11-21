@@ -128,7 +128,7 @@ pub mod workers;
 
 use std::sync::Mutex;
 
-pub use crate::agents::{Effort, ExtraRules, ModelChoice};
+pub use crate::agents::{Effort, ModelChoice};
 pub use crate::billing::WorkerBilling;
 #[cfg(feature = "tui")]
 pub use crate::cli::cli_main;

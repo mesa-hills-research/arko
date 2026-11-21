@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 
-use crate::agents::{Effort, ExtraRules};
+use crate::agents::Effort;
 use crate::builtin_skills::BuiltinSkills;
 pub use crate::crew::WorkerFacts;
 pub use crate::providers::CostShare;
@@ -335,7 +335,6 @@ pub struct SessionFacts {
     pub workers: Option<WorkersFacts>,
     pub handover: HandoverFacts,
     pub text_replies: bool,
-    pub extra_rules: ExtraRules,
     /// The agents on `cc:` models compact instead of handing over.
     pub cc_compact: bool,
     pub project_files: project::Files,
@@ -608,7 +607,6 @@ impl Details {
                     workers_compact: false,
                 },
                 text_replies: false,
-                extra_rules: ExtraRules::default(),
                 cc_compact: false,
                 project_files: project::Files::default(),
                 project_workers: None,

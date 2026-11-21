@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use crate::agents::{DEFAULT_WORKER_DEPTH, ExtraRules, ModelSettings, NO_LIMIT, resolve_model};
+use crate::agents::{DEFAULT_WORKER_DEPTH, ModelSettings, NO_LIMIT, resolve_model};
 use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
 use crate::code_mode::Tools;
@@ -51,13 +51,6 @@ pub(crate) fn background_after_for(options: &Options, saved: u64) -> u64 {
         None if options.one_shot => 0,
         None => saved,
     }
-}
-
-/// Which agents of a new session get the extra rules for small models, as
-/// `--extra-rules` (all) or `--no-extra-rules` (none) says, else those on
-/// small models.
-pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
-    options.extra_rules.unwrap_or(ExtraRules::Small)
 }
 
 /// The tools a new session's agents are offered, as the options say, else
@@ -283,7 +276,6 @@ pub(crate) fn new_settings(
     let mut settings = Settings {
         text_replies: text_replies_for(options),
         cc_handover: options.cc_compact == Some(false),
-        extra_rules: extra_rules_for(options),
         project_instructions: Default::default(),
         worker_project_instructions: true,
         workspace,

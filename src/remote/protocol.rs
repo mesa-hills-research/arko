@@ -1861,8 +1861,6 @@ pub struct SettingsData {
     #[serde(deserialize_with = "lenient")]
     pub text_replies: bool,
     pub cc_compact: Option<bool>,
-    /// `small`, `all` or `off`.
-    pub extra_rules: Option<String>,
     /// `one`, `both` or `off`.
     pub project_instructions: Option<String>,
     #[serde(deserialize_with = "lenient")]
