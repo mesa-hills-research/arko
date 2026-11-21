@@ -177,7 +177,7 @@ impl Gate for FakeGate {
             "big" => NestedOutcome::Finished(ToolOutput::text("x".repeat(9 * MB as usize))),
             "large" => NestedOutcome::Finished(ToolOutput::text("x".repeat(7 * MB as usize))),
             // An edit that may have changed its file, then failed.
-            "apply_diff" => {
+            "edit_file" => {
                 start(NestedState::Ran { failed: true });
                 NestedOutcome::Failed("no space left on device".into())
             }
@@ -235,7 +235,7 @@ fn start(code: &str, limits: Limits) -> Start {
             "big",
             "shell",
             "write_file",
-            "apply_diff",
+            "edit_file",
         ]
         .map(String::from)
         .to_vec(),
@@ -443,7 +443,7 @@ async fn what_changed_counts_a_call_that_was_still_running() {
 #[tokio::test]
 async fn a_failed_edit_counts_as_a_change_it_may_have_made() {
     let ran = run(
-        "try { await tools.apply_diff({ path: 'a', diff: 'b' }); } catch {}\n\
+        "try { await tools.edit_file({ path: 'a', old_string: 'b', new_string: 'c' }); } catch {}\n\
          throw new Error('after the edit');",
     )
     .await;

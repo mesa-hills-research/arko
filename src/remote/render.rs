@@ -250,15 +250,21 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         LIST_FILES_TOOL_NAME => on(ActKind::List, path("directory")),
         WRITE_FILE_TOOL_NAME => on(ActKind::Write, path("path")),
         "Write" => on(ActKind::Write, path("file_path")),
-        EDIT_FILE_TOOL_NAME => on(ActKind::Edit, path("path")),
-        // (Each block is an edit, and a call of one is like edit_file's.)
-        APPLY_DIFF_TOOL_NAME => Act {
-            edits: match crate::ui::diff_edits(parameters) {
-                0 | 1 => 0,
-                many => u32::try_from(many).unwrap_or(u32::MAX),
-            },
-            ..on(ActKind::Edit, path("path"))
-        },
+        // (Each edit in `edits` or each block in `diff` is an edit.)
+        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
+            let count = if tool == APPLY_DIFF_TOOL_NAME {
+                crate::ui::diff_edits(parameters)
+            } else {
+                crate::ui::edit_file_edits(parameters)
+            };
+            Act {
+                edits: match count {
+                    0 | 1 => 0,
+                    many => u32::try_from(many).unwrap_or(u32::MAX),
+                },
+                ..on(ActKind::Edit, path("path"))
+            }
+        }
         "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
         SHELL_TOOL_NAME | "Bash" => {
             let command = text_of(parameters, "command");
@@ -1531,16 +1537,19 @@ fn brief(tool: &str, output: &str) -> Outcome {
         }
         LIST_FILES_TOOL_NAME => Outcome::ok(plural(lines(), "entry", "entries")),
         WRITE_FILE_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME => Outcome::ok(""),
-        // "Edited a.rs at lines 3-5: ..." or "Replaced 4 occurrences in
-        // a.rs, at lines ...", from edit_file and apply_diff alike, where
-        // each place it changed is an edit. (An apply_diff call's edits are
-        // counted in `outcome_after`.)
+        // "Edited a.rs at lines 3-5: ...", "Replaced 4 occurrences in a.rs,
+        // at lines ...", or "Applied 3 edits to a.rs, at lines ..." from
+        // edit_file and apply_diff, where each place it changed is an edit.
+        // (An apply_diff call's edits are counted in `outcome_after`.)
         EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
-            if output.starts_with("Edited ") || output.starts_with("Replaced ") =>
+            if output.starts_with("Edited ")
+                || output.starts_with("Replaced ")
+                || (tool == EDIT_FILE_TOOL_NAME && output.starts_with("Applied ")) =>
         {
             edits_made(
                 output
                     .strip_prefix("Replaced ")
+                    .or_else(|| output.strip_prefix("Applied "))
                     .and_then(|rest| rest.split_whitespace().next())
                     .and_then(|count| count.parse::<usize>().ok())
                     .unwrap_or(1),
@@ -1752,10 +1761,30 @@ fn content(
             Content::new(ContentKind::Lines, lines.join("\n"), language(path))
         }
         EDIT_FILE_TOOL_NAME => {
-            let (old, new) = (given("old_string"), given("new_string"));
-            let diff = receipt
-                .and_then(receipt_diff)
-                .unwrap_or_else(|| bare_diff(old, new));
+            let diff = receipt.and_then(receipt_diff).unwrap_or_else(|| {
+                let parsed;
+                let items = match parameters.get("edits") {
+                    Some(Value::Array(items)) => Some(items.as_slice()),
+                    Some(Value::String(text)) => {
+                        parsed = serde_json::from_str::<Value>(text).ok();
+                        parsed.as_ref().and_then(Value::as_array).map(Vec::as_slice)
+                    }
+                    _ => None,
+                };
+                if let Some(items) = items {
+                    items
+                        .iter()
+                        .map(|edit| {
+                            let part =
+                                |name: &str| edit.get(name).and_then(Value::as_str).unwrap_or("");
+                            bare_diff(part("old_string"), part("new_string"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                } else {
+                    bare_diff(given("old_string"), given("new_string"))
+                }
+            });
             Content::new(ContentKind::Diff, diff, language(given("path")))
         }
         // (A session saved before receipts shows each block's lines.)
@@ -3348,6 +3377,20 @@ mod tests {
                 let blocks = ended(&two, "Edited src/app.rs at lines 1 and 3:\n1 | y\n3 | y");
                 assert_eq!(number(blocks.outcome.as_deref().unwrap()), Some(2));
                 assert_eq!(number(&said(&[&replaced, &blocks])), Some(7), "{tool}");
+            } else {
+                let multi = params(&[
+                    ("path", "src/app.rs".into()),
+                    (
+                        "edits",
+                        serde_json::json!([
+                            {"old_string": "a", "new_string": "b"},
+                            {"old_string": "c", "new_string": "d"},
+                        ]),
+                    ),
+                ]);
+                let batch = ended(&multi, "Applied 2 edits to src/app.rs, at lines 1 and 3.");
+                assert_eq!(number(batch.outcome.as_deref().unwrap()), Some(2));
+                assert_eq!(number(&said(&[&replaced, &batch])), Some(7), "{tool}");
             }
         }
     }

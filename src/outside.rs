@@ -134,7 +134,7 @@ impl Outside {
                 )),
             };
         }
-        // (`edit_file` for sessions saved while the agents edited with it.)
+        // (`apply_diff` for sessions saved while the agents edited with it.)
         let definition = match tool {
             WRITE_FILE_TOOL_NAME => WriteFileTool.definition(),
             EDIT_FILE_TOOL_NAME => EditFileTool.definition(),
@@ -254,7 +254,7 @@ pub const FILES_FIXED: &str = " In this session it reaches commands only. Its ag
 /// Whether an agent configuration lets the file tools' writes follow the
 /// switch, meaning it doesn't refuse writes outside the working directory itself.
 /// `write_file` is judged in any configuration, and the editing tool it
-/// offers (`apply_diff`, or `edit_file` in sessions saved while the agents
+/// offers (`edit_file`, or `apply_diff` in sessions saved while the agents
 /// edited with it).
 pub fn files_follow(config: &AgentConfig) -> bool {
     // (Reached only from code, a tool is the agent's as well.)
@@ -336,8 +336,8 @@ mod tests {
         assert!(reason.contains("outside the working directory"), "{reason}");
         assert!(
             check(
-                APPLY_DIFF_TOOL_NAME,
-                serde_json::json!({"path": "../x.txt", "diff": ""})
+                EDIT_FILE_TOOL_NAME,
+                serde_json::json!({"path": "../x.txt", "old_string": "a", "new_string": "b"})
             )
             .unwrap()
             .contains("outside the working directory")
@@ -353,16 +353,16 @@ mod tests {
         );
         assert!(
             check(
-                APPLY_DIFF_TOOL_NAME,
-                serde_json::json!({"path": "src/x.txt", "diff": ""})
+                EDIT_FILE_TOOL_NAME,
+                serde_json::json!({"path": "src/x.txt", "old_string": "a", "new_string": "b"})
             )
             .is_none()
         );
-        // Sessions saved while the agents edited with edit_file have it.
+        // Sessions saved while the agents edited with apply_diff have it.
         assert!(
             check(
-                EDIT_FILE_TOOL_NAME,
-                serde_json::json!({"path": "../x.txt", "old_string": "a", "new_string": "b"})
+                APPLY_DIFF_TOOL_NAME,
+                serde_json::json!({"path": "../x.txt", "diff": ""})
             )
             .is_some()
         );
@@ -409,8 +409,8 @@ mod tests {
         );
         assert!(
             check(
-                APPLY_DIFF_TOOL_NAME,
-                serde_json::json!({"path": elsewhere, "diff": ""})
+                EDIT_FILE_TOOL_NAME,
+                serde_json::json!({"path": elsewhere, "old_string": "a", "new_string": "b"})
             )
             .is_none()
         );
@@ -570,27 +570,27 @@ mod tests {
                 .out_of_workspace_path_policy = Some(PathSafetyPolicy::AutoReject);
             config
         };
-        assert!(!files_follow(&refusing(&config, APPLY_DIFF_TOOL_NAME)));
-        // A session saved while the agents edited with edit_file offers it,
+        assert!(!files_follow(&refusing(&config, EDIT_FILE_TOOL_NAME)));
+        // A session saved while the agents edited with apply_diff offers it,
         // with the same overrides. One saved before the switch refuses both
         // writes.
         let tools = &mut config.tool_config;
         for name in &mut tools.available_tool_names {
-            if name == APPLY_DIFF_TOOL_NAME {
-                *name = EDIT_FILE_TOOL_NAME.into();
+            if name == EDIT_FILE_TOOL_NAME {
+                *name = APPLY_DIFF_TOOL_NAME.into();
             }
         }
         let edit = tools
             .tool_specific_configs
-            .remove(APPLY_DIFF_TOOL_NAME)
+            .remove(EDIT_FILE_TOOL_NAME)
             .unwrap();
         tools
             .tool_specific_configs
-            .insert(EDIT_FILE_TOOL_NAME.into(), edit);
+            .insert(APPLY_DIFF_TOOL_NAME.into(), edit);
         assert!(files_follow(&config));
-        assert!(!files_follow(&refusing(&config, EDIT_FILE_TOOL_NAME)));
+        assert!(!files_follow(&refusing(&config, APPLY_DIFF_TOOL_NAME)));
         let config = refusing(
-            &refusing(&config, EDIT_FILE_TOOL_NAME),
+            &refusing(&config, APPLY_DIFF_TOOL_NAME),
             WRITE_FILE_TOOL_NAME,
         );
         assert!(!files_follow(&config));

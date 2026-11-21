@@ -1,9 +1,9 @@
 // End-to-end tests of the agents' file editing. New sessions edit files
-// with `apply_diff`, several changes to a file in one call, and sessions
-// saved while the agents had `edit_file` resume with it. Each follows a
-// path a user takes, with the mock model, and checks what the model is
-// offered and what the user sees. (Included in `main`'s tests, whose
-// helpers they use.)
+// with `edit_file`, several changes to a file in one call via `edits`, and
+// sessions saved while the agents had `apply_diff` resume with it. Each
+// follows a path a user takes, with the mock model, and checks what the
+// model is offered and what the user sees. (Included in `main`'s tests,
+// whose helpers they use.)
 
 use crate::mock_model::{ModelServer, complete, tool_call};
 
@@ -75,32 +75,32 @@ fn diff(blocks: &[(&str, &str)]) -> String {
         .collect()
 }
 
-/// The agents as Arko built them while they edited with `edit_file`.
-fn edit_with_edit_file(harness: &mut Harness) {
+/// The agents as Arko built them while they edited with `apply_diff`.
+fn edit_with_apply_diff(harness: &mut Harness) {
     for config in [&mut harness.main_config, &mut harness.worker_config] {
         let tools = &mut config.tool_config;
         for name in &mut tools.available_tool_names {
-            if name == APPLY_DIFF_TOOL_NAME {
-                *name = EDIT_FILE_TOOL_NAME.into();
+            if name == EDIT_FILE_TOOL_NAME {
+                *name = APPLY_DIFF_TOOL_NAME.into();
             }
         }
         let policy = tools
             .tool_specific_configs
-            .remove(APPLY_DIFF_TOOL_NAME)
+            .remove(EDIT_FILE_TOOL_NAME)
             .unwrap();
         tools
             .tool_specific_configs
-            .insert(EDIT_FILE_TOOL_NAME.into(), policy);
+            .insert(APPLY_DIFF_TOOL_NAME.into(), policy);
     }
 }
 
-/// A new session offers `apply_diff`, not `edit_file`. One call makes
-/// several edits to a file, and each call shows as "edit PATH" with how
-/// many edits it made, or with `replace_all` "(all)" and the replacements.
-/// The line prompt, which shows no outcome, says how many edits a call of
-/// several makes.
+/// A new session offers `edit_file`, not `apply_diff`. One call makes
+/// several edits to a file via `edits`, and each call shows as "edit PATH"
+/// with how many edits it made, or with `replace_all` "(all)" and the
+/// replacements. The line prompt, which shows no outcome, says how many
+/// edits a call of several makes.
 #[tokio::test]
-async fn a_new_session_edits_files_with_apply_diff() {
+async fn a_new_session_edits_files_with_edit_file() {
     let bodies: Bodies = Arc::default();
     let server = ModelServer::start(Arc::new({
         let bodies = bodies.clone();
@@ -112,14 +112,20 @@ async fn a_new_session_edits_files_with_apply_diff() {
                 } else if body.contains("call_m1") {
                     tool_call(
                         "m2",
-                        APPLY_DIFF_TOOL_NAME,
-                        serde_json::json!({"path": "notes.txt", "diff": diff(&[("pear", "plum")]), "replace_all": true}),
+                        EDIT_FILE_TOOL_NAME,
+                        serde_json::json!({"path": "notes.txt", "old_string": "pear", "new_string": "plum", "replace_all": true}),
                     )
                 } else {
                     tool_call(
                         "m1",
-                        APPLY_DIFF_TOOL_NAME,
-                        serde_json::json!({"path": "notes.txt", "diff": diff(&[("apple", "fig"), ("kiwi", "lime")])}),
+                        EDIT_FILE_TOOL_NAME,
+                        serde_json::json!({
+                            "path": "notes.txt",
+                            "edits": [
+                                {"old_string": "apple", "new_string": "fig"},
+                                {"old_string": "kiwi", "new_string": "lime"},
+                            ]
+                        }),
                     )
                 }
             })
@@ -142,8 +148,8 @@ async fn a_new_session_edits_files_with_apply_diff() {
         "fig\nplum\nplum\nlime\n"
     );
     let tools = tools_of(&bodies.lock().unwrap()[0]);
-    assert!(tools.contains(&APPLY_DIFF_TOOL_NAME.to_string()), "{tools:?}");
-    assert!(!tools.contains(&EDIT_FILE_TOOL_NAME.to_string()), "{tools:?}");
+    assert!(tools.contains(&EDIT_FILE_TOOL_NAME.to_string()), "{tools:?}");
+    assert!(!tools.contains(&APPLY_DIFF_TOOL_NAME.to_string()), "{tools:?}");
     let calls = call_outcomes(&harness.feed);
     assert_eq!(
         calls,
@@ -159,11 +165,11 @@ async fn a_new_session_edits_files_with_apply_diff() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// A session saved while the agents had `edit_file` resumes with its saved
-/// tool list. It isn't told it lacks the file tools, `edit_file` is still
+/// A session saved while the agents had `apply_diff` resumes with its saved
+/// tool list. It isn't told it lacks the file tools, `apply_diff` is still
 /// offered and works, and its edits show as before.
 #[tokio::test]
-async fn a_session_saved_with_edit_file_resumes_with_it() {
+async fn a_session_saved_with_apply_diff_resumes_with_it() {
     let bodies: Bodies = Arc::default();
     let server = ModelServer::start(Arc::new({
         let bodies = bodies.clone();
@@ -175,8 +181,8 @@ async fn a_session_saved_with_edit_file_resumes_with_it() {
                 } else if body.contains("Change it.") {
                     tool_call(
                         "m2",
-                        EDIT_FILE_TOOL_NAME,
-                        serde_json::json!({"path": "notes.txt", "old_string": "apple", "new_string": "fig"}),
+                        APPLY_DIFF_TOOL_NAME,
+                        serde_json::json!({"path": "notes.txt", "diff": diff(&[("apple", "fig")])}),
                     )
                 } else {
                     complete("m1", "Noted.")
@@ -187,13 +193,13 @@ async fn a_session_saved_with_edit_file_resumes_with_it() {
     .await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
-    edit_with_edit_file(&mut harness);
+    edit_with_apply_diff(&mut harness);
     harness.open(false).unwrap();
     harness
         .turn(Prompt::User("Apples are red.".into()), &mut inputs)
         .await;
 
-    // Arko now builds its agents with apply_diff, and the session is resumed.
+    // Arko now builds its agents with edit_file, and the session is resumed.
     harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
     harness.worker_config = agents::worker_config(&agent_settings_of(&harness)).unwrap();
     harness.open(true).unwrap();
@@ -214,8 +220,8 @@ async fn a_session_saved_with_edit_file_resumes_with_it() {
         .unwrap()
         .clone();
     let tools = tools_of(&body);
-    assert!(tools.contains(&EDIT_FILE_TOOL_NAME.to_string()), "{tools:?}");
-    assert!(!tools.contains(&APPLY_DIFF_TOOL_NAME.to_string()), "{tools:?}");
+    assert!(tools.contains(&APPLY_DIFF_TOOL_NAME.to_string()), "{tools:?}");
+    assert!(!tools.contains(&EDIT_FILE_TOOL_NAME.to_string()), "{tools:?}");
     assert!(
         call_outcomes(&harness.feed).contains(&("edit notes.txt".to_string(), "1 edit".to_string()))
     );
@@ -257,7 +263,7 @@ async fn edits_shown(
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     if old_session {
-        edit_with_edit_file(&mut harness);
+        edit_with_apply_diff(&mut harness);
     }
     harness.open(false).unwrap();
     for (file, text, _) in edits {
@@ -301,13 +307,83 @@ fn check_diffs(shown: &[(remote::Item, Option<remote::Item>)], expected: &[Optio
     }
 }
 
-/// An apply_diff call's diff in the transcript is the edit that ran: the
-/// whole lines each of its blocks changed as the file had them before and
-/// has them after, numbered, with the lines around them, and its changes
-/// far apart with "…" between them. That holds for lines replaced, added
-/// and deleted, a file with CRLF line breaks, tabs and wide characters,
-/// and every match of a block of all of them. A call with a block that
-/// didn't apply shows why it failed and no diff.
+/// An edit_file call's diff in the transcript is the edit that ran, as it
+/// was: the whole lines it changed as the file had them before and has them
+/// after, numbered, with the lines around them, and changes far apart with
+/// "…" between them. That holds for a deletion inside a line, a line break
+/// the edit takes away, a file with CRLF line breaks, every match of an
+/// edit of all of them, a file with both CRLF and LF line breaks, and
+/// multi-edit batches via `edits`. A failed edit shows why it failed and no
+/// diff.
+#[tokio::test]
+async fn an_edit_file_calls_diff_is_the_edit_that_ran() {
+    let far: String = (1..=12)
+        .map(|n| match n {
+            2 | 11 => "x\n".to_string(),
+            n => format!("{n}\n"),
+        })
+        .collect();
+    let edits: Vec<(&str, &str, serde_json::Value)> = vec![
+        ("a.txt", "abcde\n", serde_json::json!({"old_string": "bc", "new_string": ""})),
+        (
+            "c.txt",
+            "prefix foo\nsuffix\n",
+            serde_json::json!({"old_string": "foo\n", "new_string": "bar"}),
+        ),
+        ("e.txt", "a\r\nb\r\nc\r\n", serde_json::json!({"old_string": "b", "new_string": "B"})),
+        ("h.txt", "a\n", serde_json::json!({"old_string": "zzz", "new_string": "y"})),
+        (
+            "i.txt",
+            "x\n1\n2\n3\n4\n5\n6\n7\nx\n",
+            serde_json::json!({"old_string": "x", "new_string": "y", "replace_all": true}),
+        ),
+        (
+            "j.txt",
+            "old\r\nold\nend\n",
+            serde_json::json!({"old_string": "old\n", "new_string": "new\n", "replace_all": true}),
+        ),
+        (
+            "k.txt",
+            &far,
+            serde_json::json!({
+                "edits": [
+                    {"old_string": "3", "new_string": "three"},
+                    {"old_string": "12", "new_string": "twelve"},
+                ]
+            }),
+        ),
+        (
+            "l.txt",
+            "a\n",
+            serde_json::json!({
+                "edits": [
+                    {"old_string": "a", "new_string": "b"},
+                    {"old_string": "zzz", "new_string": "y"},
+                ]
+            }),
+        ),
+    ];
+    let expected = [
+        Some("-1\tabcde\n+1\tade"),
+        Some("-1\tprefix foo\n-2\tsuffix\n+1\tprefix barsuffix"),
+        Some(" 1\ta\n-2\tb\n+2\tB\n 3\tc"),
+        None,
+        Some("-1\tx\n+1\ty\n 2\t1\n 3\t2\n 4\t3\n…\n 6\t5\n 7\t6\n 8\t7\n-9\tx\n+9\ty"),
+        Some("-1\told\n+1\tnew\n 2\told\n 3\tend"),
+        Some(
+            " 1\t1\n 2\tx\n-3\t3\n+3\tthree\n 4\t4\n 5\t5\n 6\t6\n…\n 9\t9\n 10\t10\n 11\tx\n-12\t12\n+12\ttwelve",
+        ),
+        None,
+    ];
+    let shown = edits_shown(EDIT_FILE_TOOL_NAME, &edits, false).await;
+    check_diffs(&shown, &expected);
+}
+
+/// An apply_diff call's diff in a session saved with it is the edit that
+/// ran: the whole lines each of its blocks changed as the file had them
+/// before and has them after, numbered, with the lines around them, and its
+/// changes far apart with "…" between them. A call with a block that didn't
+/// apply shows why it failed and no diff.
 #[tokio::test]
 async fn an_apply_diff_calls_diff_is_the_edit_that_ran() {
     let far: String = (1..=12)
@@ -366,48 +442,7 @@ async fn an_apply_diff_calls_diff_is_the_edit_that_ran() {
             " 1\t1\n 2\tx\n-3\t3\n+3\tthree\n 4\t4\n 5\t5\n 6\t6\n…\n 9\t9\n 10\t10\n 11\tx\n-12\t12\n+12\ttwelve",
         ),
     ];
-    let shown = edits_shown(APPLY_DIFF_TOOL_NAME, &edits, false).await;
-    check_diffs(&shown, &expected);
-}
-
-/// An edit_file call's diff in a session saved with it is the edit that
-/// ran, as it was: the whole lines it changed as the file had them before
-/// and has them after, numbered, with the lines around them. That holds
-/// for a deletion inside a line, a line break the edit takes away, a file
-/// with CRLF line breaks, every match of an edit of all of them, and a
-/// file with both CRLF and LF line breaks, whose LF line `edit_file` leaves
-/// alone. A failed edit shows why it failed and no diff.
-#[tokio::test]
-async fn an_edit_file_calls_diff_is_the_edit_that_ran() {
-    let edits: Vec<(&str, &str, serde_json::Value)> = vec![
-        ("a.txt", "abcde\n", serde_json::json!({"old_string": "bc", "new_string": ""})),
-        (
-            "c.txt",
-            "prefix foo\nsuffix\n",
-            serde_json::json!({"old_string": "foo\n", "new_string": "bar"}),
-        ),
-        ("e.txt", "a\r\nb\r\nc\r\n", serde_json::json!({"old_string": "b", "new_string": "B"})),
-        ("h.txt", "a\n", serde_json::json!({"old_string": "zzz", "new_string": "y"})),
-        (
-            "i.txt",
-            "x\n1\n2\n3\n4\n5\n6\n7\nx\n",
-            serde_json::json!({"old_string": "x", "new_string": "y", "replace_all": true}),
-        ),
-        (
-            "j.txt",
-            "old\r\nold\nend\n",
-            serde_json::json!({"old_string": "old\n", "new_string": "new\n", "replace_all": true}),
-        ),
-    ];
-    let expected = [
-        Some("-1\tabcde\n+1\tade"),
-        Some("-1\tprefix foo\n-2\tsuffix\n+1\tprefix barsuffix"),
-        Some(" 1\ta\n-2\tb\n+2\tB\n 3\tc"),
-        None,
-        Some("-1\tx\n+1\ty\n 2\t1\n 3\t2\n 4\t3\n…\n 6\t5\n 7\t6\n 8\t7\n-9\tx\n+9\ty"),
-        Some("-1\told\n+1\tnew\n 2\told\n 3\tend"),
-    ];
-    let shown = edits_shown(EDIT_FILE_TOOL_NAME, &edits, true).await;
+    let shown = edits_shown(APPLY_DIFF_TOOL_NAME, &edits, true).await;
     check_diffs(&shown, &expected);
 }
 
@@ -423,8 +458,8 @@ async fn an_edit_the_tool_refuses_fails_without_reading_the_file() {
             } else {
                 tool_call(
                     "e1",
-                    APPLY_DIFF_TOOL_NAME,
-                    serde_json::json!({"path": "pipe", "diff": diff(&[("a", "x")])}),
+                    EDIT_FILE_TOOL_NAME,
+                    serde_json::json!({"path": "pipe", "old_string": "", "new_string": "x"}),
                 )
             }
         })
@@ -444,7 +479,7 @@ async fn an_edit_the_tool_refuses_fails_without_reading_the_file() {
     let items = harness.feed.subscribe().0.items;
     let call = items
         .iter()
-        .find(|item| item.tool.as_deref() == Some(APPLY_DIFF_TOOL_NAME))
+        .find(|item| item.tool.as_deref() == Some(EDIT_FILE_TOOL_NAME))
         .expect("the edit's call");
     assert_eq!(call.status, Some(remote::CallStatus::Failed));
     harness.crew.as_ref().unwrap().shutdown().await;

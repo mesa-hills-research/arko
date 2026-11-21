@@ -45,8 +45,8 @@ pub const RUNNER_ARGUMENT: &str = "code-runner";
 /// The tools code may call, and no others. The first four only read. Jobs
 /// that outlive a run, workers, questions, messages, skills, notes and MCP
 /// servers stay direct calls. (A run calls only those its agent has, so
-/// sessions saved while the agents edited with `edit_file` call that, and
-/// new ones `apply_diff`.) Under [`Tools::Code`] the agents reach these
+/// sessions saved while the agents edited with `apply_diff` call that, and
+/// new ones `edit_file`.) Under [`Tools::Code`] the agents reach these
 /// only from code.
 pub const CALLABLE: [&str; 8] = [
     arko_agents::builtins::READ_FILE_TOOL_NAME,
@@ -55,8 +55,8 @@ pub const CALLABLE: [&str; 8] = [
     crate::index::STATUS_TOOL_NAME,
     crate::shell::SHELL_TOOL_NAME,
     arko_agents::builtins::WRITE_FILE_TOOL_NAME,
-    arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
     arko_agents::builtins::EDIT_FILE_TOOL_NAME,
+    arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
 ];
 
 /// The definitions of arko_agents' file tools of [`CALLABLE`], which the
@@ -71,8 +71,8 @@ pub fn file_tool_definitions() -> Vec<arko_agents::ToolDefinition> {
         ReadFileTool.definition(),
         ListFilesTool.definition(),
         WriteFileTool.definition(),
-        ApplyDiffTool.definition(),
         EditFileTool.definition(),
+        ApplyDiffTool.definition(),
     ]
 }
 
@@ -212,8 +212,8 @@ mod tests {
                 "index_status",
                 "shell",
                 "write_file",
-                "apply_diff",
-                "edit_file"
+                "edit_file",
+                "apply_diff"
             ]
         );
     }

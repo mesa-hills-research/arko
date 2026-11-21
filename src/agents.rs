@@ -4,7 +4,7 @@
 
 use arko_agents::agent_config::PathSafetyPolicy;
 use arko_agents::builtins::{
-    APPLY_DIFF_TOOL_NAME, ASK_USER_TOOL_NAME, CLOSE_QUESTIONS_TOOL_NAME, LIST_FILES_TOOL_NAME,
+    ASK_USER_TOOL_NAME, CLOSE_QUESTIONS_TOOL_NAME, EDIT_FILE_TOOL_NAME, LIST_FILES_TOOL_NAME,
     READ_FILE_TOOL_NAME, WRITE_FILE_TOOL_NAME,
 };
 use arko_agents::terminal::{MonitorTool, TerminalTool};
@@ -496,13 +496,13 @@ pub fn compacts(config: &AgentConfig) -> bool {
 }
 
 /// arko's built-in file tools, which both agents have. (Sessions saved
-/// while the agents edited with `edit_file` have it instead of
-/// `apply_diff`, and it stays registered for them.)
+/// while the agents edited with `apply_diff` have it instead of
+/// `edit_file`, and it stays registered for them.)
 pub const FILE_TOOL_NAMES: [&str; 4] = [
     READ_FILE_TOOL_NAME,
     LIST_FILES_TOOL_NAME,
     WRITE_FILE_TOOL_NAME,
-    APPLY_DIFF_TOOL_NAME,
+    EDIT_FILE_TOOL_NAME,
 ];
 
 /// The tools both agents have, meaning the shell, the terminal tools and (with
@@ -858,7 +858,7 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
          Paths and file names the user gives are relative to the working directory unless they say otherwise: look for them there, not across the disk.\n\n\
          {from_code}\
          Use `shell` for what you would do in a terminal: {uses}. Use the terminal tools only when `shell` doesn't fit: for servers, watchers, long builds you want to keep an eye on, and programs that ask questions. Cancel the jobs you start once you no longer need them. Wait for a job with `terminal_control wait` and a long `wait_ms` rather than with `sleep`.{monitors}\n\n\
-         Change files with `apply_diff` and `write_file` rather than with heredocs and scripts in the shell, which fail on long text. Put the changes you have for one file in one `apply_diff` call, a block for each. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
+         Change files with `edit_file` and `write_file` rather than with heredocs and scripts in the shell, which fail on long text. Put several changes to one file in one `edit_file` call with `edits`. Use the shell for mechanical changes across many files, such as a rename with `sed`.\n\n\
          A command guard refuses commands that would delete, move or overwrite the filesystem root, the home directory, system directories or devices, and paths outside the working directory unless the user has turned on outside access. The file tools' writes follow the same rule. The user can turn outside access on and off at any time, and a note tells you when they do. A refusal is the guard working, not an obstacle: don't rephrase, split or encode the command to get past it. Do the work another way, or say what was refused and why you needed it.\n",
     );
     if !settings.index_tools.is_empty() {
@@ -1117,7 +1117,7 @@ fn worker_instructions(settings: &AgentSettings) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arko_agents::builtins::EDIT_FILE_TOOL_NAME;
+    use arko_agents::builtins::APPLY_DIFF_TOOL_NAME;
     use arko_ai::{AnthropicCacheTtl, OpenAIServiceTier};
 
     fn model(name: &str, fast: bool) -> ModelSettings {
@@ -1660,14 +1660,14 @@ mod tests {
                 assert_eq!(policy(&config, tool), PathSafetyPolicy::AutoApprove);
             }
             assert!(crate::outside::files_follow(&config));
-            assert!(config.instructions.contains("`apply_diff`"));
-            assert!(!config.instructions.contains("edit_file"));
+            assert!(config.instructions.contains("`edit_file`"));
+            assert!(!config.instructions.contains("apply_diff"));
             assert!(
                 !config
                     .tool_config
                     .available_tool_names
                     .iter()
-                    .any(|name| name == EDIT_FILE_TOOL_NAME)
+                    .any(|name| name == APPLY_DIFF_TOOL_NAME)
             );
             assert!(config.instructions.contains(
                 "paths outside the working directory unless the user has turned on outside access"
@@ -2388,7 +2388,7 @@ mod tests {
             ..AgentSettings::for_test(&opus, &opus)
         };
         let code = settings(Tools::Code);
-        let paragraph = "`read_file`, `list_files`, `index_search`, `index_status`, `shell`, `write_file`, and `apply_diff` are reachable only from code. Call them with `run_code`, as its description shows, also for a single read, edit or command.\n\nUse `shell` for";
+        let paragraph = "`read_file`, `list_files`, `index_search`, `index_status`, `shell`, `write_file`, and `edit_file` are reachable only from code. Call them with `run_code`, as its description shows, also for a single read, edit or command.\n\nUse `shell` for";
         for config in [main_config(&code).unwrap(), worker_config(&code).unwrap()] {
             let tools = &config.tool_config;
             assert!(config.validate().is_ok());
@@ -2396,7 +2396,7 @@ mod tests {
             nested_only.sort();
             let mut expected: Vec<String> = CALLABLE
                 .iter()
-                .filter(|name| **name != EDIT_FILE_TOOL_NAME)
+                .filter(|name| **name != APPLY_DIFF_TOOL_NAME)
                 .map(|name| name.to_string())
                 .collect();
             expected.sort();
@@ -2421,7 +2421,7 @@ mod tests {
             ..AgentSettings::for_test(&opus, &opus)
         };
         assert!(main_config(&bare).unwrap().instructions.contains(
-            "`read_file`, `list_files`, `shell`, `write_file`, and `apply_diff` are reachable only from code."
+            "`read_file`, `list_files`, `shell`, `write_file`, and `edit_file` are reachable only from code."
         ));
         for tools in [Tools::Classic, Tools::Both] {
             for config in [

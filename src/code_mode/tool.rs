@@ -54,17 +54,17 @@ impl RunCodeTool {
         use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME};
         let mut names: Vec<String> = self
             .names()
-            .filter(|name| *name != EDIT_FILE_TOOL_NAME)
+            .filter(|name| *name != APPLY_DIFF_TOOL_NAME)
             .map(String::from)
             .collect();
-        if self.names().any(|name| name == EDIT_FILE_TOOL_NAME) {
-            match names.iter().position(|name| name == APPLY_DIFF_TOOL_NAME) {
+        if self.names().any(|name| name == APPLY_DIFF_TOOL_NAME) {
+            match names.iter().position(|name| name == EDIT_FILE_TOOL_NAME) {
                 Some(at) => {
                     names[at] = format!(
-                        "whichever of {APPLY_DIFF_TOOL_NAME} and {EDIT_FILE_TOOL_NAME} you have"
+                        "whichever of {EDIT_FILE_TOOL_NAME} and {APPLY_DIFF_TOOL_NAME} you have"
                     );
                 }
-                None => names.push(EDIT_FILE_TOOL_NAME.to_string()),
+                None => names.push(APPLY_DIFF_TOOL_NAME.to_string()),
             }
         }
         let names = match names.as_slice() {
@@ -117,15 +117,24 @@ fn declaration(definition: &ToolDefinition) -> String {
     text.push_str(&format!("\n{}(args{optional}: {{\n", definition.name));
     for parameter in &definition.parameters {
         text.push_str(&doc_comment(&parameter.description, "  "));
+        let param_type = match parameter.param_type {
+            ToolParameterType::String => match &parameter.enum_values {
+                Some(values) if !values.is_empty() => values
+                    .iter()
+                    .map(|value| {
+                        serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                _ => "string".to_string(),
+            },
+            ToolParameterType::Integer => "number".to_string(),
+            ToolParameterType::Bool => "boolean".to_string(),
+        };
         text.push_str(&format!(
-            "\n  {}{}: {};\n",
+            "\n  {}{}: {param_type};\n",
             parameter.name,
             if parameter.required { "" } else { "?" },
-            match parameter.param_type {
-                ToolParameterType::String => "string",
-                ToolParameterType::Integer => "number",
-                ToolParameterType::Bool => "boolean",
-            }
         ));
     }
     text.push_str("}): Promise<string>;");
@@ -158,6 +167,7 @@ fn parameter(name: &str, description: &str, required: bool) -> ToolParameterDefi
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     }
 }
 

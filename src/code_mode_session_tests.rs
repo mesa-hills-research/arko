@@ -379,9 +379,8 @@ async fn from_code_an_edit_outside_the_working_directory_is_refused() {
     let temp = tempfile::tempdir().unwrap();
     let outside = temp.path().join("outside.txt");
     std::fs::write(&outside, b"keep\r\nme\n").unwrap();
-    let diff = "<<<<<<< SEARCH\nkeep\n=======\nchanged\n>>>>>>> REPLACE\n";
     let code = format!(
-        "try {{ await tools.apply_diff({{ path: {outside:?}, diff: {diff:?} }}); return 'edited'; }} catch (e) {{ return `${{e.refused}} ${{e.message}}`; }}",
+        "try {{ await tools.edit_file({{ path: {outside:?}, old_string: 'keep', new_string: 'changed' }}); return 'edited'; }} catch (e) {{ return `${{e.refused}} ${{e.message}}`; }}",
         outside = outside.display().to_string(),
     );
     let bodies: Bodies = Arc::default();
@@ -395,52 +394,53 @@ async fn from_code_an_edit_outside_the_working_directory_is_refused() {
 }
 
 /// Code edits a file with the editing tool its agent has. An agent saved
-/// while the agents edited with edit_file has edit_file in code and no
-/// apply_diff, and a new one has apply_diff and no edit_file.
+/// while the agents edited with apply_diff has apply_diff in code and no
+/// edit_file, and a new one has edit_file and no apply_diff.
 #[tokio::test]
 async fn code_edits_with_the_editing_tool_its_agent_has() {
     use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME};
-    let code = "const has = [typeof tools.apply_diff, typeof tools.edit_file].join();\n\
+    let code = "const has = [typeof tools.edit_file, typeof tools.apply_diff].join();\n\
                 if (typeof tools.edit_file === 'function') {\n\
                   await tools.edit_file({ path: 'notes.txt', old_string: 'apple', new_string: 'fig' });\n\
                 } else {\n\
                   await tools.apply_diff({ path: 'notes.txt', diff: '<<<<<<< SEARCH\\napple\\n=======\\nfig\\n>>>>>>> REPLACE\\n' });\n\
                 }\n\
                 return has;";
-    for (saved_with_edit_file, has) in [(true, "undefined,function"), (false, "function,undefined")]
+    for (saved_with_apply_diff, has) in
+        [(true, "undefined,function"), (false, "function,undefined")]
     {
         let temp = tempfile::tempdir().unwrap();
         let bodies: Bodies = Arc::default();
         let server = model_running(code, &bodies).await;
         let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
         let _managers = equip(&mut harness, Tools::Both, |config| {
-            if !saved_with_edit_file {
+            if !saved_with_apply_diff {
                 return;
             }
-            // The main agent as Arko built it while it edited with edit_file.
+            // The main agent as Arko built it while it edited with apply_diff.
             let tools = &mut config.tool_config;
             for name in &mut tools.available_tool_names {
-                if name == APPLY_DIFF_TOOL_NAME {
-                    *name = EDIT_FILE_TOOL_NAME.into();
+                if name == EDIT_FILE_TOOL_NAME {
+                    *name = APPLY_DIFF_TOOL_NAME.into();
                 }
             }
             let policy = tools
                 .tool_specific_configs
-                .remove(APPLY_DIFF_TOOL_NAME)
+                .remove(EDIT_FILE_TOOL_NAME)
                 .unwrap();
             tools
                 .tool_specific_configs
-                .insert(EDIT_FILE_TOOL_NAME.into(), policy);
+                .insert(APPLY_DIFF_TOOL_NAME.into(), policy);
         });
         let notes = harness.settings.workspace.join("notes.txt");
         std::fs::write(&notes, "apple\npear\n").unwrap();
         run_turn(&mut harness, &mut inputs).await;
         let result = run_result(&bodies);
-        assert!(result.contains(has), "{saved_with_edit_file}: {result}");
+        assert!(result.contains(has), "{saved_with_apply_diff}: {result}");
         assert_eq!(
             std::fs::read_to_string(&notes).unwrap(),
             "fig\npear\n",
-            "{saved_with_edit_file}: {result}"
+            "{saved_with_apply_diff}: {result}"
         );
     }
 }

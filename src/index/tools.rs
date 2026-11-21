@@ -226,6 +226,7 @@ fn param(
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     }
 }
 
@@ -1315,7 +1316,8 @@ fn search_definition() -> ToolDefinition {
                 "Default `hybrid`: good for finding full definitions (`ARKO_HOME`), a symbol with words about it (\"Session::save error handling\"), and docs/Markdown. `semantic`: describe behaviour in your own words when you don't know the exact symbols (\"where are failed requests retried\"). `lexical`: exact matches of a name or string in path order, case-sensitive unless ignore_case=true (`rg`/grep is fine as the default for lexical, regex, punctuation or substring searches). Indexes without embeddings fall back to keyword search in semantic and hybrid modes.",
                 ToolParameterType::String,
                 false,
-            ),
+            )
+            .with_enum(["hybrid", "semantic", "lexical"]),
             param(
                 "limit",
                 &limit_description(engine::limits()),
@@ -1351,7 +1353,8 @@ fn search_definition() -> ToolDefinition {
                 "full (default in semantic and hybrid mode): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only. Lexical mode lists the lines that hold the query unless detail is given.",
                 ToolParameterType::String,
                 false,
-            ),
+            )
+            .with_enum(["full", "brief"]),
             param(
                 "language",
                 "Only chunks in this language, such as python or rust. When none match, lexical search says so, and semantic and hybrid search list every language. Leave it out unless the project mixes languages and you want one of them.",
@@ -1395,7 +1398,8 @@ fn create_definition() -> ToolDefinition {
                 "code, docs, or auto (default: by the files).",
                 ToolParameterType::String,
                 false,
-            ),
+            )
+            .with_enum(["code", "docs", "auto"]),
             param(
                 "name",
                 "A name for the index (default: the directory's name).",
@@ -1460,7 +1464,15 @@ fn manage_definition() -> ToolDefinition {
                 "rebuild, embed, estimate, monitor_on, monitor_off or remove.",
                 ToolParameterType::String,
                 true,
-            ),
+            )
+            .with_enum([
+                "rebuild",
+                "embed",
+                "estimate",
+                "monitor_on",
+                "monitor_off",
+                "remove",
+            ]),
             param(
                 "max_tokens",
                 "embed: the run's token cap (default: the index's, 5000000).",

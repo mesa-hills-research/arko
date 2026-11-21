@@ -884,6 +884,7 @@ fn parameter(
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     }
 }
 

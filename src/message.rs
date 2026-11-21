@@ -51,6 +51,7 @@ impl Tool for MessageUser {
                 is_path: false,
                 flag: None,
                 default_value: None,
+                enum_values: None,
             }],
             parallel_safe: true,
             read_only: false,

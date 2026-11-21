@@ -1036,12 +1036,14 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     };
     vec![
         text(
             CACHE_PARAM,
             "`long` or `short` (`1h` and `5m` work too), how long the worker's prompt cache lasts after its last step. `long` is an hour on Claude models and 12 hours on OpenAI GPT-5.6 and later with an API key, and costs more to write. `short` is 5 minutes on Claude and 30 minutes on OpenAI. Claude Code uses an hour on a Claude plan when you choose none. ChatGPT keeps its own 30-minute cache.",
-        ),
+        )
+        .with_enum(["long", "short"]),
         text(
             PROFILE_PARAM,
             "A worker profile by name. `default` is the session's worker model.",
@@ -1053,7 +1055,8 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
         text(
             EFFORT_PARAM,
             "low, medium, high, xhigh or max, as the model takes it. Overrides the profile's.",
-        ),
+        )
+        .with_enum(["low", "medium", "high", "xhigh", "max"]),
         text(
             SKILLS_PARAM,
             "Skill names separated by commas, from your own. The worker gets only these, and none gives it no skills. Left out, it gets yours except those marked for the main agent alone.",
@@ -1070,8 +1073,24 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
             is_path: false,
             flag: None,
             default_value: None,
+            enum_values: None,
         },
     ]
+}
+
+/// The parameters of the host's own that `message_agent` takes.
+fn message_parameters() -> Vec<ToolParameterDefinition> {
+    vec![ToolParameterDefinition {
+        name: crate::worker_cache::CONFIRM_PARAM.into(),
+        description: "Set true to continue a finished worker whose prompt cache has expired."
+            .into(),
+        param_type: ToolParameterType::Bool,
+        required: false,
+        is_path: false,
+        flag: None,
+        default_value: None,
+        enum_values: None,
+    }]
 }
 
 /// What a worker runs, as a sentence, such as "runs sol at high effort, profile judge".
@@ -1253,6 +1272,9 @@ impl Crew {
             }));
         for parameter in start_parameters() {
             config = config.start_parameter(parameter);
+        }
+        for parameter in message_parameters() {
+            config = config.message_parameter(parameter);
         }
         config = if self.setup.max_running == NO_LIMIT {
             config.unlimited()
@@ -3105,6 +3127,32 @@ mod tests {
         // It is a flag, not text.
         let nested = &config.start_parameters[6];
         assert_eq!(nested.param_type, ToolParameterType::Bool);
+        assert_eq!(
+            config.start_parameters[0].enum_values.as_deref(),
+            Some(&["long".to_string(), "short".to_string()][..])
+        );
+        assert_eq!(
+            config.start_parameters[3].enum_values.as_deref(),
+            Some(
+                &[
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "high".to_string(),
+                    "xhigh".to_string(),
+                    "max".to_string()
+                ][..]
+            )
+        );
+        assert_eq!(config.message_parameters.len(), 1);
+        assert_eq!(
+            config.message_parameters[0].name,
+            crate::worker_cache::CONFIRM_PARAM
+        );
+        assert_eq!(
+            config.message_parameters[0].param_type,
+            ToolParameterType::Bool
+        );
+        assert!(!config.message_parameters[0].required);
         assert_eq!(config.max_depth, 4);
     }
 

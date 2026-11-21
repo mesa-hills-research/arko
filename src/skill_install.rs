@@ -528,6 +528,7 @@ fn text_parameter(name: &str, description: &str, required: bool) -> ToolParamete
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     }
 }
 
@@ -1859,7 +1860,8 @@ impl Tool for AddSkill {
                         "project (the default, this project's .arko/skills) or user (every project, in Arko's folder, which the user approves)."
                     },
                     false,
-                ),
+                )
+                .with_enum(["project", "user"]),
                 ToolParameterDefinition {
                     name: "workers".into(),
                     description: "false keeps it to you. Workers get it by default.".into(),
@@ -1868,6 +1870,7 @@ impl Tool for AddSkill {
                     is_path: false,
                     flag: None,
                     default_value: None,
+                    enum_values: None,
                 },
                 text_parameter(
                     "why",

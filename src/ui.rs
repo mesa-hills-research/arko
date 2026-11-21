@@ -1641,6 +1641,19 @@ pub fn diff_edits(parameters: &HashMap<String, serde_json::Value>) -> usize {
         })
 }
 
+/// How many edits an `edit_file` call's `edits` array holds (0 for a single
+/// `old_string`/`new_string` call).
+pub fn edit_file_edits(parameters: &HashMap<String, serde_json::Value>) -> usize {
+    match parameters.get("edits") {
+        Some(serde_json::Value::Array(items)) => items.len(),
+        Some(serde_json::Value::String(text)) => serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|value| value.as_array().map(Vec::len))
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// A file tool's call as [`brief`] says it, and where in it the file's path
 /// is (bytes), or `None` for a call of another tool.
 pub fn file_line(
@@ -1702,14 +1715,18 @@ fn file_call(
                 path.len(),
             )
         }
-        // (`edit_file` in sessions saved while the agents edited with it.)
+        // (`apply_diff` in sessions saved while the agents edited with it.)
         EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
             let mut notes = Vec::new();
             let all = flag(parameters, "replace_all");
             if all {
                 notes.push("all".to_string());
             }
-            let edits = diff_edits(parameters);
+            let edits = if tool == APPLY_DIFF_TOOL_NAME {
+                diff_edits(parameters)
+            } else {
+                edit_file_edits(parameters)
+            };
             if counted && edits > 1 && !all {
                 notes.push(plural(edits, "edit", "edits"));
             }
@@ -1940,6 +1957,22 @@ mod tests {
         assert_eq!(edit(Some(false.into())), "edit a.rs");
         assert_eq!(edit(Some(true.into())), "edit a.rs (all)");
         assert_eq!(edit(Some("true".into())), "edit a.rs (all)");
+        assert_eq!(
+            brief(
+                EDIT_FILE_TOOL_NAME,
+                &params(&[
+                    ("path", "a.rs".into()),
+                    (
+                        "edits",
+                        serde_json::json!([
+                            {"old_string": "a", "new_string": "b"},
+                            {"old_string": "c", "new_string": "d"},
+                        ])
+                    )
+                ])
+            ),
+            "edit a.rs"
+        );
         // An apply_diff call reads as one edit, of several blocks too,
         // whose count its outcome gives, and as one of every match.
         let block = "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n";
@@ -2155,6 +2188,24 @@ mod tests {
             }
             assert_eq!(line(APPLY_DIFF_TOOL_NAME, &pairs).unwrap(), shown);
         }
+        assert_eq!(
+            line(
+                EDIT_FILE_TOOL_NAME,
+                &[
+                    ("path", "b.rs".into()),
+                    (
+                        "edits",
+                        serde_json::json!([
+                            {"old_string": "x", "new_string": "y"},
+                            {"old_string": "a", "new_string": "b"},
+                            {"old_string": "c", "new_string": "d"},
+                        ])
+                    ),
+                ]
+            )
+            .unwrap(),
+            "● edit b.rs (3 edits)"
+        );
         // The question is shown as it is asked.
         assert_eq!(
             line(ASK_USER_TOOL_NAME, &[("questions", "Which?".into())]),

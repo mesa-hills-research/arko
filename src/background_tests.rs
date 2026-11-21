@@ -128,7 +128,7 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     ));
     assert_eq!(summary(&harness), "The build finished.");
     let woken = bodies.lock().unwrap()[2].clone();
-    assert!(woken.contains("Terminal update"), "{woken}");
+    assert!(woken.contains("Terminal update:"), "{woken}");
     assert!(woken.contains("succeeded"), "{woken}");
     assert!(woken.contains("built"), "{woken}");
     // The line names the job's command, and a reopened session's
@@ -196,7 +196,7 @@ async fn a_job_that_ends_during_the_last_request_still_wakes_the_agent() {
     ));
     assert_eq!(summary(&harness), "The build finished.");
     let woken = body_with(&bodies, "A background job of yours finished");
-    assert_eq!(woken.matches("Terminal update").count(), 1, "{woken}");
+    assert_eq!(woken.matches("Terminal update:").count(), 1, "{woken}");
     assert!(woken.contains("built"), "{woken}");
     managers.shutdown().await;
 }

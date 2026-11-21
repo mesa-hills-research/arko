@@ -957,6 +957,7 @@ pub fn definition() -> ToolDefinition {
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     };
     ToolDefinition {
         name: TOOL_NAME.into(),
@@ -968,7 +969,8 @@ pub fn definition() -> ToolDefinition {
                 "outline, read, search or result.",
                 ToolParameterType::String,
                 true,
-            ),
+            )
+            .with_enum(["outline", "read", "search", "result"]),
             param(
                 "conversation",
                 "The conversation's number, as /resume lists it. By default the one this conversation goes on from.",

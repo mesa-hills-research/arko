@@ -82,15 +82,15 @@ fn under_code_the_description_declares_the_tools_and_is_its_golden() {
     let description = &definition.description;
     for name in super::super::CALLABLE
         .iter()
-        .filter(|name| **name != arko_agents::builtins::EDIT_FILE_TOOL_NAME)
+        .filter(|name| **name != arko_agents::builtins::APPLY_DIFF_TOOL_NAME)
     {
         assert!(description.contains(&format!("\n{name}(args")), "{name}");
     }
-    assert!(!description.contains("edit_file(args"));
+    assert!(!description.contains("apply_diff(args"));
     // As the agent's configuration shows them, line ranges and the hint
-    // that points write_file's callers to apply_diff included.
+    // that points write_file's callers to edit_file included.
     assert!(description.contains("  end_line?: number;"));
-    assert!(description.contains("To change part of a file, use `apply_diff`."));
+    assert!(description.contains("To change part of a file, use `edit_file`."));
     // index_status takes no argument it needs.
     assert!(description.contains("\nindex_status(args?: {"));
     assert_golden("run_code-code-description.txt", &shown(&definition));
@@ -122,6 +122,7 @@ fn a_declaration_holds_the_whole_description_and_no_comment_end() {
     definition.description = "First line.\n\nSee `a */ b`.".into();
     definition.parameters = vec![
         parameter("text", "What to say.", true),
+        parameter("tone", "How to say it.", false).with_enum(["calm", "urgent"]),
         ToolParameterDefinition {
             param_type: ToolParameterType::Bool,
             ..parameter("loud", "Whether to shout.", false)
@@ -129,7 +130,7 @@ fn a_declaration_holds_the_whole_description_and_no_comment_end() {
     ];
     assert_eq!(
         declaration(&definition),
-        "/**\n * First line.\n *\n * See `a *\\/ b`.\n */\nprobe(args: {\n  /** What to say. */\n  text: string;\n  /** Whether to shout. */\n  loud?: boolean;\n}): Promise<string>;"
+        "/**\n * First line.\n *\n * See `a *\\/ b`.\n */\nprobe(args: {\n  /** What to say. */\n  text: string;\n  /** How to say it. */\n  tone?: \"calm\" | \"urgent\";\n  /** Whether to shout. */\n  loud?: boolean;\n}): Promise<string>;"
     );
 }
 

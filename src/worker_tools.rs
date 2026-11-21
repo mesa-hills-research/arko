@@ -80,6 +80,7 @@ fn text_parameter(name: &str, description: &str, required: bool) -> ToolParamete
         is_path: false,
         flag: None,
         default_value: None,
+        enum_values: None,
     }
 }
 
@@ -709,11 +710,10 @@ fn worker_options_definition() -> ToolDefinition {
         name: WORKER_OPTIONS.into(),
         description: "Lists the worker profiles and the models usable now, with their efforts, prices and handover sizes.".into(),
         output_based_example: None,
-        parameters: vec![text_parameter(
-            "show",
-            "profiles, models or all (default all).",
-            false,
-        )],
+        parameters: vec![
+            text_parameter("show", "profiles, models or all (default all).", false)
+                .with_enum(["profiles", "models", "all"]),
+        ],
         parallel_safe: true,
         read_only: true,
         tool_type_details: ToolTypeDetails::DeveloperDefined,
@@ -747,7 +747,8 @@ fn save_worker_profile_definition() -> ToolDefinition {
                 "effort",
                 "low, medium, high, xhigh or max, as the model takes it.",
                 false,
-            ),
+            )
+            .with_enum(["low", "medium", "high", "xhigh", "max"]),
             text_parameter(
                 "instructions",
                 "Standing instructions for workers with this profile, up to 4000 characters. Per-run work goes in start_agent's task.",
@@ -767,7 +768,8 @@ fn save_worker_profile_definition() -> ToolDefinition {
                 "scope",
                 "project (default, kept with the project), session (this session only), or user (every project).",
                 false,
-            ),
+            )
+            .with_enum(["project", "session", "user"]),
         ],
         // Several saves of one response ask the user in one card.
         parallel_safe: true,

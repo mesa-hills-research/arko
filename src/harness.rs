@@ -380,16 +380,16 @@ pub(crate) fn unoffered_with(
             .iter()
             .chain(&fresh_tools.nested_only_tool_names)
         {
-            // One saved while the agents edited with edit_file edits files
+            // One saved while the agents edited with apply_diff edits files
             // with it.
-            let edits_with_edit_file = name == APPLY_DIFF_TOOL_NAME && has(EDIT_FILE_TOOL_NAME);
+            let edits_with_apply_diff = name == EDIT_FILE_TOOL_NAME && has(APPLY_DIFF_TOOL_NAME);
             // One saved with a tool for each MCP tool reaches the servers
             // through those.
             let reaches_servers = name == mcp::MCP_TOOL_NAME
                 && offered
                     .iter()
                     .any(|name| mcp::split_tool_name(name).is_some());
-            if edits_with_edit_file || reaches_servers {
+            if edits_with_apply_diff || reaches_servers {
                 continue;
             }
             let lacks = if !has(name) {
@@ -5940,9 +5940,9 @@ pub(crate) mod tests {
     }
 
     /// File editing's end-to-end tests, in their own file.
-    mod apply_diff {
+    mod edit_file {
         use super::*;
-        include!("apply_diff_tests.rs");
+        include!("edit_file_tests.rs");
     }
 
     /// The user's messages while the agent waits for an answer, end to

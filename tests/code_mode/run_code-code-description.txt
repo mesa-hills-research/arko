@@ -28,7 +28,7 @@ index_search(args: {
   /** An index name, or a directory or file inside an index (absolute or relative; e.g. ../other-repo). Default: the indexes covering path_prefix, else the current directory. */
   index?: string;
   /** Default `hybrid`: good for finding full definitions (`ARKO_HOME`), a symbol with words about it ("Session::save error handling"), and docs/Markdown. `semantic`: describe behaviour in your own words when you don't know the exact symbols ("where are failed requests retried"). `lexical`: exact matches of a name or string in path order, case-sensitive unless ignore_case=true (`rg`/grep is fine as the default for lexical, regex, punctuation or substring searches). Indexes without embeddings fall back to keyword search in semantic and hybrid modes. */
-  mode?: string;
+  mode?: "hybrid" | "semantic" | "lexical";
   /** Results, by default 100 in lexical mode and 10 in semantic and hybrid mode, where 50 is the most. */
   limit?: number;
   /** In lexical mode, true lists every match whatever the limit (all that follow `after`). */
@@ -40,7 +40,7 @@ index_search(args: {
   /** Only results under this directory or file (absolute, or relative to the current directory or named index). */
   path_prefix?: string;
   /** full (default in semantic and hybrid mode): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only. Lexical mode lists the lines that hold the query unless detail is given. */
-  detail?: string;
+  detail?: "full" | "brief";
   /** Only chunks in this language, such as python or rust. When none match, lexical search says so, and semantic and hybrid search list every language. Leave it out unless the project mixes languages and you want one of them. */
   language?: string;
 }): Promise<string>;
@@ -61,7 +61,7 @@ shell(args: {
   timeout_seconds?: number;
 }): Promise<string>;
 
-/** Creates a file, with any directories it needs, or replaces all of an existing one's content. To change part of a file, use `apply_diff`. */
+/** Creates a file, with any directories it needs, or replaces all of an existing one's content. To change part of a file, use `edit_file`. */
 write_file(args: {
   /** The path to the file to write (relative to the current working directory, e.g. 'src/main.rs'). */
   path: string;
@@ -69,28 +69,18 @@ write_file(args: {
   content: string;
 }): Promise<string>;
 
-/**
- * Changes an existing file with one or more SEARCH/REPLACE blocks. Each block's search lines must match whole lines of the file exactly, indentation included, and be found once unless `replace_all` is set. Copy them from `read_file`'s output without the line-number prefix (`12 | `). Every block applies, or none does, and the error says which block failed and why. An empty replace part deletes the lines. Use `write_file` to create a file or replace all of it.
- *
- * Example with two blocks:
- * <<<<<<< SEARCH
- *     let total = 0;
- * =======
- *     let mut total = 0;
- * >>>>>>> REPLACE
- * <<<<<<< SEARCH
- * fn sum(items: &[i32]) -> i32 {
- * =======
- * fn sum(items: &[i64]) -> i64 {
- * >>>>>>> REPLACE
- */
-apply_diff(args: {
+/** Replaces exact text in an existing file. Pass `old_string` and `new_string` for one edit, or `edits` (an array of `{old_string, new_string, replace_all?}`) to apply several in order atomically. Each `old_string` must match the file exactly, including indentation and line breaks, without `read_file`'s line-number prefixes (`12 | `), and appear once unless `replace_all` is true. Any failure leaves the file unchanged. Use `write_file` to create a file or replace all of it. */
+edit_file(args: {
   /** The path to the file to edit (relative to the current working directory, e.g. 'src/main.rs'). */
   path: string;
-  /** One or more SEARCH/REPLACE blocks. */
-  diff: string;
-  /** Replace every occurrence of each block's search lines (default false). */
+  /** The exact text to replace (for a single edit). */
+  old_string?: string;
+  /** The text to put in its place (empty to delete it). */
+  new_string?: string;
+  /** Replace every occurrence of old_string (default false). */
   replace_all?: boolean;
+  /** JSON array of {old_string, new_string, replace_all?} edits to apply in order, atomically. Use either edits or old_string/new_string. */
+  edits?: string;
 }): Promise<string>;
 ```
 
