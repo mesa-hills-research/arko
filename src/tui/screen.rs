@@ -2728,15 +2728,15 @@ mod tests {
         use crate::tui::overlay::{Overlay, SettingsRow};
         let mut app = app();
         app.reading.settings.builtin_skill_list = vec![BuiltinSkillSetting {
-            name: "ponytail".into(),
+            name: "ui-taste".into(),
             on: true,
         }];
         for (row, name, about) in [
             (SettingsRow::BuiltinSkills, SETTING_NAME, SETTING_ABOUT),
             (
                 SettingsRow::BuiltinSkill(0),
-                "ponytail",
-                "Finish the whole task with the best change",
+                "ui-taste",
+                "Checks for anything a person sees in an interface",
             ),
         ] {
             let at = app

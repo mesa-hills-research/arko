@@ -478,7 +478,7 @@ impl Profile {
     }
 
     /// What workers with the profile are limited to, as sentences for its
-    /// approval card, as "Workers with it get only the skills ponytail and
+    /// approval card, as "Workers with it get only the skills prose and
     /// release-notes." Nothing for a set the profile leaves to the starter.
     pub fn limits(&self) -> Vec<String> {
         crate::crew::narrowing_phrases(self.skills.as_deref(), self.mcp.as_deref())

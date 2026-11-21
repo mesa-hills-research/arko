@@ -6027,15 +6027,15 @@ pub(crate) mod tests {
             (all.builtin_skills, all.builtin_skills_off),
             (Some(false), None)
         );
-        let both = ["ponytail".to_string(), "prose".to_string()];
+        let both = ["ui-taste".to_string(), "prose".to_string()];
         for words in [
             vec![
                 "--no-builtin-skill",
-                "ponytail",
+                "ui-taste",
                 "--no-builtin-skill",
                 "prose",
             ],
-            vec!["--no-builtin-skill=ponytail,prose"],
+            vec!["--no-builtin-skill=ui-taste,prose"],
         ] {
             let some = parse(&words).unwrap().options().unwrap();
             assert_eq!(some.builtin_skills, None);
@@ -6045,8 +6045,8 @@ pub(crate) mod tests {
                 "{words:?}"
             );
         }
-        // A typo, and a name an older version had.
-        for unknown in ["pros", "user-facing-prose", "arko-taste"] {
+        // A typo, and names an older version had.
+        for unknown in ["pros", "user-facing-prose", "arko-taste", "ponytail"] {
             let error = parse(&["--no-builtin-skill", unknown])
                 .unwrap_err()
                 .to_string();

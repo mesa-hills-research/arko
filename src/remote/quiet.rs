@@ -2301,16 +2301,16 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         Fixture {
             content: Some((
                 Plain,
-                "# Ponytail\n\nSolve the whole problem with the best change.",
+                "# Prose\n\nWrite the way a person explains something to a colleague beside them.",
             )),
             ..fixture(
                 "a skill",
                 "load_skill",
-                r#"{"name": "ponytail"}"#,
-                "--- BEGIN SKILL: ponytail ---\n# Ponytail\n\nSolve the whole problem with the best change.\n--- END SKILL: ponytail ---",
-                act(ActKind::Skill, "ponytail"),
-                "skill ponytail",
-                "Loaded the ponytail skill",
+                r#"{"name": "prose"}"#,
+                "--- BEGIN SKILL: prose ---\n# Prose\n\nWrite the way a person explains something to a colleague beside them.\n--- END SKILL: prose ---",
+                act(ActKind::Skill, "prose"),
+                "skill prose",
+                "Loaded the prose skill",
             )
         },
     ]

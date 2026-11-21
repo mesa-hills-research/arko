@@ -1542,7 +1542,7 @@ fn approvals(app: &mut App, ctx: &Ctx, tray: Tray) {
                     effort: Some("xhigh".into()),
                     scope: "every project".into(),
                     description: "Judges 3D results".into(),
-                    limits: vec!["Workers with it get only the skill ponytail.".into()],
+                    limits: vec!["Workers with it get only the skill prose.".into()],
                     folder: "Arko's profiles folder".into(),
                     instructions: String::new(),
                     ..ProfileApproval::default()

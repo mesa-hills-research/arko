@@ -258,7 +258,7 @@ fn a_profile_reads_as_its_card() {
         effort: Some("high".into()),
         scope: "every project".into(),
         description: "Judges renders".into(),
-        limits: vec!["Workers with it get only the skill ponytail.".into()],
+        limits: vec!["Workers with it get only the skill prose.".into()],
         folder: "Arko's profiles folder".into(),
         instructions: "Compare it with the reference.".into(),
         ..ProfileApproval::default()
@@ -271,7 +271,7 @@ fn a_profile_reads_as_its_card() {
             (Look::Text, "Judges renders".to_string()),
             (
                 Look::Text,
-                "Workers with it get only the skill ponytail.".to_string()
+                "Workers with it get only the skill prose.".to_string()
             ),
             (Look::Text, "Saved in Arko's profiles folder.".to_string()),
             (Look::Heading, "Instructions".to_string()),
@@ -361,7 +361,7 @@ fn requests_and_answers_cross_the_wire() {
             effort: Some("high".into()),
             scope: "every project".into(),
             description: "Judges".into(),
-            limits: vec!["Workers with it get only the skill ponytail.".into()],
+            limits: vec!["Workers with it get only the skill prose.".into()],
             folder: "Arko's profiles folder".into(),
             instructions: String::new(),
             fast: true,

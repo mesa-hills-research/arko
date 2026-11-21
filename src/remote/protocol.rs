@@ -860,7 +860,7 @@ pub struct ProfileApproval {
     /// What it is for, in one line.
     pub description: String,
     /// What it narrows for the workers started with it, a line each, such
-    /// as "Workers with it get only the skills ponytail and release-notes."
+    /// as "Workers with it get only the skills prose and release-notes."
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<String>,
     /// The folder its file is saved in, as a phrase that follows "in", such

@@ -3258,7 +3258,7 @@ mod tests {
                 message_copies: true,
                 builtin_skills: true,
                 builtin_skill_list: vec![BuiltinSkillSetting {
-                    name: "ponytail".into(),
+                    name: "ui-taste".into(),
                     on: true,
                 }],
                 ..LiveSettings::default()

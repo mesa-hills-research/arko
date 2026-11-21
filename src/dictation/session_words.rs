@@ -1579,7 +1579,7 @@ mod tests {
             off: Vec::new(),
         };
         assert_eq!(skill_names(&[skills], &none), ["alpha"]);
-        assert!(skill_names(&[], &BuiltinSkills::default()).contains(&"ponytail".to_string()));
+        assert!(skill_names(&[], &BuiltinSkills::default()).contains(&"ui-taste".to_string()));
 
         let (root, workspace) = (temp.path().join("arko"), temp.path().join("project"));
         std::fs::create_dir_all(root.join("profiles")).unwrap();

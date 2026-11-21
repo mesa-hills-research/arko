@@ -2060,25 +2060,25 @@ mod tests {
         // A `.env` file sets the default of a new session.
         std::fs::write(
             project.join(".env"),
-            "ARKO_BUILTIN_SKILLS_OFF=\"ponytail, prose\"\n",
+            "ARKO_BUILTIN_SKILLS_OFF=\"ui-taste, prose\"\n",
         )
         .unwrap();
         let (seam, ended) = open(SessionChoice::New, Options::default()).await;
         let seam = seam.unwrap();
-        assert_eq!(choice(&seam.session.id), off(&["ponytail", "prose"]));
+        assert_eq!(choice(&seam.session.id), off(&["ui-taste", "prose"]));
         assert_eq!(
             seam.details.skills().unwrap().builtin_off,
-            ["prose", "ponytail"]
+            ["prose", "ui-taste"]
         );
         quit(seam, ended).await;
         std::fs::write(
             project.join(".env"),
-            "ARKO_BUILTIN_SKILLS_OFF=ponytail,prose\n",
+            "ARKO_BUILTIN_SKILLS_OFF=ui-taste,prose\n",
         )
         .unwrap();
         let (seam, ended) = open(SessionChoice::New, Options::default()).await;
         let seam = seam.unwrap();
-        assert_eq!(choice(&seam.session.id), off(&["ponytail", "prose"]));
+        assert_eq!(choice(&seam.session.id), off(&["ui-taste", "prose"]));
         quit(seam, ended).await;
         std::fs::write(project.join(".env"), "ARKO_BUILTIN_SKILLS=0\n").unwrap();
         let (seam, ended) = open(SessionChoice::New, Options::default()).await;
@@ -2092,18 +2092,18 @@ mod tests {
         // The options come before the file.
         let options = Options {
             builtin_skills: Some(true),
-            builtin_skills_off: Some(vec!["ponytail".into()]),
+            builtin_skills_off: Some(vec!["ui-taste".into()]),
             ..Options::default()
         };
         let (seam, ended) = open(SessionChoice::New, options).await;
         let seam = seam.unwrap();
         let id = seam.session.id.clone();
-        assert_eq!(choice(&id), off(&["ponytail"]));
+        assert_eq!(choice(&id), off(&["ui-taste"]));
         quit(seam, ended).await;
         // A resume without options keeps the session's, even when the file
         // says otherwise.
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), Options::default()).await;
-        assert_eq!(choice(&id), off(&["ponytail"]));
+        assert_eq!(choice(&id), off(&["ui-taste"]));
         quit(seam.unwrap(), ended).await;
         // With options, it changes what they name.
         let options = Options {
@@ -2143,11 +2143,11 @@ mod tests {
         // out the skills it names that are still built in.
         let session = Session::open(&root, &id).unwrap();
         let mut settings = session.load_settings().unwrap();
-        settings.builtin_skills = off(&["user-facing-prose", "ponytail"]);
+        settings.builtin_skills = off(&["user-facing-prose", "ponytail", "ui-taste"]);
         session.save_settings(&settings).unwrap();
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), Options::default()).await;
         let seam = seam.unwrap();
-        assert_eq!(seam.details.skills().unwrap().builtin_off, ["ponytail"]);
+        assert_eq!(seam.details.skills().unwrap().builtin_off, ["ui-taste"]);
         quit(seam, ended).await;
     }
 
@@ -2186,6 +2186,7 @@ mod tests {
                 builtin_skills_off: Some(vec![
                     "pros".into(),
                     "user-facing-prose".into(),
+                    "ponytail".into(),
                     "prose".into(),
                 ]),
                 client: Some(GivenClient(Arc::new(server.client()))),
@@ -2204,8 +2205,8 @@ mod tests {
             .unwrap();
         assert_eq!(saved.builtin_skills.off, ["prose"]);
         let heard = crate::lock(&hearing.0).clone();
-        // A typo, and a name an older version had.
-        for unknown in ["pros", "user-facing-prose"] {
+        // A typo, and names an older version had.
+        for unknown in ["pros", "user-facing-prose", "ponytail"] {
             assert!(
                 heard.iter().any(|note| note.starts_with(&format!(
                     "builtin_skills_off names `{unknown}`, which isn't a built-in skill"

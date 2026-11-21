@@ -681,8 +681,8 @@ async fn a_skill_that_fails_a_check_is_refused_and_nothing_is_written() {
             "The name is 65 characters, and a skill's name is at most 64.",
         ),
         (
-            params("ponytail", &draft("ponytail", "", &[])),
-            "ponytail is the name of a skill built into Arko. Choose another name.",
+            params("ui-taste", &draft("ui-taste", "", &[])),
+            "ui-taste is the name of a skill built into Arko. Choose another name.",
         ),
         (
             params("shared", &draft("shared", "", &[])),
@@ -1537,8 +1537,8 @@ async fn remove_skill_removes_only_what_an_agent_saved() {
         "There's no skill named pdff."
     );
     assert_eq!(
-        fixture.remove("ponytail").await.unwrap_err(),
-        "ponytail is built into Arko. The user leaves it out with /builtin-skills ponytail off."
+        fixture.remove("ui-taste").await.unwrap_err(),
+        "ui-taste is built into Arko. The user leaves it out with /builtin-skills ui-taste off."
     );
 }
 

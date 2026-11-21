@@ -502,7 +502,7 @@ mod tests {
             }
         };
         let hint = "A skill under Active Skills in your instructions is already loaded and needs no load_skill.";
-        let listed = "Skill 'prose' not found. Available skills:\n- ponytail\n- ui-taste";
+        let listed = "Skill 'prose' not found. Available skills:\n- ui-taste\n- worker-choice";
         assert_eq!(
             ask("load_skill", Some("prose"), listed).await,
             Some(format!("{listed}\n\n{hint}"))
@@ -515,16 +515,16 @@ mod tests {
             Some(format!("{none}\n\n{hint}"))
         );
         // A name that is no skill is told the same, with its list.
-        let typo = "Skill 'proze' not found. Available skills:\n- ponytail";
+        let typo = "Skill 'proze' not found. Available skills:\n- ui-taste";
         assert_eq!(
             ask("load_skill", Some("proze"), typo).await,
             Some(format!("{typo}\n\n{hint}"))
         );
         // A skill that was found, another skill's not-found text, a call
         // without a name and another tool's result stay as they were.
-        let found = "--- BEGIN SKILL: ponytail ---\nDo it.\n--- END SKILL: ponytail ---";
-        assert_eq!(ask("load_skill", Some("ponytail"), found).await, None);
-        assert_eq!(ask("load_skill", Some("ponytail"), listed).await, None);
+        let found = "--- BEGIN SKILL: ui-taste ---\nDo it.\n--- END SKILL: ui-taste ---";
+        assert_eq!(ask("load_skill", Some("ui-taste"), found).await, None);
+        assert_eq!(ask("load_skill", Some("ui-taste"), listed).await, None);
         assert_eq!(ask("load_skill", None, listed).await, None);
         assert_eq!(ask("shell", Some("prose"), listed).await, None);
     }

@@ -1,5 +1,5 @@
-//! The skills built into Arko, general advice on writing, coding,
-//! interfaces and choosing workers, held in the program so no file is needed. They are listed with the skills of the
+//! The skills built into Arko, general advice on writing, interfaces and
+//! choosing workers, held in the program so no file is needed. They are listed with the skills of the
 //! skill folders, a skill of the same name in those folders replaces one, and
 //! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF`, their flags and
 //! `/builtin-skills` leave them out (see `BuiltinSkills`). An app reads their
@@ -29,15 +29,10 @@ pub(crate) struct Builtin {
 }
 
 /// The built-in skills, in the order they are listed.
-pub(crate) const BUILTIN: [Builtin; 4] = [
+pub(crate) const BUILTIN: [Builtin; 3] = [
     Builtin {
         name: "prose",
         text: include_str!("builtin_skills/prose/SKILL.md"),
-        pre_loaded: false,
-    },
-    Builtin {
-        name: "ponytail",
-        text: include_str!("builtin_skills/ponytail/SKILL.md"),
         pre_loaded: false,
     },
     Builtin {
@@ -336,21 +331,20 @@ mod tests {
         }
         assert!(
             BUILTIN[0].text.contains("\n# Prose\n")
-                && BUILTIN[1].text.contains("\n# Ponytail\n")
-                && BUILTIN[2].text.contains("\n# Taste\n")
-                && BUILTIN[3].text.contains("\n# Choosing a worker\n")
+                && BUILTIN[1].text.contains("\n# Taste\n")
+                && BUILTIN[2].text.contains("\n# Choosing a worker\n")
         );
     }
 
     /// A description on the lines after `description: >` reads as one.
     #[test]
     fn a_description_on_folded_lines_is_read_as_one() {
-        let ponytail = find("ponytail").unwrap().description();
-        assert!(ponytail.starts_with(
-            "Finish the whole task with the best change, kept as small as that allows, split"
+        let ui_taste = find("ui-taste").unwrap().description();
+        assert!(ui_taste.starts_with(
+            "Checks for anything a person sees in an interface, graphical or terminal"
         ));
-        assert!(ponytail.ends_with("complains about over-engineering."));
-        assert!(!ponytail.contains('\n'));
+        assert!(ui_taste.ends_with("rendering of every state before any code."));
+        assert!(!ui_taste.contains('\n'));
         let one_line = find("prose").unwrap().description();
         assert!(one_line.starts_with("How to write anything someone reads"));
     }
@@ -446,16 +440,13 @@ mod tests {
         let (none, warnings) = BuiltinSkills::new(true, &[], "x");
         assert!(warnings.is_empty());
         assert!(!none.is_all());
-        assert_eq!(
-            none.left_out(),
-            ["prose", "ponytail", "ui-taste", "worker-choice"]
-        );
+        assert_eq!(none.left_out(), ["prose", "ui-taste", "worker-choice"]);
         assert!(!none.gives("prose"));
         let (one, _) =
             BuiltinSkills::new(false, &[" prose".into(), "prose".into(), "".into()], "x");
         assert_eq!(one.off, ["prose"]);
         assert_eq!(one.left_out(), ["prose"]);
-        assert!(one.gives("ponytail") && !one.gives("prose"));
+        assert!(one.gives("ui-taste") && !one.gives("prose"));
     }
 
     /// A name no built-in skill has is skipped, with a warning that says
@@ -464,26 +455,28 @@ mod tests {
     fn a_name_that_is_not_a_built_in_skill_is_skipped_with_a_warning() {
         let (typo, warnings) = BuiltinSkills::new(
             false,
-            &["pros".into(), "ponytail".into()],
+            &["pros".into(), "ui-taste".into()],
             "--no-builtin-skill",
         );
-        assert_eq!(typo.off, ["ponytail"]);
+        assert_eq!(typo.off, ["ui-taste"]);
         assert_eq!(
             warnings,
             [
-                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ponytail, ui-taste, and worker-choice), so Arko skips it"
+                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ui-taste, and worker-choice), so Arko skips it"
             ]
         );
-        // (The interface skill's old name.)
-        let (old, warnings) =
-            BuiltinSkills::new(false, &["arko-taste".into()], "ARKO_BUILTIN_SKILLS_OFF");
-        assert!(old.off.is_empty());
-        assert_eq!(
-            warnings,
-            [
-                "ARKO_BUILTIN_SKILLS_OFF names `arko-taste`, which isn't a built-in skill (they are prose, ponytail, ui-taste, and worker-choice), so Arko skips it"
-            ]
-        );
+        // Names an older version had.
+        for old_name in ["arko-taste", "ponytail"] {
+            let (old, warnings) =
+                BuiltinSkills::new(false, &[old_name.into()], "ARKO_BUILTIN_SKILLS_OFF");
+            assert!(old.off.is_empty());
+            assert_eq!(
+                warnings,
+                [format!(
+                    "ARKO_BUILTIN_SKILLS_OFF names `{old_name}`, which isn't a built-in skill (they are prose, ui-taste, and worker-choice), so Arko skips it"
+                )]
+            );
+        }
     }
 
     #[test]
@@ -495,9 +488,12 @@ mod tests {
         // A name no skill has now, such as one an older version had, is
         // passed over.
         let kept: BuiltinSkills =
-            serde_json::from_str(r#"{"off":["ponytail","user-facing-prose"]}"#).unwrap();
-        assert!(kept.gives("prose") && !kept.gives("ponytail"));
-        assert_eq!(kept.left_out(), ["ponytail"]);
+            serde_json::from_str(r#"{"off":["ui-taste","ponytail","user-facing-prose"]}"#).unwrap();
+        assert!(kept.gives("prose") && !kept.gives("ui-taste"));
+        assert_eq!(kept.left_out(), ["ui-taste"]);
+        let dropped_only: BuiltinSkills = serde_json::from_str(r#"{"off":["ponytail"]}"#).unwrap();
+        assert!(dropped_only.left_out().is_empty());
+        assert_eq!(dropped_only.given().count(), BUILTIN.len());
         let none: BuiltinSkills = serde_json::from_str(r#"{"none":true}"#).unwrap();
         assert!(none.given().next().is_none());
     }

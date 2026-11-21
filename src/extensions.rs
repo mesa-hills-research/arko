@@ -376,11 +376,11 @@ mod tests {
         };
         assert_eq!(
             builtin(Some(true), &[]),
-            ["prose", "ponytail", "ui-taste", "worker-choice"]
+            ["prose", "ui-taste", "worker-choice"]
         );
         assert_eq!(
-            builtin(Some(true), &["ponytail", "pros"]),
-            ["prose", "ui-taste", "worker-choice"]
+            builtin(Some(true), &["ui-taste", "ponytail", "pros"]),
+            ["prose", "worker-choice"]
         );
         assert!(builtin(Some(false), &[]).is_empty());
     }

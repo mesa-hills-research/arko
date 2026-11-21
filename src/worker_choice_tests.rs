@@ -1067,11 +1067,11 @@ async fn a_worker_started_after_a_skills_change_has_the_new_skills() {
             .iter()
             .find(|(who, _, _, body)| who != "main" && user_texts(body)[0].contains(task))
             .unwrap();
-        body.contains("**ponytail**")
+        body.contains("**ui-taste**")
     };
     assert!(harness.live_command("/builtin-skills on", Source::Terminal));
     start_worker(&mut harness, &mut inputs, "Start before the change.").await;
-    assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
+    assert!(harness.live_command("/builtin-skills ui-taste off", Source::Terminal));
     start_worker(&mut harness, &mut inputs, "Start after the change.").await;
     assert!(listed("Start before the change."));
     assert!(!listed("Start after the change."));
@@ -1095,7 +1095,7 @@ async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
     .unwrap();
     let (mut harness, mut inputs, _sender, _server, seen) =
         setup_reading(temp.path(), |who, body| {
-            // It asks for always-on, a name that is no skill and ponytail, one at
+            // It asks for always-on, a name that is no skill and ui-taste, one at
             // a time, then is done.
             let asked = body.matches("function_call_output").count();
             let call = |name: &str| {
@@ -1108,7 +1108,7 @@ async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
             match asked {
                 0 => call("always-on"),
                 1 => call("proze"),
-                2 => call("ponytail"),
+                2 => call("ui-taste"),
                 _ => complete(&format!("w{who}"), "Worker done."),
             }
         })
@@ -1142,12 +1142,12 @@ async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
     assert_eq!(
         results[0],
         format!(
-            "Skill 'always-on' not found. Available skills:\n- ponytail\n- prose\n- ui-taste\n- worker-choice\n\n{note}"
+            "Skill 'always-on' not found. Available skills:\n- prose\n- ui-taste\n- worker-choice\n\n{note}"
         )
     );
-    assert!(results[1].starts_with("Skill 'proze' not found. Available skills:\n- ponytail"));
+    assert!(results[1].starts_with("Skill 'proze' not found. Available skills:\n- prose"));
     assert!(results[1].ends_with(&format!("\n\n{note}")), "{}", results[1]);
-    assert!(results[2].starts_with("--- BEGIN SKILL: ponytail ---"), "{}", results[2]);
+    assert!(results[2].starts_with("--- BEGIN SKILL: ui-taste ---"), "{}", results[2]);
     assert!(!results[2].contains(note));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
@@ -1336,13 +1336,13 @@ Can't be read
     // What a profile limits workers to is told, and nothing when it limits none.
     std::fs::write(
         session.join("narrow.md"),
-        "---\ndescription: Reads\nskills: ponytail\nmcp: none\n---\n",
+        "---\ndescription: Reads\nskills: prose\nmcp: none\n---\n",
     )
     .unwrap();
     assert!(harness.live_command("/profiles narrow", Source::Terminal));
     assert!(
         last_said(&harness.feed).contains(
-            "Runs on the session's worker model. Workers with it get only the skill ponytail. Workers with it get no MCP servers.\n"
+            "Runs on the session's worker model. Workers with it get only the skill prose. Workers with it get no MCP servers.\n"
         ),
         "{}",
         last_said(&harness.feed)

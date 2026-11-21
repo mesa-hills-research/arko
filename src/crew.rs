@@ -564,7 +564,7 @@ pub(crate) fn names_words(names: &[String]) -> String {
 }
 
 /// What a narrowed set of `noun`s (`skill`, `MCP server`) is as a phrase, such as
-/// `only the skills ponytail and release-notes`, or `no MCP servers`.
+/// `only the skills prose and release-notes`, or `no MCP servers`.
 pub(crate) fn only_words(noun: &str, names: &[String]) -> String {
     match names {
         [] => format!("no {noun}s"),
@@ -2992,18 +2992,18 @@ mod tests {
             plain,
             "r2  running  Judge the render\n  runs gpt-6.1-sol at high effort, profile 3d-judge"
         );
-        worker.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+        worker.skills = Some(vec!["prose".into(), "release-notes".into()]);
         worker.mcp = Some(Vec::new());
         assert_eq!(
             describe_worker(&worker),
-            format!("{plain}\n  only the skills ponytail and release-notes\n  no MCP servers")
+            format!("{plain}\n  only the skills prose and release-notes\n  no MCP servers")
         );
-        worker.skills = Some(vec!["ponytail".into()]);
+        worker.skills = Some(vec!["prose".into()]);
         worker.mcp = Some(vec!["github".into(), "sentry".into(), "figma".into()]);
         worker.depth = 2;
         assert!(
             describe_worker(&worker).ends_with(
-                "\n    only the skill ponytail\n    only the MCP servers github, sentry, and figma"
+                "\n    only the skill prose\n    only the MCP servers github, sentry, and figma"
             ),
             "{}",
             describe_worker(&worker)

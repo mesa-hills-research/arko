@@ -1048,7 +1048,7 @@ mod tests {
         };
         assert_eq!(meta(None, None), "3 calls · running · profile impl-light");
         assert_eq!(
-            meta(names(&["ponytail", "release-notes"]), Some(Vec::new())),
+            meta(names(&["prose", "release-notes"]), Some(Vec::new())),
             "3 calls · running · profile impl-light · 2 skills · no MCP"
         );
         assert_eq!(
@@ -1056,7 +1056,7 @@ mod tests {
             "3 calls · running · profile impl-light · no skills · 1 MCP server"
         );
         assert_eq!(
-            meta(names(&["ponytail"]), names(&["github", "sentry", "figma"])),
+            meta(names(&["prose"]), names(&["github", "sentry", "figma"])),
             "3 calls · running · profile impl-light · 1 skill · 3 MCP servers"
         );
     }

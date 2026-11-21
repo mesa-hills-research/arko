@@ -96,11 +96,11 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
         temp.path(),
         BuiltinSkills::default(),
         Vec::new(),
-        Some("ponytail"),
+        Some("ui-taste"),
     )
     .await;
     assert_eq!(bodies.len(), 2);
-    for name in ["prose", "ponytail", "ui-taste", "worker-choice"] {
+    for name in ["prose", "ui-taste", "worker-choice"] {
         assert!(bodies[0].contains(&format!("**{name}**")), "{name}");
     }
     assert!(
@@ -109,14 +109,14 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
     );
     assert!(bodies[0].contains("Load it before designing, building or reviewing a screen"));
     // (A description on folded lines reaches the agents whole.)
-    assert!(bodies[0].contains("complains about over-engineering."));
+    assert!(bodies[0].contains("rendering of every state before any code."));
     assert!(bodies[0].contains("load_skill"));
     // Built-in skills load on demand rather than being pre-loaded.
     assert!(!bodies[0].contains("--- BEGIN SKILL: prose ---"));
     assert!(!bodies[0].contains("# Prose"));
-    assert!(!bodies[0].contains("# Ponytail"));
-    assert!(bodies[1].contains("--- BEGIN SKILL: ponytail ---"));
-    assert!(bodies[1].contains("# Ponytail"));
+    assert!(!bodies[0].contains("# Taste"));
+    assert!(bodies[1].contains("--- BEGIN SKILL: ui-taste ---"));
+    assert!(bodies[1].contains("# Taste"));
 }
 
 /// A skill of the same name in a skill folder replaces the built-in one,
@@ -139,7 +139,7 @@ async fn a_skill_of_the_same_name_replaces_a_built_in_one() {
     assert_eq!(bodies[0].matches("**prose**").count(), 1);
     assert!(bodies[0].contains("My prose skill."));
     assert!(!bodies[0].contains("BEGIN SKILL: prose"));
-    for name in ["ponytail", "review"] {
+    for name in ["ui-taste", "review"] {
         assert!(bodies[0].contains(&format!("**{name}**")), "{name}");
     }
     assert!(bodies[0].contains("built into Arko and from these folders:"));
@@ -147,7 +147,7 @@ async fn a_skill_of_the_same_name_replaces_a_built_in_one() {
     assert!(!bodies[1].contains("# Prose"));
 }
 
-/// `worker-choice` loads on demand like `ponytail`, and what it says is
+/// `worker-choice` loads on demand like `ui-taste`, and what it says is
 /// there once loaded.
 #[tokio::test]
 async fn worker_choice_is_offered_and_loads_by_name() {
@@ -198,7 +198,7 @@ async fn a_not_found_answer_ends_with_a_note_on_active_skills() {
     assert_eq!(bodies.len(), 2);
     assert!(bodies[0].contains("--- BEGIN SKILL: always-on ---"));
     let answer = format!(
-        "Skill 'always-on' not found. Available skills:\\n- ponytail\\n- prose\\n- ui-taste\\n- worker-choice\\n\\n{NOTE}"
+        "Skill 'always-on' not found. Available skills:\\n- prose\\n- ui-taste\\n- worker-choice\\n\\n{NOTE}"
     );
     assert!(bodies[1].contains(&answer), "{}", bodies[1]);
     // A name that is no skill is told the same, with the skills to load.
@@ -216,10 +216,10 @@ async fn a_not_found_answer_ends_with_a_note_on_active_skills() {
         temp.path(),
         BuiltinSkills::default(),
         vec![folder],
-        Some("ponytail"),
+        Some("ui-taste"),
     )
     .await;
-    assert!(bodies[1].contains("--- BEGIN SKILL: ponytail ---"));
+    assert!(bodies[1].contains("--- BEGIN SKILL: ui-taste ---"));
     assert!(!bodies[1].contains(NOTE) && !bodies[1].contains("not found"));
 }
 
@@ -233,7 +233,7 @@ async fn left_out_built_in_skills_are_not_offered() {
         off: vec!["prose".into()],
     };
     let bodies = turn_loading(temp.path(), one, Vec::new(), None).await;
-    assert!(bodies[0].contains("**ponytail**"));
+    assert!(bodies[0].contains("**ui-taste**"));
     assert!(!bodies[0].contains("BEGIN SKILL"));
     assert!(!bodies[0].contains("# Prose"));
     let none = BuiltinSkills {
@@ -242,7 +242,7 @@ async fn left_out_built_in_skills_are_not_offered() {
     };
     let bodies = turn_loading(temp.path(), none.clone(), Vec::new(), None).await;
     assert!(!bodies[0].contains("BEGIN SKILL"));
-    assert!(!bodies[0].contains("**ponytail**"));
+    assert!(!bodies[0].contains("**ui-taste**"));
     assert!(!bodies[0].contains("# Skills"));
     assert!(!bodies[0].contains("load_skill"));
     // The user's own skills still come, without a word about built-in ones.
@@ -262,7 +262,7 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
     let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
     let folder = temp.path().join("skills");
     own_skill(&folder, "review", "Review a diff.");
-    own_skill(&folder, "ponytail", "Mine.");
+    own_skill(&folder, "ui-taste", "Mine.");
     with_folders(&mut harness, vec![folder.clone()]);
     harness.settings.builtin_skills = BuiltinSkills {
         none: false,
@@ -285,13 +285,12 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
     assert_eq!(
         skills,
         [
-            ("ponytail", false, Some(folder.join("ponytail"))),
             ("review", false, None),
-            ("ui-taste", true, None),
+            ("ui-taste", false, Some(folder.join("ui-taste"))),
             ("worker-choice", true, None),
         ]
     );
-    assert_eq!(facts.skills[1].path, Some(folder.join("review")));
+    assert_eq!(facts.skills[0].path, Some(folder.join("review")));
     assert_eq!(facts.skills[2].path, None);
     // With every built-in skill on and no replacement, they follow the
     // folders' skills, the pre-loaded one last.
@@ -309,7 +308,6 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
         skills,
         [
             ("prose", true, false),
-            ("ponytail", true, false),
             ("ui-taste", true, false),
             ("worker-choice", true, false),
         ]
@@ -363,14 +361,14 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     with_folders(&mut harness, vec![folder.clone()]);
     harness.settings.builtin_skills = BuiltinSkills {
         none: false,
-        off: vec!["ponytail".into()],
+        off: vec!["worker-choice".into()],
     };
     harness.publish_details();
     harness.list_skills_within(160);
     let text = printed.0.lock().unwrap().join("\n");
     let lines: Vec<&str> = text.lines().collect();
     // By name, the names in a column of their own, and no line over the width.
-    let names = ["always-on", "prose", "ui-taste", "wide", "worker-choice"];
+    let names = ["always-on", "prose", "ui-taste", "wide"];
     for (line, name) in lines.iter().zip(names) {
         assert!(line.starts_with(&format!("{name:<9}  ")), "{text}");
     }
@@ -382,7 +380,6 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
         "built in".to_string(),
         folder.join("ui-taste").display().to_string(),
         wide.display().to_string(),
-        "built in".to_string(),
     ];
     for (line, place) in lines.iter().zip(&places) {
         assert!(line.ends_with(&format!("  {place}")), "{text}");
@@ -394,9 +391,9 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     assert!(lines[2].contains("  My ui-taste skill. "), "{text}");
     assert!(lines[3].contains("…  "), "{text}");
     assert!(!lines[3].contains(&"日本語".repeat(34)), "{text}");
-    assert_eq!(lines[5], "Built-in skills left out (ponytail).", "{text}");
-    assert_eq!(lines.len(), 6, "{text}");
-    // Of the five skills, the three in the folder are the user's own.
+    assert_eq!(lines[4], "Built-in skills left out (worker-choice).", "{text}");
+    assert_eq!(lines.len(), 5, "{text}");
+    // Of the four skills, the three in the folder are the user's own.
     assert_eq!(harness.header(None).tools, ["3 skills"]);
 
     // On a narrow terminal the folders lose their leading folders, so each
@@ -411,7 +408,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
         lines[0].ends_with("/skills/always-on, always loaded"),
         "{text}"
     );
-    assert_eq!(lines.len(), 6, "{text}");
+    assert_eq!(lines.len(), 5, "{text}");
 
     printed.0.lock().unwrap().clear();
     harness.settings.builtin_skills = BuiltinSkills {
@@ -424,7 +421,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     assert!(text.starts_with("No skills."), "{text}");
     assert!(
-        text.contains("Built-in skills left out (prose, ponytail, ui-taste, worker-choice)."),
+        text.contains("Built-in skills left out (prose, ui-taste, worker-choice)."),
         "{text}"
     );
     assert!(harness.header(None).tools.is_empty());
@@ -475,11 +472,11 @@ async fn a_saved_conversation_resumes_after_the_built_in_skills_changed() {
     // text changed.
     let one = BuiltinSkills {
         none: false,
-        off: vec!["ponytail".into()],
+        off: vec!["ui-taste".into()],
     };
     configure(&mut harness, one, Vec::new());
     let skills = harness.main_config.skills_config.as_mut().unwrap();
-    assert_eq!(skills.embedded.len(), 3);
+    assert_eq!(skills.embedded.len(), 2);
     skills.embedded[0] = arko_agents::EmbeddedSkill::new(
         "prose",
         "---\nname: prose\ndescription: Reworded for a later Arko.\nauto_load: true\n---\n\nNew text.\n",
@@ -496,7 +493,7 @@ async fn a_saved_conversation_resumes_after_the_built_in_skills_changed() {
         .iter()
         .rfind(|body| body.contains("Second."))
         .unwrap();
-    assert!(resumed.contains("**ponytail**"), "left out later");
+    assert!(resumed.contains("**ui-taste**"), "left out later");
     assert!(resumed.contains("**prose**"));
     assert!(resumed.contains("How to write anything someone reads"));
     assert!(!resumed.contains("Reworded for a later Arko."));
@@ -542,40 +539,34 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     assert_eq!(last_said(&harness.feed), "Built-in skills are now on.");
     assert_eq!(
         given(&harness.main_config),
-        ["prose", "ponytail", "ui-taste", "worker-choice"]
+        ["prose", "ui-taste", "worker-choice"]
     );
     assert!(harness.live_command("/builtin-skills prose off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "prose is now off.");
-    assert_eq!(
-        given(&harness.main_config),
-        ["ponytail", "ui-taste", "worker-choice"]
-    );
-    assert_eq!(
-        given(&harness.worker_config),
-        ["ponytail", "ui-taste", "worker-choice"]
-    );
+    assert_eq!(given(&harness.main_config), ["ui-taste", "worker-choice"]);
+    assert_eq!(given(&harness.worker_config), ["ui-taste", "worker-choice"]);
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get ponytail, ui-taste, and worker-choice. prose is left out. /builtin-skills"
+            "Built-in skills are on, so the agents get ui-taste and worker-choice. prose is left out. /builtin-skills"
         ),
         "{}",
         last_said(&harness.feed)
     );
-    assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
-    assert_eq!(last_said(&harness.feed), "ponytail is now off.");
-    assert_eq!(given(&harness.main_config), ["ui-taste", "worker-choice"]);
+    assert!(harness.live_command("/builtin-skills ui-taste off", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "ui-taste is now off.");
+    assert_eq!(given(&harness.main_config), ["worker-choice"]);
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get ui-taste and worker-choice. prose and ponytail are left out."
+            "Built-in skills are on, so the agents get worker-choice. prose and ui-taste are left out."
         ),
         "{}",
         last_said(&harness.feed)
     );
     let saved = harness.session.load_settings().unwrap().builtin_skills;
     assert_eq!(saved, harness.settings.builtin_skills);
-    assert_eq!(saved.off, ["prose", "ponytail"]);
+    assert_eq!(saved.off, ["prose", "ui-taste"]);
     let live = remote::Meter::read(harness.gauges.as_ref()).settings;
     assert!(live.builtin_skills);
     let listed: Vec<(&str, bool)> = live
@@ -587,8 +578,7 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         listed,
         [
             ("prose", false),
-            ("ponytail", false),
-            ("ui-taste", true),
+            ("ui-taste", false),
             ("worker-choice", true)
         ]
     );
@@ -601,7 +591,6 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         last_said(&harness.feed)
     );
     // Off for all leaves each name's own switch as it was.
-    assert!(harness.live_command("/builtin-skills ui-taste off", Source::Terminal));
     assert!(harness.live_command("/builtin-skills worker-choice off", Source::Terminal));
     assert!(harness.live_command("/builtin-skills off", Source::Terminal));
     assert!(given(&harness.main_config).is_empty());
@@ -616,7 +605,11 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     for (bad, said) in [
         (
             "pros off",
-            "pros isn't a built-in skill. They are prose, ponytail, ui-taste, and worker-choice.",
+            "pros isn't a built-in skill. They are prose, ui-taste, and worker-choice.",
+        ),
+        (
+            "ponytail off",
+            "ponytail isn't a built-in skill. They are prose, ui-taste, and worker-choice.",
         ),
         (
             "maybe",
@@ -652,21 +645,21 @@ async fn a_change_to_the_built_in_skills_after_the_start_reaches_the_next_conver
         bodies.lock().unwrap().last().unwrap().clone()
     };
     let first = say(&mut harness, "First.").await;
-    assert!(first.contains("**ponytail**"));
-    assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
+    assert!(first.contains("**worker-choice**"));
+    assert!(harness.live_command("/builtin-skills worker-choice off", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "ponytail is now off. The conversation going on keeps its skills. New workers and new conversations get the change."
+        "worker-choice is now off. The conversation going on keeps its skills. New workers and new conversations get the change."
     );
     let going_on = say(&mut harness, "Second.").await;
-    assert!(going_on.contains("**ponytail**"), "kept");
+    assert!(going_on.contains("**worker-choice**"), "kept");
     harness.new_conversation();
     let new = say(&mut harness, "Third.").await;
-    assert!(!new.contains("**ponytail**"), "left out");
+    assert!(!new.contains("**worker-choice**"), "left out");
     assert!(new.contains("**ui-taste**"));
     assert_eq!(
         harness.session.load_settings().unwrap().builtin_skills.off,
-        ["ponytail"]
+        ["worker-choice"]
     );
     harness.crew.as_ref().unwrap().shutdown().await;
 }

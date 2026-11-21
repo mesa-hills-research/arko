@@ -209,7 +209,7 @@ main agent (see [skills](skills.md) and [MCP servers](mcp.md)). `start_agent` ta
 `mcp` to give a worker fewer. Each is names separated by commas, a JSON array of names or `none`.
 
 ```
-skills: ponytail, release-notes
+skills: prose, release-notes
 mcp: none
 ```
 

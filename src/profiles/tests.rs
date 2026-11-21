@@ -59,17 +59,17 @@ fn every_key_survives_a_round_trip() {
 #[test]
 fn skills_and_servers_are_lists_in_the_front_matter() {
     let mut profile = Profile::new("narrow", "Reads");
-    profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    profile.skills = Some(vec!["prose".into(), "release-notes".into()]);
     profile.mcp = Some(Vec::new());
     let text = profile.render();
     assert_eq!(
         text,
-        "---\ndescription: Reads\nskills: ponytail, release-notes\nmcp: none\n---\n"
+        "---\ndescription: Reads\nskills: prose, release-notes\nmcp: none\n---\n"
     );
     assert_eq!(Profile::parse("narrow", &text).unwrap(), profile);
     assert_eq!(profile.check(), Ok(()));
     // The other forms read the same, and a repeated name counts once.
-    let json = "---\ndescription: Reads\nskills: [\"ponytail\", \"release-notes\", \"ponytail\"]\nmcp: None\n---\n";
+    let json = "---\ndescription: Reads\nskills: [\"prose\", \"release-notes\", \"prose\"]\nmcp: None\n---\n";
     assert_eq!(Profile::parse("narrow", json).unwrap(), profile);
     // Left out or blank is the starter's.
     let blank = Profile::parse("narrow", "---\ndescription: Reads\nskills:\n---\n").unwrap();
@@ -110,12 +110,12 @@ fn the_approval_says_what_workers_with_the_profile_get() {
     assert!(profile.limits().is_empty());
     assert!(approval(&profile, Place::User).limits.is_empty());
     let plain = details(&profile);
-    profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    profile.skills = Some(vec!["prose".into(), "release-notes".into()]);
     profile.mcp = Some(Vec::new());
     assert_eq!(
         profile.limits(),
         [
-            "Workers with it get only the skills ponytail and release-notes.",
+            "Workers with it get only the skills prose and release-notes.",
             "Workers with it get no MCP servers."
         ]
     );
@@ -137,11 +137,11 @@ fn the_approval_says_what_workers_with_the_profile_get() {
     );
     assert_eq!(plain[3], (Look::Heading, "Instructions".to_string()));
     assert_eq!(details(&profile), narrowed);
-    profile.skills = Some(vec!["ponytail".into()]);
+    profile.skills = Some(vec!["prose".into()]);
     profile.mcp = None;
     assert_eq!(
         profile.limits(),
-        ["Workers with it get only the skill ponytail."]
+        ["Workers with it get only the skill prose."]
     );
 }
 

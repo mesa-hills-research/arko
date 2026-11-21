@@ -4871,7 +4871,7 @@ pub(super) mod tests {
         };
         let mut reading = app.reading.clone();
         reading.settings.builtin_skills = true;
-        reading.settings.builtin_skill_list = vec![skill("prose", true), skill("ponytail", false)];
+        reading.settings.builtin_skill_list = vec![skill("prose", true), skill("ui-taste", false)];
         app.set_reading(reading);
         let rows = app.settings_rows();
         let all = rows
@@ -4888,7 +4888,7 @@ pub(super) mod tests {
         for (row, expected) in [
             (all, "/builtin-skills off"),
             (all + 1, "/builtin-skills prose off"),
-            (all + 2, "/builtin-skills ponytail on"),
+            (all + 2, "/builtin-skills ui-taste on"),
         ] {
             app.overlay = Some(Overlay::Settings { row, picker: None });
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
