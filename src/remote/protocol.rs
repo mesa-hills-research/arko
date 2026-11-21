@@ -814,6 +814,8 @@ pub enum Approval {
     McpServer(ServerApproval),
     /// A worker the main agent starts on a model billed per token.
     WorkerBilling(BillingApproval),
+    /// A kept search index an agent wants to remove.
+    RemoveIndex(RemoveIndexApproval),
 }
 
 /// Where a skill or a server is kept.
@@ -1054,6 +1056,28 @@ pub struct BillingApproval {
     pub task: String,
 }
 
+/// A kept search index an agent wants to remove.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct RemoveIndexApproval {
+    /// The index's name, such as `arko`.
+    pub name: String,
+    /// `code` or `docs` (named `index_kind` because `Approval` uses `kind` as its tag).
+    pub index_kind: String,
+    /// The indexed directory.
+    pub root: String,
+    /// Disk size of the index folder, in bytes.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub bytes: u64,
+    /// Embedding spend on this index in dollars, when non-zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_cost: Option<f64>,
+}
+
+fn is_zero_u64(count: &u64) -> bool {
+    *count == 0
+}
+
 fn yes() -> bool {
     true
 }
@@ -1197,7 +1221,7 @@ pub fn reject_label(count: usize) -> &'static str {
 
 impl Approval {
     /// What it is, in a word, which is Profile, Skill, Update (of a skill an agent
-    /// saved), Server or Worker.
+    /// saved), Server, Worker or Index.
     pub fn kind_word(&self) -> &'static str {
         match self {
             Approval::Profile(_) => "Profile",
@@ -1205,39 +1229,43 @@ impl Approval {
             Approval::Skill(_) => "Skill",
             Approval::McpServer(_) => "Server",
             Approval::WorkerBilling(_) => "Worker",
+            Approval::RemoveIndex(_) => "Index",
         }
     }
 
-    /// Its name, meaning the profile's, the skill's, the server's, or the worker's
-    /// model.
+    /// Its name, meaning the profile's, the skill's, the server's, the worker's
+    /// model, or the index's name.
     pub fn name(&self) -> &str {
         match self {
             Approval::Profile(profile) => &profile.name,
             Approval::Skill(skill) => &skill.name,
             Approval::McpServer(server) => &server.name,
             Approval::WorkerBilling(billing) => &billing.model,
+            Approval::RemoveIndex(index) => &index.name,
         }
     }
 
-    /// Where it applies, as "every project", "this project", or "billed per
-    /// token" for a worker.
+    /// Where it applies, as "every project", "this project", "billed per
+    /// token" for a worker, or "kept index" for removing a kept index.
     pub fn scope(&self) -> &str {
         match self {
             Approval::Profile(profile) => &profile.scope,
             Approval::Skill(skill) => skill.scope.words(),
             Approval::McpServer(server) => server.scope.words(),
             Approval::WorkerBilling(_) => "billed per token",
+            Approval::RemoveIndex(_) => "kept index",
         }
     }
 
-    /// Whether it applies to every project, which the tray's row shows in
-    /// the warning style.
+    /// Whether it applies to every project (or removes a kept index shared
+    /// across sessions), which the tray's row shows in the warning style.
     pub fn every_project(&self) -> bool {
         match self {
             Approval::Profile(profile) => profile.scope == Scope::User.words(),
             Approval::Skill(skill) => skill.scope == Scope::User,
             Approval::McpServer(server) => server.scope == Scope::User,
             Approval::WorkerBilling(_) => false,
+            Approval::RemoveIndex(_) => true,
         }
     }
 
@@ -1277,6 +1305,10 @@ impl Approval {
                 }
                 parts.join(", ")
             }
+            Approval::RemoveIndex(index) => match index.embed_cost.filter(|c| *c > 0.0) {
+                Some(cost) => format!("{} ({} spent)", index.root, money(cost)),
+                None => index.root.clone(),
+            },
         }
     }
 
@@ -1310,6 +1342,9 @@ impl Approval {
             ),
             Approval::WorkerBilling(billing) => {
                 format!("Start a worker on {}, billed per token?", billing.model)
+            }
+            Approval::RemoveIndex(index) => {
+                format!("Remove the kept index {}?", index.name)
             }
         }
     }
@@ -1558,6 +1593,33 @@ impl Approval {
                         "."
                     };
                     text(&mut lines, format!("The task is “{task}”{end}"));
+                }
+            }
+            Approval::RemoveIndex(index) => {
+                text(
+                    &mut lines,
+                    format!(
+                        "Indexes {} ({}). The indexed files stay untouched.",
+                        index.root, index.index_kind
+                    ),
+                );
+                let spent = index.embed_cost.filter(|cost| *cost > 0.0);
+                match (index.bytes > 0, spent) {
+                    (true, Some(cost)) => text(
+                        &mut lines,
+                        format!(
+                            "Uses {} on disk and {} in embeddings.",
+                            size(index.bytes),
+                            money(cost)
+                        ),
+                    ),
+                    (true, None) => {
+                        text(&mut lines, format!("Uses {} on disk.", size(index.bytes)));
+                    }
+                    (false, Some(cost)) => {
+                        text(&mut lines, format!("Cost {} in embeddings.", money(cost)));
+                    }
+                    (false, None) => {}
                 }
             }
         }

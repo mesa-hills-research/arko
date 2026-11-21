@@ -367,6 +367,7 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         refuse: None,
         asker: None,
         root: None,
+        indexes: None,
     });
     let worker = settings("luna", Effort::High);
     let config =

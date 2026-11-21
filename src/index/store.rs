@@ -5,6 +5,8 @@
 //! watcher). The two states are separate directories, and each takes its own lock.
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use arko_index::FileRules;
 use chrono::{DateTime, Utc};
@@ -14,6 +16,10 @@ use serde::{Deserialize, Serialize};
 pub const INDEXES_DIR: &str = "indexes";
 /// The manifest in an index's folder.
 pub const MANIFEST_FILE: &str = "index.json";
+/// Active-day counter file in `<data root>/indexes/`.
+pub const USAGE_FILE: &str = "usage.json";
+/// Per-index last-search record in an index's folder.
+pub const LAST_SEARCH_FILE: &str = "last_search.json";
 /// arko_index's index2 state in an index's folder.
 pub const STATE_DIR: &str = "state";
 /// The inotify watcher's state (Linux).
@@ -23,6 +29,17 @@ pub const WATCH2_DIR: &str = "watch2";
 pub const WATCH_DIR: &str = "watch";
 /// The manifest format this version writes.
 pub const MANIFEST_VERSION: u32 = 1;
+/// Days of Arko use without a search before a worktree index expires.
+pub const WORKTREE_EXPIRE_DAYS: u32 = 30;
+/// Grace period in days of Arko use for migrated lexical-only indexes.
+pub const MIGRATE_LEXICAL_DAYS: u32 = 30;
+/// Threshold in days of use for warning about indexes expiring soon.
+pub const EXPIRING_SOON_DAYS: u64 = 3;
+
+/// Serializes active-day counter updates within this process.
+static USAGE_LOCK: Mutex<()> = Mutex::new(());
+/// Monotonic counter for unique atomic-write temporary file names.
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// The default cap on the tokens one embedding run may spend (voyage-code-4,
 /// $0.60).
 pub const DEFAULT_MAX_EMBED_TOKENS: u64 = 5_000_000;
@@ -128,6 +145,81 @@ impl Rules {
     }
 }
 
+/// How long an index stays without a search.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lifetime {
+    /// Kept until the user removes it (or approves removing it).
+    Keep,
+    /// Removed after this many days of Arko use without a search.
+    Days(u32),
+    /// Automatic index for a linked git worktree, derived from `main`.
+    /// Removed when its folder is deleted, its branch is merged and clean,
+    /// or after [`WORKTREE_EXPIRE_DAYS`] days of use without a search.
+    Worktree { main: String },
+}
+
+impl Lifetime {
+    /// Parses `"keep"` or a positive number of days (such as `"7"`, `"30"`, `"14d"`).
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let trimmed = text.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower == "keep" {
+            return Ok(Lifetime::Keep);
+        }
+        let digits = lower
+            .strip_suffix("days")
+            .or_else(|| lower.strip_suffix("day"))
+            .or_else(|| lower.strip_suffix('d'))
+            .unwrap_or(&lower)
+            .trim();
+        let days: u32 = digits.parse().map_err(|_| {
+            format!(
+                "{trimmed:?} isn't a valid lifetime (use \"keep\" or a positive number of days)"
+            )
+        })?;
+        if days == 0 {
+            return Err("lifetime must be \"keep\" or at least 1 day".into());
+        }
+        Ok(Lifetime::Days(days))
+    }
+
+    pub fn is_keep(&self) -> bool {
+        matches!(self, Lifetime::Keep)
+    }
+
+    pub fn is_worktree(&self) -> bool {
+        matches!(self, Lifetime::Worktree { .. })
+    }
+
+    /// Days of use without a search before this index expires (`None` for `Keep`).
+    pub fn expire_days(&self) -> Option<u64> {
+        match self {
+            Lifetime::Keep => None,
+            Lifetime::Days(days) => Some(u64::from(*days)),
+            Lifetime::Worktree { .. } => Some(u64::from(WORKTREE_EXPIRE_DAYS)),
+        }
+    }
+
+    /// The main index's name when this is a worktree index.
+    pub fn main_name(&self) -> Option<&str> {
+        match self {
+            Lifetime::Worktree { main } => Some(main.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Short description, such as `"keep"`, `"14 days of use"`, `"worktree of arko"`.
+    pub fn describe(&self) -> String {
+        match self {
+            Lifetime::Keep => "keep".into(),
+            Lifetime::Days(1) => "1 day of use".into(),
+            Lifetime::Days(days) => format!("{days} days of use"),
+            Lifetime::Worktree { main } => format!("worktree of {main}"),
+        }
+    }
+}
+
 /// The last successful build.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -140,6 +232,8 @@ pub struct BuildRecord {
     pub seconds: f64,
     /// arko_index's one-line report, with files indexed, skipped, ignored.
     pub summary: String,
+    /// Vectors copied from other indexes' caches during this build.
+    pub borrowed: u64,
 }
 
 /// `index.json` holds an index's settings and history. Every field has a default, and
@@ -179,6 +273,25 @@ pub struct Manifest {
     /// rebuilds) wait for an explicit one, so a large tree doesn't spend the cap
     /// again and again.
     pub cap_reached: bool,
+    /// How long this index stays without a search. `None` only in manifests
+    /// written before lifetimes existed, which are migrated on load or sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifetime: Option<Lifetime>,
+    /// Folder id of the main index this worktree index belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_index: Option<String>,
+    /// Session that created this index, if created from an Arko session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_session: Option<String>,
+    /// Agent run that created this index, if created by a tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_run: Option<String>,
+    /// Active-day count when this index was created (or migrated).
+    #[serde(default)]
+    pub created_day: u64,
+    /// Active-day count when this index's lifetime was last changed.
+    #[serde(default)]
+    pub lifetime_changed_day: u64,
 }
 
 impl Default for Manifest {
@@ -200,8 +313,32 @@ impl Default for Manifest {
             embed_tokens: 0,
             embed_cost: 0.0,
             cap_reached: false,
+            lifetime: None,
+            parent_index: None,
+            created_by_session: None,
+            created_by_run: None,
+            created_day: 0,
+            lifetime_changed_day: 0,
         }
     }
+}
+
+/// Active-day counter stored in `<data root>/indexes/usage.json`.
+/// Increments once per UTC calendar day that Arko is used.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    pub days: u64,
+    pub last_date: String,
+}
+
+/// Last-search record stored in `<index dir>/last_search.json`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastSearch {
+    /// Active-day count when this index was last searched.
+    pub day: u64,
+    /// UTC timestamp when this index was last searched.
+    pub at: DateTime<Utc>,
 }
 
 /// An index's folder and the paths in it.
@@ -295,24 +432,138 @@ pub fn load_manifest(dir: &Path) -> Result<Manifest, String> {
     Ok(manifest)
 }
 
-/// Replaces a manifest atomically (a temporary file renamed over it). The
-/// file is named by the process, so writers in one process take turns
-/// (the engine's manifest lock).
-pub fn save_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
+/// Writes `bytes` to `dir.join(file)` atomically using a unique temporary file.
+fn atomic_write(dir: &Path, file: &str, bytes: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("could not create {} ({error})", dir.display()))?;
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{file}.{}.{seq}.tmp", std::process::id()));
+    std::fs::write(&tmp, bytes)
+        .map_err(|error| format!("could not write {} ({error})", tmp.display()))?;
+    std::fs::rename(&tmp, dir.join(file)).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not write {} ({error})", dir.join(file).display())
+    })
+}
+
+/// Replaces a manifest atomically (a temporary file renamed over it). Writers
+/// in one process take turns under the engine's manifest lock.
+pub fn save_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
     let mut bytes = serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
-    let tmp = dir.join(format!(".{MANIFEST_FILE}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, &bytes)
-        .map_err(|error| format!("could not write {} ({error})", tmp.display()))?;
-    std::fs::rename(&tmp, dir.join(MANIFEST_FILE)).map_err(|error| {
-        let _ = std::fs::remove_file(&tmp);
-        format!(
-            "could not write {} ({error})",
-            dir.join(MANIFEST_FILE).display()
-        )
-    })
+    atomic_write(dir, MANIFEST_FILE, &bytes)
+}
+
+/// Reads `<indexes_dir>/usage.json`, returning `Usage::default()` when missing
+/// or unreadable.
+pub fn load_usage(indexes_dir: &Path) -> Usage {
+    let path = indexes_dir.join(USAGE_FILE);
+    std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Today's UTC date formatted as `YYYY-MM-DD`.
+pub fn utc_date_today() -> String {
+    Utc::now().format("%Y-%m-%d").to_string()
+}
+
+/// Records that Arko was used on UTC calendar date `today` (`YYYY-MM-DD`) and
+/// returns the active-day count. Only advances once per calendar day (monotonic
+/// on `today > last_date`), so clock skew backwards or repeated opens on the
+/// same day don't double-count.
+pub fn record_active_day(indexes_dir: &Path, today: &str) -> u64 {
+    let _guard = USAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut usage = load_usage(indexes_dir);
+    if usage.days == 0 {
+        usage.days = 1;
+        usage.last_date = today.to_string();
+        if let Ok(mut bytes) = serde_json::to_vec_pretty(&usage) {
+            bytes.push(b'\n');
+            let _ = atomic_write(indexes_dir, USAGE_FILE, &bytes);
+        }
+        return usage.days;
+    }
+    if today > usage.last_date.as_str() {
+        usage.days += 1;
+        usage.last_date = today.to_string();
+        if let Ok(mut bytes) = serde_json::to_vec_pretty(&usage) {
+            bytes.push(b'\n');
+            let _ = atomic_write(indexes_dir, USAGE_FILE, &bytes);
+        }
+    }
+    usage.days
+}
+
+/// Reads `<dir>/last_search.json`, returning `None` if never searched or unreadable.
+pub fn load_last_search(dir: &Path) -> Option<LastSearch> {
+    let bytes = std::fs::read(dir.join(LAST_SEARCH_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Writes `<dir>/last_search.json` atomically.
+pub fn save_last_search(dir: &Path, record: &LastSearch) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(record).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    atomic_write(dir, LAST_SEARCH_FILE, &bytes)
+}
+
+/// Total bytes of regular files under `path` (non-following symlinks, errors skipped).
+pub fn dir_size(path: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    total = total.saturating_add(meta.len());
+                }
+            } else if ft.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    total
+}
+
+/// Formats byte sizes as `840 B`, `14 KB`, `1.4 MB`, `1.2 GB`.
+pub fn fmt_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        if b >= 10.0 * MB {
+            format!("{:.0} MB", b / MB)
+        } else {
+            format!("{:.1} MB", b / MB)
+        }
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Whether `root` was deleted: the folder itself does not exist, while its
+/// parent directory does. An unmounted drive has a missing parent and returns
+/// `false`.
+pub fn folder_deleted(root: &Path) -> bool {
+    !root.exists() && root.parent().is_some_and(Path::exists)
 }
 
 /// One folder under `indexes/`.

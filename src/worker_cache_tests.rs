@@ -666,6 +666,7 @@ fn reopened(
         refuse: None,
         asker: None,
         root: None,
+        indexes: None,
     });
     again.attach(harness.workflow(), None);
     (feed, updates, again)

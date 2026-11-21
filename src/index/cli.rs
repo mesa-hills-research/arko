@@ -10,9 +10,10 @@ use arko_index::dense::{EmbedProgress, StopSignal};
 use super::embed::{self, Backend};
 use super::engine::{
     Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, SearchOutput,
-    Timing, chunks_in_files, fmt_count, fmt_counted, fmt_dollars,
+    StatusScope, Timing, chunks_in_files, fmt_count, fmt_counted, fmt_dollars,
 };
-use super::tools::{self, format_create, format_status};
+use super::store::Lifetime;
+use super::tools::{self, format_create, format_status_output};
 
 /// `arko index` subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
@@ -42,6 +43,9 @@ pub enum IndexCommand {
         /// Token cap of each embedding run, such as 200k, 5M or 5000000 (default 5M)
         #[arg(long, value_parser = count_arg)]
         max_embed_tokens: Option<u64>,
+        /// How long to keep the index without a search: keep (default) or days of use (e.g. 7, 30)
+        #[arg(long)]
+        lifetime: Option<String>,
         /// Build and estimate only, and embed later (Arko's monitoring or `arko index embed`)
         #[arg(long)]
         no_wait: bool,
@@ -129,6 +133,13 @@ pub enum IndexCommand {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Change an index's lifetime (keep, or a positive number of days of use)
+    Lifetime {
+        /// An index name or root path
+        index: String,
+        /// keep, or a positive number of days of use (e.g. 7, 30)
+        lifetime: String,
+    },
     /// Delete an index (the indexed files are untouched)
     Remove {
         /// An index name or root path
@@ -180,6 +191,11 @@ pub(super) fn cli_text(text: &str) -> String {
     let text = [
         ("index_manage action=embed", "`arko index embed`"),
         ("index_manage action=rebuild", "`arko index update --force`"),
+        ("index_manage action=lifetime", "`arko index lifetime`"),
+        (
+            "call index_status with index=\"all\"",
+            "run `arko index status`",
+        ),
         ("index_status", "`arko index status`"),
         (
             "index_create (or `arko index create PATH`)",
@@ -261,8 +277,10 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             no_monitor,
             no_embed,
             max_embed_tokens,
+            lifetime,
             no_wait,
         } => {
+            let lifetime = lifetime.as_deref().map(Lifetime::parse).transpose()?;
             let args = CreateArgs {
                 path: path.unwrap_or_else(|| PathBuf::from(".")),
                 cwd: cwd.to_path_buf(),
@@ -273,6 +291,9 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 monitor: !no_monitor,
                 embed: no_embed.then_some(false),
                 max_embed_tokens,
+                lifetime,
+                created_by_session: None,
+                created_by_run: None,
                 wait: false,
                 defer_embed: true,
             };
@@ -325,10 +346,16 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                             ),
                             (None, true) => "not embedded".to_string(),
                         };
+                        let life = match &report.lifetime {
+                            Some(Lifetime::Keep) | None => "keep".to_string(),
+                            Some(Lifetime::Days(days)) => format!("{days}d"),
+                            Some(Lifetime::Worktree { .. }) => "worktree".to_string(),
+                        };
                         println!(
-                            "{}\t{}\t{}\t{}\t{}\t{}",
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             manifest.name,
                             manifest.kind.as_str(),
+                            life,
                             report.chunks.map_or_else(
                                 || "- chunks".into(),
                                 |chunks| fmt_counted(chunks, "chunk", "chunks")
@@ -346,9 +373,17 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
         IndexCommand::Status { index } => {
             let worker = Arc::clone(indexes);
             let cwd = cwd.to_path_buf();
-            let reports = blocking(move || worker.status_blocking(index.as_deref(), &cwd)).await?;
-            println!("{}", cli_text(&format_status(&reports, None)));
-            for report in &reports {
+            let output = blocking(move || {
+                let scope = match index.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    None => StatusScope::All,
+                    Some(name) if name.eq_ignore_ascii_case("all") => StatusScope::All,
+                    Some(name) => StatusScope::One(name),
+                };
+                worker.status_for(scope, &cwd)
+            })
+            .await?;
+            println!("{}", cli_text(&format_status_output(&output, None)));
+            for report in &output.reports {
                 println!("{} is stored in {}", report.id, report.dir.display());
             }
             if !indexes.has_key() {
@@ -389,6 +424,8 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 language,
                 ignore_case,
                 cwd: cwd.to_path_buf(),
+                created_by_session: None,
+                created_by_run: None,
             };
             let text = args.query.clone();
             let worker = Arc::clone(indexes);
@@ -419,19 +456,29 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             })
             .await?;
             match built {
-                Some(record) => println!(
-                    "Rebuilt {} with {} ({:.1} s). {}.",
-                    found.manifest.name,
-                    chunks_in_files(record.chunks, record.files),
-                    record.seconds,
-                    record.summary
-                ),
+                Some(record) => {
+                    let borrowed = if record.borrowed > 0 {
+                        format!(
+                            " Borrowed {}.",
+                            fmt_counted(record.borrowed, "cached vector", "cached vectors")
+                        )
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "Rebuilt {} with {} ({:.1} s). {}.{borrowed}",
+                        found.manifest.name,
+                        chunks_in_files(record.chunks, record.files),
+                        record.seconds,
+                        record.summary
+                    );
+                }
                 None => println!("{} is up to date with its files.", found.manifest.name),
             }
             if found.manifest.embed && indexes.has_key() {
                 let summary =
                     embed_with_progress(indexes, &found, found.manifest.max_embed_tokens).await?;
-                if summary.new > 0 || summary.embedded < summary.docs {
+                if summary.new > 0 || summary.borrowed > 0 || summary.embedded < summary.docs {
                     println!("{}.", crate::ui::sentence(&summary.line()));
                 }
             }
@@ -484,17 +531,28 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             indexes: names,
             all,
         } => {
+            let all_indexes = indexes.all();
             let targets: Vec<Found> = if all {
-                indexes
-                    .all()
-                    .into_iter()
-                    .filter(|found| found.manifest.monitor)
+                all_indexes
+                    .iter()
+                    .filter(|found| {
+                        found.manifest.monitor
+                            && !indexes
+                                .effective_lifetime(found, &all_indexes)
+                                .is_worktree()
+                    })
+                    .cloned()
                     .collect()
             } else if names.is_empty() {
                 indexes
                     .related(cwd)
                     .into_iter()
-                    .filter(|found| found.manifest.monitor)
+                    .filter(|found| {
+                        found.manifest.monitor
+                            && !indexes
+                                .effective_lifetime(found, &all_indexes)
+                                .is_worktree()
+                    })
                     .collect()
             } else {
                 names
@@ -532,6 +590,17 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             let on = state == "on";
             let text = blocking(move || worker.manage_blocking(&index, &Action::Monitor(on), &cwd))
                 .await?;
+            println!("{}", cli_text(&text));
+            Ok(ExitCode::SUCCESS)
+        }
+        IndexCommand::Lifetime { index, lifetime } => {
+            let lifetime = Lifetime::parse(&lifetime)?;
+            let worker = Arc::clone(indexes);
+            let cwd = cwd.to_path_buf();
+            let text = blocking(move || {
+                worker.manage_blocking(&index, &Action::SetLifetime(lifetime), &cwd)
+            })
+            .await?;
             println!("{}", cli_text(&text));
             Ok(ExitCode::SUCCESS)
         }

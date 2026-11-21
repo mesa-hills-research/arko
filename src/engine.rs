@@ -919,8 +919,26 @@ impl Engine {
             });
             withheld = monitors;
         }
+        // Someone answers the agent's questions, and what they type while it
+        // works reaches it as notes (else each line is a turn of its own).
+        let interactive = options.interactive;
+        // The front end attaches a printer, or a feed, once the session is open.
+        let output = Arc::new(Output::new(None, one_shot));
+        // The main agent's questions are put to the user at the prompt, and with
+        // no terminal, it is told there is no one to ask.
+        let (questions_sender, questions) = mpsc::unbounded_channel();
+        let asker = Arc::new(Asker {
+            questions: interactive.then_some(questions_sender),
+            feed: Some(feed.clone()),
+            approvals: crate::approvals::Approvals::new(
+                Some(feed.clone()),
+                interactive,
+                Some(output.clone()),
+            ),
+        });
         if let Some(indexes) = &indexes {
-            tools.extend(indexes.tools());
+            tools
+                .extend(indexes.tools_for(Some(session.id.clone()), Some(asker.approvals.clone())));
         }
         // `run_code` calls the tools of the eight the session has, and
         // describes them to an agent that reaches them only from code.
@@ -931,11 +949,6 @@ impl Engine {
         ));
         let (input_sender, input) = mpsc::unbounded_channel();
         let (requests_sender, requests) = mpsc::unbounded_channel();
-        // Someone answers the agent's questions, and what they type while it
-        // works reaches it as notes (else each line is a turn of its own).
-        let interactive = options.interactive;
-        // The front end attaches a printer, or a feed, once the session is open.
-        let output = Arc::new(Output::new(None, one_shot));
         let stats = Arc::new(Mutex::new(Stats {
             cache_memory: Some(Arc::new(crate::cache_memory::Memory::open(&session.dir))),
             chatgpt: client.chatgpt_accounts().cloned(),
@@ -978,18 +991,6 @@ impl Engine {
             title: Default::default(),
             published: Default::default(),
         });
-        // The main agent's questions are put to the user at the prompt, and with
-        // no terminal, it is told there is no one to ask.
-        let (questions_sender, questions) = mpsc::unbounded_channel();
-        let asker = Arc::new(Asker {
-            questions: interactive.then_some(questions_sender),
-            feed: Some(feed.clone()),
-            approvals: crate::approvals::Approvals::new(
-                Some(feed.clone()),
-                interactive,
-                Some(output.clone()),
-            ),
-        });
         // The main agent's questions, kept with the session.
         feed.keep_questions(session.dir.join(crate::questions::FILE));
         // The workers, and those of a resumed session.
@@ -1014,6 +1015,7 @@ impl Engine {
                 }),
                 asker: Some(asker.clone()),
                 root: Some(root.clone()),
+                indexes: indexes.clone(),
             });
             (Some(crew), Some(woken))
         } else {

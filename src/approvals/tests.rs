@@ -550,3 +550,32 @@ fn the_commands_read_numbers_then_words() {
         "No approvals wait."
     );
 }
+
+#[test]
+fn removing_a_kept_index_reads_as_its_card_and_round_trips() {
+    let card = RemoveIndexApproval {
+        name: "proj".into(),
+        index_kind: "code".into(),
+        root: "/work/proj".into(),
+        bytes: 2 * 1024 * 1024,
+        embed_cost: Some(0.35),
+    };
+    let approval = Approval::RemoveIndex(card);
+    assert_eq!(approval.kind_word(), "Index");
+    assert_eq!(approval.name(), "proj");
+    assert_eq!(approval.scope(), "kept index");
+    assert!(approval.every_project());
+    assert_eq!(approval.summary(), "/work/proj ($0.35 spent)");
+    assert_eq!(approval.title(), "Remove the kept index proj?");
+    assert_eq!(approval.option(), None);
+    let shown = lines(&approval);
+    assert_eq!(
+        shown[0].1,
+        "Indexes /work/proj (code). The indexed files stay untouched."
+    );
+    assert_eq!(shown[1].1, "Uses 2.0 MB on disk and $0.35 in embeddings.");
+
+    let json = serde_json::to_string(&approval).unwrap();
+    let back: Approval = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, approval);
+}

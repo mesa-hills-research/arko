@@ -172,13 +172,24 @@ pub fn watched_elsewhere(layout: &Layout) -> bool {
         layout.watch2(),
         layout.watch(),
     ];
-    states.iter().any(|state| {
-        std::fs::File::open(state.join(LOCK)).is_ok_and(|file| {
-            matches!(
-                file.try_lock_shared(),
-                Err(std::fs::TryLockError::WouldBlock)
-            )
-        })
+    states.iter().any(|state| lock_is_held(&state.join(LOCK)))
+}
+
+/// Whether any lock of the index is held (`.index.lock`, `.embed.lock`, or a
+/// watcher state lock), probed without blocking or creating files.
+pub fn is_locked_elsewhere(layout: &Layout) -> bool {
+    let state = layout.state();
+    lock_is_held(&state.join(".index.lock"))
+        || lock_is_held(&state.join(".embed.lock"))
+        || watched_elsewhere(layout)
+}
+
+fn lock_is_held(path: &Path) -> bool {
+    std::fs::File::open(path).is_ok_and(|file| {
+        matches!(
+            file.try_lock_shared(),
+            Err(std::fs::TryLockError::WouldBlock)
+        )
     })
 }
 

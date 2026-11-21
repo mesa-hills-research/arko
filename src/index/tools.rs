@@ -2,7 +2,7 @@
 //! `index_manage`), lenient parameter parsing, and the text both the tools and
 //! the CLI print.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,10 +17,11 @@ use serde_json::Value;
 use super::embed;
 use super::engine::{
     self, Action, CreateArgs, CreateOutcome, EmbedPlan, IndexReport, Indexes, ModeArg, SearchArgs,
-    SearchOutput, chunks_in_files, fmt_ago, fmt_count, fmt_counted, fmt_dollars,
+    SearchOutput, StatusOutput, StatusScope, chunks_in_files, days_left, fmt_ago, fmt_count,
+    fmt_counted, fmt_dollars,
 };
 use super::lexical::SINGLE_QUOTES;
-use super::store::Kind;
+use super::store::{self, Kind, Lifetime};
 
 /// The search tool's name.
 pub const SEARCH_TOOL_NAME: &str = "index_search";
@@ -75,18 +76,32 @@ pub fn definitions() -> Vec<ToolDefinition> {
 impl Indexes {
     /// The agent's tools, sharing this instance.
     pub fn tools(self: &Arc<Self>) -> Vec<Arc<dyn Tool>> {
+        self.tools_for(None, None)
+    }
+
+    /// The agent's tools, scoped to `session_id` and asking `approvals` before
+    /// removing a kept index.
+    pub fn tools_for(
+        self: &Arc<Self>,
+        session_id: Option<String>,
+        approvals: Option<crate::approvals::Approvals>,
+    ) -> Vec<Arc<dyn Tool>> {
         vec![
             Arc::new(SearchTool {
                 indexes: Arc::clone(self),
+                session_id: session_id.clone(),
             }),
             Arc::new(StatusTool {
                 indexes: Arc::clone(self),
+                session_id: session_id.clone(),
             }),
             Arc::new(CreateTool {
                 indexes: Arc::clone(self),
+                session_id,
             }),
             Arc::new(ManageTool {
                 indexes: Arc::clone(self),
+                approvals,
             }),
         ]
     }
@@ -341,6 +356,8 @@ pub(crate) fn parse_search(
         language: str_param(params, "language"),
         ignore_case,
         cwd: cwd.to_path_buf(),
+        created_by_session: None,
+        created_by_run: None,
     })
 }
 
@@ -355,6 +372,11 @@ pub(crate) fn parse_kind(text: Option<&str>) -> Result<Option<Kind>, String> {
     }
 }
 
+pub(crate) fn parse_lifetime(params: &HashMap<String, Value>) -> Result<Lifetime, ToolError> {
+    let raw = required_str(params, "lifetime")?;
+    Lifetime::parse(&raw).map_err(|error| invalid("lifetime", error))
+}
+
 pub(crate) fn parse_create(
     params: &HashMap<String, Value>,
     cwd: &Path,
@@ -362,6 +384,7 @@ pub(crate) fn parse_create(
     let path = str_param(params, "path").unwrap_or_else(|| ".".into());
     let kind =
         parse_kind(str_param(params, "kind").as_deref()).map_err(|error| invalid("kind", error))?;
+    let lifetime = parse_lifetime(params)?;
     Ok(CreateArgs {
         path: PathBuf::from(path),
         cwd: cwd.to_path_buf(),
@@ -372,6 +395,9 @@ pub(crate) fn parse_create(
         monitor: bool_param(params, "monitor")?.unwrap_or(true),
         embed: bool_param(params, "embed")?,
         max_embed_tokens: count_param(params, "max_embed_tokens")?,
+        lifetime: Some(lifetime),
+        created_by_session: None,
+        created_by_run: None,
         wait: bool_param(params, "wait")?.unwrap_or(false),
         defer_embed: false,
     })
@@ -389,12 +415,13 @@ pub(crate) fn parse_action(params: &HashMap<String, Value>) -> Result<Action, To
         "estimate" | "cost" => Action::Estimate,
         "monitor_on" | "monitor" | "watch" => Action::Monitor(true),
         "monitor_off" | "unmonitor" | "unwatch" => Action::Monitor(false),
+        "lifetime" | "set_lifetime" => Action::SetLifetime(parse_lifetime(params)?),
         "remove" | "delete" => Action::Remove,
         _ => {
             return Err(invalid(
                 "action",
                 format!(
-                    "{action:?}: use rebuild, embed, estimate, monitor_on, monitor_off or remove"
+                    "{action:?}: use rebuild, embed, estimate, monitor_on, monitor_off, lifetime or remove"
                 ),
             ));
         }
@@ -945,94 +972,106 @@ fn embedding_now(report: &IndexReport) -> String {
 }
 
 /// Indexes' states, one block each, and the session's embedding spending.
+#[cfg(test)]
 pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> String {
+    let output = StatusOutput {
+        reports: reports.to_vec(),
+        hidden: 0,
+    };
+    format_status_output(&output, spent)
+}
+
+/// Formats a scoped `StatusOutput`: expiring-soon warning line on top,
+/// worktree indexes indented under their main index, lifetime, last search,
+/// disk size, health flags, and hidden-index count.
+pub fn format_status_output(output: &StatusOutput, spent: Option<(u64, f64)>) -> String {
     let mut out = String::new();
+    let reports = &output.reports;
     if reports.is_empty() {
-        out.push_str(
-            "There are no indexes yet: index_create (or `arko index create PATH`) makes one.\n",
-        );
-    }
-    for report in reports {
-        let manifest = match &report.manifest {
-            Ok(manifest) => manifest,
-            Err(error) => {
-                out.push_str(&format!("{} — unreadable: {error}\n", report.id));
-                continue;
-            }
-        };
-        out.push_str(&format!(
-            "{} — {}, {} — {}\n",
-            manifest.name,
-            manifest.kind.as_str(),
-            if manifest.embed {
-                manifest.model.as_str()
-            } else {
-                "lexical only"
-            },
-            manifest.root.display()
-        ));
-        match (report.chunks, &manifest.last_build) {
-            (Some(chunks), Some(build)) => out.push_str(&format!(
-                "  {}, built {} ({:.1} s)\n",
-                chunks_in_files(chunks, build.files),
-                build.at.map(fmt_ago).unwrap_or_else(|| "earlier".into()),
-                build.seconds
-            )),
-            (Some(chunks), None) => {
-                out.push_str(&format!("  {}\n", fmt_counted(chunks, "chunk", "chunks")))
-            }
-            (None, _) => out.push_str(&format!(
-                "  not built: {}\n",
-                report.status_error.as_deref().unwrap_or("no index")
-            )),
-        }
-        if manifest.embed {
-            let mut line = match &report.dense {
-                Some(info) => format!(
-                    "  embeddings: {}/{} chunks, {}",
-                    fmt_count(info.embedded),
-                    fmt_count(info.docs),
-                    if report.embedding_active {
-                        embedding_now(report)
-                    } else {
-                        engine::describe_dense(info).to_string()
-                    }
-                ),
-                None => "  embeddings: none yet".to_string(),
-            };
-            if !report.has_key {
-                line.push_str(&format!(" (no {}: lexical search only)", embed::KEY_NAME));
-            } else if manifest.cap_reached {
-                line.push_str(&format!(
-                    " (the last run stopped at its cap of {} tokens, and index_manage action=embed continues)",
-                    fmt_count(manifest.max_embed_tokens)
-                ));
-            }
-            line.push_str(&format!(
-                ", with {} tokens ({}) spent in all",
-                fmt_count(manifest.embed_tokens),
-                fmt_dollars(manifest.embed_cost)
+        if output.hidden > 0 {
+            out.push_str(&format!(
+                "No indexes cover this directory or were created in this session. {} exist on this machine (call index_status with index=\"all\" to list them).\n",
+                fmt_counted(output.hidden as u64, "other index", "other indexes")
             ));
-            out.push_str(&line);
-            out.push('\n');
-            if let Some(last) = &report.last_embed {
-                out.push_str(&format!("  last background run: {last}\n"));
+        } else {
+            out.push_str(
+                "There are no indexes yet: index_create (or `arko index create PATH`) makes one.\n",
+            );
+        }
+    } else {
+        // Top warning line naming visible indexes going within 3 days of use.
+        let mut expiring: Vec<String> = Vec::new();
+        for report in reports {
+            if let (Ok(manifest), Some(lifetime)) = (&report.manifest, &report.lifetime)
+                && let Some(left) = days_left(
+                    manifest,
+                    lifetime,
+                    report.last_search.as_ref(),
+                    report.active_day,
+                )
+                && left <= store::EXPIRING_SOON_DAYS
+            {
+                if left == 0 {
+                    expiring.push(format!("{} (expiring)", manifest.name));
+                } else {
+                    expiring.push(format!("{} ({left}d left)", manifest.name));
+                }
             }
         }
-        let mut monitor = format!(
-            "  monitor: {}",
-            engine::monitor_words(manifest.monitor, &report.watch)
-        );
-        if report.pending_changes > 0 {
-            monitor.push_str(", with changes waiting for a rebuild");
+        if !expiring.is_empty() {
+            let verb = if expiring.len() == 1 {
+                "expires"
+            } else {
+                "expire"
+            };
+            out.push_str(&format!(
+                "{} {verb} within {} days of use unless searched or kept.\n",
+                crate::and_list(&expiring),
+                store::EXPIRING_SOON_DAYS
+            ));
         }
-        out.push_str(&monitor);
-        out.push('\n');
-        for error in [&manifest.build_error, &manifest.embed_error]
-            .into_iter()
-            .flatten()
-        {
-            out.push_str(&format!("  last error: {error}\n"));
+
+        // Group worktree indexes indented under their main index when present.
+        let present_ids: HashSet<&str> = reports.iter().map(|r| r.id.as_str()).collect();
+        let name_to_id: HashMap<&str, &str> = reports
+            .iter()
+            .filter_map(|r| {
+                let m = r.manifest.as_ref().ok()?;
+                if r.lifetime.as_ref().is_some_and(Lifetime::is_worktree) {
+                    return None;
+                }
+                Some((m.name.as_str(), r.id.as_str()))
+            })
+            .collect();
+        let mut children: HashMap<&str, Vec<&IndexReport>> = HashMap::new();
+        let mut top_level: Vec<&IndexReport> = Vec::new();
+        for report in reports {
+            if let Some(Lifetime::Worktree { main }) = &report.lifetime {
+                let parent_key = report
+                    .parent_id
+                    .as_deref()
+                    .filter(|id| present_ids.contains(id))
+                    .or_else(|| name_to_id.get(main.as_str()).copied());
+                if let Some(parent_id) = parent_key {
+                    children.entry(parent_id).or_default().push(report);
+                    continue;
+                }
+            }
+            top_level.push(report);
+        }
+        for report in top_level {
+            format_one_report(&mut out, report, "");
+            if let Some(kids) = children.get(report.id.as_str()) {
+                for kid in kids {
+                    format_one_report(&mut out, kid, "  ");
+                }
+            }
+        }
+        if output.hidden > 0 {
+            out.push_str(&format!(
+                "{} outside this directory (call index_status with index=\"all\" to list them).\n",
+                fmt_counted(output.hidden as u64, "other index", "other indexes")
+            ));
         }
     }
     if let Some((tokens, dollars)) = spent
@@ -1045,6 +1084,138 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
         ));
     }
     out.trim_end().to_string()
+}
+
+fn format_one_report(out: &mut String, report: &IndexReport, indent: &str) {
+    let manifest = match &report.manifest {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            out.push_str(&format!("{indent}{} — unreadable: {error}\n", report.id));
+            return;
+        }
+    };
+    let mut flags = Vec::new();
+    if report.folder_missing {
+        flags.push("folder missing");
+    }
+    if report.branch_merged {
+        flags.push("branch merged");
+    }
+    let flag_text = if flags.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", flags.join(", "))
+    };
+    out.push_str(&format!(
+        "{indent}{} — {}, {} — {}{flag_text}\n",
+        manifest.name,
+        manifest.kind.as_str(),
+        if manifest.embed {
+            manifest.model.as_str()
+        } else {
+            "lexical only"
+        },
+        manifest.root.display()
+    ));
+    let size = store::fmt_bytes(report.disk_bytes);
+    match (report.chunks, &manifest.last_build) {
+        (Some(chunks), Some(build)) => out.push_str(&format!(
+            "{indent}  {}, built {} ({:.1} s), {size}\n",
+            chunks_in_files(chunks, build.files),
+            build.at.map(fmt_ago).unwrap_or_else(|| "earlier".into()),
+            build.seconds
+        )),
+        (Some(chunks), None) => out.push_str(&format!(
+            "{indent}  {}, {size}\n",
+            fmt_counted(chunks, "chunk", "chunks")
+        )),
+        (None, _) => out.push_str(&format!(
+            "{indent}  not built: {}, {size}\n",
+            report.status_error.as_deref().unwrap_or("no index")
+        )),
+    }
+    if let Some(lifetime) = &report.lifetime {
+        let life_text = match lifetime {
+            Lifetime::Keep => "keep".to_string(),
+            Lifetime::Days(days) => match days_left(
+                manifest,
+                lifetime,
+                report.last_search.as_ref(),
+                report.active_day,
+            ) {
+                Some(0) => format!("{days}d (expiring)"),
+                Some(left) => format!("{days}d ({left}d left)"),
+                None => format!("{days}d"),
+            },
+            Lifetime::Worktree { .. } => match days_left(
+                manifest,
+                lifetime,
+                report.last_search.as_ref(),
+                report.active_day,
+            ) {
+                Some(0) => "worktree (expiring)".to_string(),
+                Some(left) => format!("worktree ({left}d left)"),
+                None => "worktree".to_string(),
+            },
+        };
+        let search_text = match &report.last_search {
+            None => "never searched".to_string(),
+            Some(ls) => match report.active_day.saturating_sub(ls.day) {
+                0 => "searched today".to_string(),
+                1 => "searched 1 active day ago".to_string(),
+                n => format!("searched {n} active days ago"),
+            },
+        };
+        out.push_str(&format!("{indent}  lifetime: {life_text}, {search_text}\n"));
+    }
+    if manifest.embed {
+        let mut line = match &report.dense {
+            Some(info) => format!(
+                "{indent}  embeddings: {}/{} chunks, {}",
+                fmt_count(info.embedded),
+                fmt_count(info.docs),
+                if report.embedding_active {
+                    embedding_now(report)
+                } else {
+                    engine::describe_dense(info).to_string()
+                }
+            ),
+            None => format!("{indent}  embeddings: none yet"),
+        };
+        if !report.has_key {
+            line.push_str(&format!(" (no {}: lexical search only)", embed::KEY_NAME));
+        } else if manifest.cap_reached {
+            line.push_str(&format!(
+                " (the last run stopped at its cap of {} tokens, and index_manage action=embed continues)",
+                fmt_count(manifest.max_embed_tokens)
+            ));
+        }
+        line.push_str(&format!(
+            ", with {} tokens ({}) spent in all",
+            fmt_count(manifest.embed_tokens),
+            fmt_dollars(manifest.embed_cost)
+        ));
+        out.push_str(&line);
+        out.push('\n');
+        if let Some(last) = &report.last_embed {
+            out.push_str(&format!("{indent}  last background run: {last}\n"));
+        }
+    }
+    let mut monitor = format!(
+        "{indent}  monitor: {}",
+        engine::monitor_words(manifest.monitor, &report.watch)
+    );
+    if report.pending_changes > 0 {
+        monitor.push_str(", with changes waiting for a rebuild");
+    }
+    out.push_str(&monitor);
+    out.push('\n');
+    for error in [&manifest.build_error, &manifest.embed_error]
+        .into_iter()
+        .flatten()
+    {
+        out.push_str(&format!("{indent}  last error: {error}\n"));
+    }
 }
 
 /// What `create` did.
@@ -1071,6 +1242,20 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
         ));
     }
     out.push_str(&format!("Files: {}.\n", outcome.record.summary));
+    let lifetime = manifest
+        .lifetime
+        .as_ref()
+        .map_or_else(|| "keep".to_string(), Lifetime::describe);
+    out.push_str(&format!(
+        "Lifetime: {lifetime}, size {}.\n",
+        store::fmt_bytes(outcome.disk_bytes)
+    ));
+    if outcome.record.borrowed > 0 {
+        out.push_str(&format!(
+            "Borrowed {} from other indexes.\n",
+            fmt_counted(outcome.record.borrowed, "cached vector", "cached vectors")
+        ));
+    }
     match &outcome.estimate {
         Some(Ok(estimate)) => out.push_str(&format!("Estimate: {}.\n", estimate.line())),
         Some(Err(error)) => out.push_str(&format!("Estimate unavailable: {error}.\n")),
@@ -1120,17 +1305,18 @@ Semantic and hybrid return ranked `path:start-end · scope` results, top results
 Lexical lists matching lines grouped by file in path order (exhaustive=true lists all, or page with after). \
 Works for any indexed directory via `index` or `path_prefix`, defaulting to indexes covering the current directory or its git repo (index_status lists all indexes).";
 
-const STATUS_DESCRIPTION: &str = "Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
+const STATUS_DESCRIPTION: &str = "Shows Arko's search indexes (those covering or inside the working directory and those this session created, or index=\"all\" for every index, or one named): root, kind, lifetime, last search, size, chunks, embedding coverage and cost, monitoring, health flags and errors. Check it before index_create.";
 
-const CREATE_DESCRIPTION: &str = "Creates a semantic search index of a directory and builds it, for index_search: local syntax-aware chunking, .gitignore respected, embeddings by Voyage (voyage-code-4 for code, voyage-4 for docs; kind auto decides by the files). \
-Index a project or docs folder, not / or the home directory. The build is local (seconds for most projects); embedding costs about $0.12 per million tokens for code and $0.06 for docs: a free estimate is reported, each run is capped (5M tokens by default), and it runs in the background unless wait=true (searches meanwhile find chunks without vectors by keywords). \
-With monitor=true (default) Arko keeps the index current as files change. Calling it again for the same directory and kind updates the settings.";
+const CREATE_DESCRIPTION: &str = "Creates a semantic search index of a directory and builds it, for index_search: local syntax-aware chunking, .gitignore respected, embeddings by Voyage (voyage-code-4 for code, voyage-4 for docs, and kind auto decides by the files). \
+Index a project or docs folder, not / or the home directory. The build is local (seconds for most projects), borrows cached vectors from other indexes for the same model, and embeds only what's left (about $0.12 per million tokens for code and $0.06 for docs, capped at 5M tokens per run, in the background unless wait=true). \
+Choose lifetime \"keep\" for a project the user works in or a reference they'll search again, or a number of days of use for an index made for one task. Calling it again for the same directory and kind updates the settings.";
 
-const MANAGE_DESCRIPTION: &str = "Maintains an index: action=rebuild (re-chunk the files now), embed (embed chunks without vectors; max_tokens raises the run's cap; wait=true waits), estimate (free cost estimate of embedding what's left), monitor_on / monitor_off (keep it current as files change), remove (delete the index; the files are untouched).";
+const MANAGE_DESCRIPTION: &str = "Maintains an index: action=rebuild (re-chunk the files now), embed (embed chunks without vectors, max_tokens raises the run's cap, wait=true waits), estimate (free cost estimate of embedding what's left), monitor_on / monitor_off (keep it current as files change), lifetime (set lifetime to \"keep\" or a number of days of use), remove (delete the index, asking the user first for a kept index, leaving the files untouched).";
 
 #[derive(Debug)]
 struct SearchTool {
     indexes: Arc<Indexes>,
+    session_id: Option<String>,
 }
 
 #[async_trait]
@@ -1148,7 +1334,9 @@ impl Tool for SearchTool {
         context: &TaskContext<'_>,
         params: HashMap<String, Value>,
     ) -> Result<String, ToolError> {
-        let args = parse_search(&params, context.current_working_directory)?;
+        let mut args = parse_search(&params, context.current_working_directory)?;
+        args.created_by_session = self.session_id.clone();
+        args.created_by_run = Some(context.task_id.to_string());
         let detail = detail_for(args.mode, parse_detail(&params)?);
         let indexes = Arc::clone(&self.indexes);
         let query = args.query.clone();
@@ -1164,6 +1352,7 @@ impl Tool for SearchTool {
 #[derive(Debug)]
 struct StatusTool {
     indexes: Arc<Indexes>,
+    session_id: Option<String>,
 }
 
 #[async_trait]
@@ -1184,14 +1373,26 @@ impl Tool for StatusTool {
         let index = str_param(&params, "index");
         let cwd = context.current_working_directory.to_path_buf();
         let indexes = Arc::clone(&self.indexes);
-        let reports = blocking(move || indexes.status_blocking(index.as_deref(), &cwd)).await?;
-        Ok(format_status(&reports, Some(self.indexes.spent())))
+        let session_id = self.session_id.clone();
+        let output = blocking(move || {
+            let scope = match index.as_deref() {
+                None => StatusScope::Visible {
+                    session: session_id.as_deref(),
+                },
+                Some(name) if name.eq_ignore_ascii_case("all") => StatusScope::All,
+                Some(name) => StatusScope::One(name),
+            };
+            indexes.status_for(scope, &cwd)
+        })
+        .await?;
+        Ok(format_status_output(&output, Some(self.indexes.spent())))
     }
 }
 
 #[derive(Debug)]
 struct CreateTool {
     indexes: Arc<Indexes>,
+    session_id: Option<String>,
 }
 
 #[async_trait]
@@ -1205,7 +1406,9 @@ impl Tool for CreateTool {
         context: &TaskContext<'_>,
         params: HashMap<String, Value>,
     ) -> Result<String, ToolError> {
-        let args = parse_create(&params, context.current_working_directory)?;
+        let mut args = parse_create(&params, context.current_working_directory)?;
+        args.created_by_session = self.session_id.clone();
+        args.created_by_run = Some(context.task_id.to_string());
         let indexes = Arc::clone(&self.indexes);
         let (stop, working) = embedding_stop(&context.stop);
         let outcome = blocking(move || {
@@ -1226,6 +1429,7 @@ impl Tool for CreateTool {
 #[derive(Debug)]
 struct ManageTool {
     indexes: Arc<Indexes>,
+    approvals: Option<crate::approvals::Approvals>,
 }
 
 #[async_trait]
@@ -1242,6 +1446,94 @@ impl Tool for ManageTool {
         let action = parse_action(&params)?;
         let index = str_param(&params, "index");
         let cwd = context.current_working_directory.to_path_buf();
+        if matches!(action, Action::Remove) {
+            let indexes = Arc::clone(&self.indexes);
+            let cwd_probe = cwd.clone();
+            let index_probe = index.clone();
+            let (target, is_keep, bytes) = blocking(move || {
+                let name = match index_probe {
+                    Some(index) => index,
+                    None => {
+                        let targets = indexes.targets(None, &cwd_probe)?;
+                        if targets.len() > 1 {
+                            let names: Vec<&str> = targets
+                                .iter()
+                                .map(|found| found.manifest.name.as_str())
+                                .collect();
+                            return Err(format!(
+                                "several indexes cover this directory ({}): name one",
+                                names.join(", ")
+                            ));
+                        }
+                        targets[0].layout.id()
+                    }
+                };
+                let found = indexes.resolve_in(&name, &cwd_probe, false)?;
+                let is_keep = indexes.effective_lifetime_of(&found).is_keep();
+                let bytes = if is_keep {
+                    store::dir_size(&found.layout.dir)
+                } else {
+                    0
+                };
+                Ok((found, is_keep, bytes))
+            })
+            .await?;
+            let mut approved_words = None;
+            if is_keep {
+                let Some(approvals) = self.approvals.as_ref().filter(|a| a.can_answer()) else {
+                    return Err(ToolError::ExecutionFailed(format!(
+                        "Removing the kept index {} needs the user's approval, and no one can answer in this session. Ask the user to run `arko index remove {}`.",
+                        target.manifest.name, target.manifest.name
+                    )));
+                };
+                let card = crate::approvals::RemoveIndexApproval {
+                    name: target.manifest.name.clone(),
+                    index_kind: target.manifest.kind.as_str().to_string(),
+                    root: target.manifest.root.display().to_string(),
+                    bytes,
+                    embed_cost: (target.manifest.embed_cost > 0.0)
+                        .then_some(target.manifest.embed_cost),
+                };
+                match approvals
+                    .request(context, crate::approvals::Approval::RemoveIndex(card))
+                    .await
+                {
+                    crate::approvals::Answer::Approved { words, .. } => approved_words = words,
+                    crate::approvals::Answer::Unanswered => {
+                        return Ok(format!(
+                            "The user didn't answer, so the kept index {} wasn't removed.",
+                            target.manifest.name
+                        ));
+                    }
+                    crate::approvals::Answer::Rejected { words: None } => {
+                        return Ok(format!(
+                            "The user chose not to remove the kept index {}, so it stays.",
+                            target.manifest.name
+                        ));
+                    }
+                    crate::approvals::Answer::Rejected { words: Some(said) } => {
+                        return Ok(format!(
+                            "The user chose not to remove the kept index {} and wrote “{}”.",
+                            target.manifest.name,
+                            said.trim()
+                        ));
+                    }
+                }
+            }
+            let indexes = Arc::clone(&self.indexes);
+            let target_id = target.layout.id();
+            let mut result = blocking(move || {
+                indexes.manage_stopping_with(&target_id, &Action::Remove, &cwd, None)
+            })
+            .await?;
+            if let Some(words) = approved_words {
+                result.push_str(&format!(
+                    " The user approved it and wrote “{}”. Act on what they wrote.",
+                    words.trim()
+                ));
+            }
+            return Ok(result);
+        }
         let indexes = Arc::clone(&self.indexes);
         let (stop, working) = embedding_stop(&context.stop);
         blocking(move || {
@@ -1373,7 +1665,7 @@ fn status_definition() -> ToolDefinition {
         STATUS_DESCRIPTION,
         vec![param(
             "index",
-            "An index name, or a directory or file inside an index (default: all indexes).",
+            "An index name, a directory or file inside an index, or \"all\" for every index on this machine (default: visible indexes for this directory and session).",
             ToolParameterType::String,
             false,
         )],
@@ -1387,6 +1679,12 @@ fn create_definition() -> ToolDefinition {
         "index_create",
         CREATE_DESCRIPTION,
         vec![
+            param(
+                "lifetime",
+                "\"keep\" for a project the user works in or a reference they'll search again, or a number of days of use (such as 7 or 30) for an index made for one task.",
+                ToolParameterType::String,
+                true,
+            ),
             param(
                 "path",
                 "The directory to index, absolute or relative: any directory, also outside the current one, e.g. ../other-repo (default: the current directory).",
@@ -1461,7 +1759,7 @@ fn manage_definition() -> ToolDefinition {
             ),
             param(
                 "action",
-                "rebuild, embed, estimate, monitor_on, monitor_off or remove.",
+                "rebuild, embed, estimate, monitor_on, monitor_off, lifetime or remove.",
                 ToolParameterType::String,
                 true,
             )
@@ -1471,8 +1769,15 @@ fn manage_definition() -> ToolDefinition {
                 "estimate",
                 "monitor_on",
                 "monitor_off",
+                "lifetime",
                 "remove",
             ]),
+            param(
+                "lifetime",
+                "lifetime: \"keep\" or a positive number of days of use (such as 7 or 30).",
+                ToolParameterType::String,
+                false,
+            ),
             param(
                 "max_tokens",
                 "embed: the run's token cap (default: the index's, 5000000).",

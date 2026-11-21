@@ -7120,6 +7120,7 @@ pub(crate) mod tests {
             }),
             asker: Some(asker.clone()),
             root: Some(root.clone()),
+            indexes: None,
         });
         let (input_sender, receiver) = mpsc::unbounded_channel();
         let (remote_actions, remote_input) = mpsc::unbounded_channel();

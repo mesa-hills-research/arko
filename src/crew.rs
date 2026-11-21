@@ -104,6 +104,9 @@ pub struct Setup {
     /// Arko's folder, where the sessions share the day's API spend (none means
     /// the session counts its own only).
     pub(crate) root: Option<PathBuf>,
+    /// Session search indexes, so removing a worker's worktree also removes its
+    /// worktree index at once.
+    pub(crate) indexes: Option<Arc<crate::index::Indexes>>,
 }
 
 /// What the start hook holds a worker's billing to (see [`billing`]), meaning the
@@ -1603,12 +1606,34 @@ impl Crew {
                 .output
                 .echo(&self.setup.output.dim(&format!("  ↳ {text}")));
         }
+        if matches!(event.kind, SubagentEventKind::WorkspaceRemoved)
+            && let Some(indexes) = self.setup.indexes.clone()
+            && let Some(worktree_root) = self.worktree_root_of(event.run_id)
+        {
+            drop(tokio::task::spawn_blocking(move || {
+                indexes.remove_worktree_indexes(&worktree_root);
+            }));
+        }
         if let Some(feed) = &self.setup.feed {
             self.tell_feed(feed, &event.handle, event.run_id, &event.kind);
         }
         self.tell_peers(&event);
         let _ = self.wake.send(());
         true
+    }
+
+    /// Top directory of a worker's isolated worktree, when it has one.
+    fn worktree_root_of(&self, run_id: Uuid) -> Option<PathBuf> {
+        let workflow = self.workflow()?;
+        let runs = workflow.subagents();
+        let record = runs.iter().find(|run| run.run_id == run_id)?;
+        let isolated = record.isolated.as_ref()?;
+        Some(
+            isolated
+                .root
+                .clone()
+                .unwrap_or_else(|| isolated.path.clone()),
+        )
     }
 
     /// Tells the peers of the worker `event` is about when it ended (see
@@ -2192,6 +2217,7 @@ mod tests {
             refuse: None,
             asker: None,
             root: None,
+            indexes: None,
         });
         let native = crew.config();
         assert_eq!(native.max_running.unwrap().get(), 2);
@@ -2317,6 +2343,7 @@ mod tests {
             refuse: None,
             asker: None,
             root: None,
+            indexes: None,
         });
         let registered =
             crate::agents::worker_config(&crate::agents::AgentSettings::for_test(worker, worker))
@@ -3430,6 +3457,7 @@ mod tests {
                 approvals: crate::approvals::Approvals::new(Some(feed.clone()), can_ask, None),
             })),
             root: Some(root.into()),
+            indexes: None,
         });
         let worker = luna();
         let registered =

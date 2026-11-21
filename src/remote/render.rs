@@ -576,6 +576,11 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
                     "Turned off watching for",
                     "turn off watching for",
                 ),
+                "lifetime" | "set_lifetime" => (
+                    "Changing lifetime of",
+                    "Changed lifetime of",
+                    "change lifetime of",
+                ),
                 "remove" => ("Removing", "Removed", "remove"),
                 _ => ("Changing", "Changed", "change"),
             };

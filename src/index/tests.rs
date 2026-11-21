@@ -22,7 +22,7 @@ use super::engine::{
     SearchOutput, Timing, WatchState, monitor_words,
 };
 use super::lexical::SINGLE_QUOTES;
-use super::store::{self, Kind, Layout, Manifest, Rules};
+use super::store::{self, Kind, Layout, Lifetime, Manifest, Rules};
 use super::tools::{self, TOOL_NAMES};
 
 // ----- fixtures -----
@@ -38,6 +38,8 @@ fn fast(force_polling: bool) -> Timing {
         reconcile_interval: Duration::ZERO,
         busy_wait: Duration::from_secs(10),
         busy_retry: Duration::from_millis(200),
+        git_timeout: Duration::from_secs(5),
+        sweep_interval: Duration::from_secs(24 * 60 * 60),
         force_polling,
     }
 }
@@ -208,6 +210,9 @@ fn create_args(path: &Path, kind: Option<Kind>) -> CreateArgs {
         monitor: true,
         embed: None,
         max_embed_tokens: None,
+        lifetime: Some(Lifetime::Keep),
+        created_by_session: None,
+        created_by_run: None,
         wait: true,
         defer_embed: false,
     }
@@ -225,6 +230,8 @@ fn search_args(cwd: &Path, query: &str, mode: Option<ModeArg>) -> SearchArgs {
         language: None,
         ignore_case: false,
         cwd: cwd.to_path_buf(),
+        created_by_session: None,
+        created_by_run: None,
     }
 }
 
@@ -1511,24 +1518,33 @@ fn tool_parameters_are_parsed_leniently() {
     assert!(tools::parse_search(&params(json!({"query": "q", "mode": "fuzzy"})), cwd).is_err());
     assert!(tools::parse_search(&params(json!({"query": "  ", "mode": "hybrid"})), cwd).is_err());
 
-    let create = tools::parse_create(&params(json!({})), cwd).unwrap();
+    // `lifetime` is required for `index_create`.
+    assert!(tools::parse_create(&params(json!({})), cwd).is_err());
+    let create = tools::parse_create(&params(json!({"lifetime": "keep"})), cwd).unwrap();
     assert_eq!(create.path, PathBuf::from("."));
     assert_eq!(create.kind, None);
+    assert_eq!(create.lifetime, Some(Lifetime::Keep));
     assert!(create.monitor && !create.wait && !create.defer_embed);
     assert_eq!(create.embed, None);
     let create = tools::parse_create(
         &params(json!({"path": "docs", "kind": "docs", "monitor": "false", "embed": false,
-                       "max_embed_tokens": "1M", "include": "*.md", "wait": true, "name": "handbook"})),
+                       "max_embed_tokens": "1M", "include": "*.md", "wait": true, "name": "handbook",
+                       "lifetime": 14})),
         cwd,
     )
     .unwrap();
     assert_eq!(create.kind, Some(Kind::Docs));
+    assert_eq!(create.lifetime, Some(Lifetime::Days(14)));
     assert!(!create.monitor && create.wait);
     assert_eq!(create.embed, Some(false));
     assert_eq!(create.max_embed_tokens, Some(1_000_000));
     assert_eq!(create.include, vec!["*.md"]);
     assert_eq!(create.name.as_deref(), Some("handbook"));
-    assert!(tools::parse_create(&params(json!({"kind": "poetry"})), cwd).is_err());
+    assert!(
+        tools::parse_create(&params(json!({"kind": "poetry", "lifetime": "keep"})), cwd).is_err()
+    );
+    assert!(tools::parse_create(&params(json!({"lifetime": 0})), cwd).is_err());
+    assert!(tools::parse_create(&params(json!({"lifetime": "forever"})), cwd).is_err());
 
     let action = |value: Value| tools::parse_action(&params(value));
     assert_eq!(
@@ -1626,7 +1642,7 @@ fn tools_create_search_and_remove() {
 
     let text = run(
         "index_create",
-        json!({"path": ".", "kind": "auto", "wait": "true"}),
+        json!({"path": ".", "kind": "auto", "wait": "true", "lifetime": 7}),
     )
     .unwrap();
     assert!(text.contains("Created index proj (code)"), "{text}");
@@ -2323,10 +2339,22 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     let output = indexes.search_blocking(&args).unwrap();
     assert_eq!(hit_files(&output)[0], net, "{output:?}");
 
-    // Once searched, a monitored index is kept current.
-    wait_for("the watcher", || {
-        indexes.watch_state(&outcome.layout).active()
-    });
+    // Indexes outside the workspace are not watched even after being searched,
+    // and edits are reconciled on the next search instead.
+    assert_eq!(indexes.watch_state(&outcome.layout), WatchState::Off);
+    write(
+        &root.join("src/later.rs"),
+        "pub fn later_outside_edit() {}\n",
+    );
+    let mut args = search_args(&work, "later_outside_edit", Some(ModeArg::Lexical));
+    args.path_prefix = Some("../proj/src".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(
+        hit_files(&output),
+        vec![root.join("src/later.rs").to_string_lossy().into_owned()],
+        "{output:?}"
+    );
+    assert_eq!(indexes.watch_state(&outcome.layout), WatchState::Off);
     fixture.shutdown(&indexes);
 }
 
@@ -2423,6 +2451,7 @@ fn index_counts_are_one_or_many() {
             tokens: 300,
             dollars: 0.0,
             new,
+            borrowed: 0,
             embedded: 4,
             docs: 4,
             cap: 0,
@@ -4397,15 +4426,22 @@ fn worktree_resolves_main_repo_index_and_rebases_path_prefix() {
     let wt_gitdir = main_repo.join(".git/worktrees/feat");
     std::fs::create_dir_all(&wt_gitdir).unwrap();
     std::fs::write(wt_gitdir.join("commondir"), "../..\n").unwrap();
+    std::fs::write(wt_gitdir.join("HEAD"), "ref: refs/heads/feat/my-branch\n").unwrap();
     let worktree = fixture.base.join("wt/feat");
-    std::fs::create_dir_all(worktree.join("src")).unwrap();
+    write(&worktree.join("src/net.rs"), NET_RS);
+    write(&worktree.join("src/config.rs"), CONFIG_RS);
+    write(
+        &worktree.join("src/branch_only.rs"),
+        "pub fn branch_only_marker() -> u32 { 42 }\n",
+    );
     std::fs::write(
         worktree.join(".git"),
         format!("gitdir: {}\n", wt_gitdir.display()),
     )
     .unwrap();
 
-    // `known` and `related` fall back to the main repository from the worktree and subdirs.
+    // Before first search, `known` recognizes the main repository from the worktree and subdirs,
+    // and never lists worktree indexes.
     let known = indexes.known(&worktree);
     assert_eq!(known[0].name, "proj");
     assert_eq!(known[0].place, Some("the working directory"));
@@ -4413,28 +4449,32 @@ fn worktree_resolves_main_repo_index_and_rebases_path_prefix() {
     assert_eq!(sub_known[0].name, "proj");
     assert_eq!(sub_known[0].place, Some("holds the working directory"));
 
-    let related = indexes.related(&worktree);
-    assert_eq!(related.len(), 1);
-    assert_eq!(related[0].manifest.name, "proj");
-
-    // `index_status` with `index: "."` resolves to the main repo index.
+    // Before first search, `index_status` with `index: "."` resolves to the main repo index.
     let reports = indexes.status_blocking(Some("."), &worktree).unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].manifest.as_ref().unwrap().name, "proj");
-    let reports_sub = indexes
-        .status_blocking(Some("."), &worktree.join("src"))
-        .unwrap();
-    assert_eq!(reports_sub.len(), 1);
-    assert_eq!(reports_sub[0].manifest.as_ref().unwrap().name, "proj");
 
-    // Searching from the worktree with no `index` and a relative `path_prefix` finds the main repo index.
+    // Searching from the worktree with no `index` and a relative `path_prefix` automatically
+    // creates the worktree's own index (`proj@feat-my-branch`) and searches the worktree's own files.
     let mut args = search_args(&worktree, "retry_with_backoff", Some(ModeArg::Lexical));
     args.path_prefix = Some("src/net.rs".into());
     let output = indexes.search_blocking(&args).unwrap();
-    let net = main_repo.join("src/net.rs").to_string_lossy().into_owned();
-    assert_eq!(hit_files(&output), vec![net.clone()], "{output:?}");
+    assert_eq!(output.searched[0].0, "proj@feat-my-branch", "{output:?}");
+    assert_eq!(hit_files(&output), vec!["src/net.rs"], "{output:?}");
+    assert_eq!(output.hits[0].file, worktree.join("src/net.rs"));
 
-    // Searching from a worktree subdirectory rebases `path_prefix` accurately too.
+    // Branch-only code in the worktree is searchable immediately (with hybrid/dense search!).
+    let branch_args = search_args(&worktree, "branch_only_marker", Some(ModeArg::Hybrid));
+    let branch_out = indexes.search_blocking(&branch_args).unwrap();
+    assert_eq!(branch_out.searched[0].0, "proj@feat-my-branch");
+    assert_eq!(branch_out.searched[0].2, Mode::Hybrid);
+    assert_eq!(
+        hit_files(&branch_out)[0],
+        "src/branch_only.rs",
+        "{branch_out:?}"
+    );
+
+    // Searching from a worktree subdirectory resolves `path_prefix` against the worktree's own index.
     let mut sub_args = search_args(
         &worktree.join("src"),
         "retry_with_backoff",
@@ -4442,7 +4482,20 @@ fn worktree_resolves_main_repo_index_and_rebases_path_prefix() {
     );
     sub_args.path_prefix = Some("net.rs".into());
     let sub_output = indexes.search_blocking(&sub_args).unwrap();
-    assert_eq!(hit_files(&sub_output), vec![net], "{sub_output:?}");
+    assert_eq!(hit_files(&sub_output), vec!["net.rs"], "{sub_output:?}");
+    assert_eq!(sub_output.hits[0].file, worktree.join("src/net.rs"));
+
+    // `known` still never lists the worktree index!
+    let known_after = indexes.known(&worktree);
+    assert!(
+        known_after.iter().all(|k| !k.name.contains('@')),
+        "{known_after:?}"
+    );
+    let known_main = indexes.known(&main_repo);
+    assert!(
+        known_main.iter().all(|k| !k.name.contains('@')),
+        "{known_main:?}"
+    );
 
     // Naming a DIFFERENT index explicitly from a worktree rebases a relative `path_prefix`
     // against that named index's root instead of failing with "outside the index".
@@ -4470,4 +4523,1167 @@ fn worktree_resolves_main_repo_index_and_rebases_path_prefix() {
     assert!(err.contains("is outside the index"), "{err}");
 
     fixture.shutdown(&indexes);
+}
+
+// ----- lifetimes, borrowed embeddings, worktree indexes & sweep -----
+
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "Ada")
+        .env("GIT_AUTHOR_EMAIL", "ada@example.test")
+        .env("GIT_COMMITTER_NAME", "Ada")
+        .env("GIT_COMMITTER_EMAIL", "ada@example.test")
+        .args(args)
+        .status()
+        .expect("git command");
+    assert!(status.success(), "git {args:?} failed in {}", dir.display());
+}
+
+fn init_git_repo(dir: &Path) {
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Ada"]);
+    git(dir, &["config", "user.email", "ada@example.test"]);
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "Initial commit"]);
+}
+
+/// Building a second index or worktree index borrows cached vectors from donor
+/// indexes with the same model so unchanged chunks have dense vectors at once,
+/// and after a merge back to main, main borrows the branch's new vectors too.
+#[test]
+fn borrowed_embeddings_work_both_ways_and_surface_counts() {
+    let fixture = Fixture::new();
+    let main_repo = fixture.code_project();
+    let indexes = fixture.open(&main_repo, Backend::Hash, false, fast(false));
+    let main_outcome = indexes
+        .create_blocking(&create_args(&main_repo, Some(Kind::Code)))
+        .unwrap();
+    let main_chunks = main_outcome.record.chunks;
+    assert!(main_chunks >= 2);
+
+    // Clone the tree with one extra file and build with `defer_embed: true` so
+    // `index2::build` runs with `embed_later: true` + `borrow_caches` (no embed pass yet!).
+    let branch_repo = fixture.base.join("branch-copy");
+    write(&branch_repo.join("src/net.rs"), NET_RS);
+    write(&branch_repo.join("src/config.rs"), CONFIG_RS);
+    write(
+        &branch_repo.join("src/extra.rs"),
+        "/// Extra feature added on the branch.\npub fn extra_branch_fn() -> usize { 99 }\n",
+    );
+    let branch_args = CreateArgs {
+        name: Some("branch-copy".into()),
+        lifetime: Some(Lifetime::Days(7)),
+        wait: false,
+        defer_embed: true,
+        ..create_args(&branch_repo, Some(Kind::Code))
+    };
+    let branch_outcome = indexes.create_blocking(&branch_args).unwrap();
+    // Both copied files (`src/net.rs` and `src/config.rs`, 2 chunks) were borrowed during build!
+    assert_eq!(
+        branch_outcome.record.borrowed, 2,
+        "expected both unchanged chunks borrowed during build, got {:?}",
+        branch_outcome.record
+    );
+    let create_text = tools::format_create(&branch_outcome);
+    assert!(
+        create_text.contains("Borrowed ") && create_text.contains("cached vector"),
+        "{create_text}"
+    );
+    assert!(
+        create_text.contains("Lifetime: 7 days of use"),
+        "{create_text}"
+    );
+
+    // Even BEFORE running `embed` on branch-copy, both unchanged chunks ALREADY have
+    // vectors (hybrid search works immediately!).
+    let before_embed = indexes
+        .status_blocking(Some("branch-copy"), &branch_repo)
+        .unwrap();
+    let dense = before_embed[0].dense.as_ref().unwrap();
+    assert_eq!(dense.embedded, 2, "{dense:?}");
+    assert_eq!(dense.docs, 3, "{dense:?}");
+
+    // Now embed the remaining 1 chunk on branch-copy.
+    let embed_msg = indexes
+        .manage_blocking(
+            "branch-copy",
+            &Action::Embed {
+                max_tokens: None,
+                wait: true,
+            },
+            &branch_repo,
+        )
+        .unwrap();
+    assert!(embed_msg.contains("embedded 1 text"), "{embed_msg}");
+
+    // Simulate merging the branch back into main: copy `src/extra.rs` into main_repo
+    // and rebuild main. Main should borrow the vector for `extra.rs` from branch-copy!
+    write(
+        &main_repo.join("src/extra.rs"),
+        "/// Extra feature added on the branch.\npub fn extra_branch_fn() -> usize { 99 }\n",
+    );
+    let rebuild_msg = indexes
+        .manage_blocking("proj", &Action::Rebuild, &main_repo)
+        .unwrap();
+    assert!(
+        rebuild_msg.contains("Borrowed 1 cached vector"),
+        "expected main to borrow merged chunk vector from branch, got: {rebuild_msg}"
+    );
+    let main_after = indexes.status_blocking(Some("proj"), &main_repo).unwrap();
+    let main_dense = main_after[0].dense.as_ref().unwrap();
+    assert_eq!(main_dense.embedded, main_dense.docs, "{main_dense:?}");
+
+    // EmbedSummary::line() reports borrowed vectors cleanly when non-zero.
+    let borrowed_only = super::engine::EmbedSummary {
+        tokens: 0,
+        dollars: 0.0,
+        new: 0,
+        borrowed: 5,
+        embedded: 5,
+        docs: 5,
+        cap: 1000,
+        cap_reached: false,
+        stopped: false,
+        superseded: false,
+        not_embedded_tokens: 0,
+        too_long: 0,
+    }
+    .line();
+    assert_eq!(
+        borrowed_only,
+        "borrowed 5 cached vectors, and 5/5 chunks have vectors"
+    );
+
+    let borrowed_and_new = super::engine::EmbedSummary {
+        tokens: 120,
+        dollars: 0.0,
+        new: 2,
+        borrowed: 3,
+        embedded: 5,
+        docs: 5,
+        cap: 1000,
+        cap_reached: false,
+        stopped: false,
+        superseded: false,
+        not_embedded_tokens: 0,
+        too_long: 0,
+    }
+    .line();
+    assert_eq!(
+        borrowed_and_new,
+        "borrowed 3 cached vectors and embedded 2 texts for 120 tokens ($0), and 5/5 chunks have vectors"
+    );
+
+    fixture.shutdown(&indexes);
+}
+
+/// Worktree indexes are auto-created on first search via cwd, `index` path, or
+/// `path_prefix` path, inherit settings, support detached HEAD names, never run
+/// a watcher, reconcile edits on search, and handle concurrent first searches
+/// without deadlocking or racing.
+#[test]
+fn worktree_indexes_auto_create_reconcile_never_watch_and_handle_concurrency() {
+    let fixture = Fixture::new();
+    let main_repo = fixture.code_project();
+    init_git_repo(&main_repo);
+    let wt_a = fixture.base.join("wt/feature-a");
+    let wt_detached = fixture.base.join("wt/detached-wt");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/alpha",
+            wt_a.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            wt_detached.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+
+    // Open monitoring instance on main_repo.
+    let indexes = fixture.open(&main_repo, Backend::Hash, true, fast(false));
+    let main_outcome = indexes
+        .create_blocking(&create_args(&main_repo, Some(Kind::Code)))
+        .unwrap();
+
+    // 1) Concurrent first searches in `wt_a` (4 threads) all succeed cleanly
+    // and create a single worktree index `proj@feat-alpha`.
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let indexes = Arc::clone(&indexes);
+            let wt_a = wt_a.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let args = search_args(&wt_a, "retry_with_backoff", Some(ModeArg::Hybrid));
+                indexes.search_blocking(&args).unwrap()
+            })
+        })
+        .collect();
+    for handle in handles {
+        let out = handle.join().unwrap();
+        assert_eq!(out.searched[0].0, "proj@feat-alpha");
+        assert_eq!(out.searched[0].2, Mode::Hybrid);
+    }
+
+    // Worktree index inherited main's settings, has `Worktree` lifetime & `parent_index`,
+    // and is NEVER watched even though `indexes` has `monitor: true`!
+    let wt_found = indexes.resolve("proj@feat-alpha", &main_repo).unwrap();
+    assert_eq!(
+        wt_found.manifest.lifetime,
+        Some(Lifetime::Worktree {
+            main: "proj".into()
+        })
+    );
+    assert_eq!(
+        wt_found.manifest.parent_index.as_deref(),
+        Some(main_outcome.layout.id().as_str())
+    );
+    assert!(!wt_found.manifest.monitor);
+    assert_eq!(indexes.watch_state(&wt_found.layout), WatchState::Off);
+    assert!(
+        indexes
+            .manage_blocking("proj@feat-alpha", &Action::Monitor(true), &main_repo)
+            .is_err(),
+        "worktree indexes must refuse monitor_on"
+    );
+
+    // Editing a file in `wt_a` is reconciled on next search without a watcher.
+    write(
+        &wt_a.join("src/wt_edit.rs"),
+        "pub fn reconciled_worktree_edit() -> bool { true }\n",
+    );
+    let edited = indexes
+        .search_blocking(&search_args(
+            &wt_a,
+            "reconciled_worktree_edit",
+            Some(ModeArg::Lexical),
+        ))
+        .unwrap();
+    assert_eq!(hit_files(&edited), vec!["src/wt_edit.rs"]);
+    assert_eq!(indexes.watch_state(&wt_found.layout), WatchState::Off);
+
+    // 2) Searching from `main_repo` with `path_prefix` pointing into `wt_detached`
+    // auto-creates a worktree index named `proj@<7-char-sha>`.
+    let mut from_main = search_args(&main_repo, "parse_config", Some(ModeArg::Hybrid));
+    from_main.path_prefix = Some(wt_detached.join("src").to_string_lossy().into_owned());
+    let detached_out = indexes.search_blocking(&from_main).unwrap();
+    let detached_name = &detached_out.searched[0].0;
+    assert!(
+        detached_name.starts_with("proj@") && detached_name.len() == "proj@".len() + 7,
+        "expected short SHA worktree name, got {detached_name}"
+    );
+    assert!(detached_out.hits[0].file.starts_with(&wt_detached));
+
+    // 3) Searching by passing `index: <worktree path>` also resolves the worktree index.
+    let mut by_index = search_args(&main_repo, "retry_with_backoff", Some(ModeArg::Lexical));
+    by_index.index = Some(wt_a.to_string_lossy().into_owned());
+    let by_index_out = indexes.search_blocking(&by_index).unwrap();
+    assert_eq!(by_index_out.searched[0].0, "proj@feat-alpha");
+
+    // 4) `remove_worktree_indexes` removes the worktree index at once without touching main.
+    let removed = indexes.remove_worktree_indexes(&wt_a);
+    assert_eq!(removed, 1);
+    assert!(indexes.resolve("proj@feat-alpha", &main_repo).is_err());
+    assert!(indexes.resolve("proj", &main_repo).is_ok());
+
+    fixture.shutdown(&indexes);
+}
+
+/// Active-day counter advances at most once per UTC calendar day, ignores
+/// clock skew backwards, and counts only active days (holidays expire nothing).
+#[test]
+fn active_day_counter_and_last_search_throttling() {
+    let fixture = Fixture::new();
+    let idx_dir = store::indexes_dir(&fixture.data());
+
+    assert_eq!(store::record_active_day(&idx_dir, "2026-11-01"), 1);
+    // Repeated same day stays 1.
+    assert_eq!(store::record_active_day(&idx_dir, "2026-11-01"), 1);
+    // Clock skew backwards stays 1.
+    assert_eq!(store::record_active_day(&idx_dir, "2026-10-31"), 1);
+    // Next active day after a 20-day holiday only increments by 1!
+    assert_eq!(store::record_active_day(&idx_dir, "2026-11-21"), 2);
+    assert_eq!(store::record_active_day(&idx_dir, "2026-11-21"), 2);
+    assert_eq!(store::load_usage(&idx_dir).days, 2);
+
+    // Last-search file is throttled within an hour unless the active day advances.
+    let root = fixture.code_project();
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.set_active_day(10);
+    let outcome = indexes
+        .create_blocking(&create_args(&root, Some(Kind::Code)))
+        .unwrap();
+    assert!(store::load_last_search(&outcome.layout.dir).is_none());
+
+    indexes
+        .search_blocking(&search_args(&root, "retry", Some(ModeArg::Lexical)))
+        .unwrap();
+    let first_ls = store::load_last_search(&outcome.layout.dir).unwrap();
+    assert_eq!(first_ls.day, 10);
+
+    // Second search within the same hour on day 10 does not rewrite `last_search.json`.
+    std::thread::sleep(Duration::from_millis(15));
+    indexes
+        .search_blocking(&search_args(&root, "config", Some(ModeArg::Lexical)))
+        .unwrap();
+    let second_ls = store::load_last_search(&outcome.layout.dir).unwrap();
+    assert_eq!(
+        second_ls.at, first_ls.at,
+        "should be throttled within 1 hour"
+    );
+
+    // Advancing the active day updates `last_search.json` immediately on next search.
+    indexes.set_active_day(11);
+    indexes
+        .search_blocking(&search_args(&root, "config", Some(ModeArg::Lexical)))
+        .unwrap();
+    let third_ls = store::load_last_search(&outcome.layout.dir).unwrap();
+    assert_eq!(third_ls.day, 11);
+
+    fixture.shutdown(&indexes);
+}
+
+/// Removing a kept index via `index_manage` asks the user for approval (and
+/// refuses when no one can answer), while temporary/worktree indexes remove
+/// directly. `index_create` records creator metadata, and `action=lifetime`
+/// updates lifetime.
+#[test]
+fn removing_kept_index_asks_user_approval_and_temporary_removes_directly() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let docs = fixture.docs_project();
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+
+    // 1) Without approvals (`can_answer() == false`), removing a kept index is refused.
+    let no_ask_tools = indexes.tools_for(
+        Some("sess-1".into()),
+        Some(crate::approvals::Approvals::none()),
+    );
+    let run_with =
+        |tools: &[Arc<dyn arko_agents::Tool>], ctx: &TaskContext<'_>, name: &str, value: Value| {
+            let tool = tools
+                .iter()
+                .find(|t| t.definition().name == name)
+                .unwrap()
+                .clone();
+            fixture.runtime.block_on(tool.execute(ctx, params(value)))
+        };
+
+    let task_id = uuid::Uuid::new_v4();
+    let ctx = TaskContext::new(task_id, "main", "", &root);
+    run_with(
+        &no_ask_tools,
+        &ctx,
+        "index_create",
+        json!({"path": ".", "lifetime": "keep", "embed": false}),
+    )
+    .unwrap();
+    let created = indexes.resolve("proj", &root).unwrap();
+    assert_eq!(created.manifest.lifetime, Some(Lifetime::Keep));
+    assert_eq!(
+        created.manifest.created_by_session.as_deref(),
+        Some("sess-1")
+    );
+    assert_eq!(
+        created.manifest.created_by_run.as_deref(),
+        Some(task_id.to_string().as_str())
+    );
+
+    let err = run_with(
+        &no_ask_tools,
+        &ctx,
+        "index_manage",
+        json!({"action": "remove", "index": "proj"}),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("approval") && err.to_string().contains("arko index remove proj"),
+        "{err}"
+    );
+    assert!(indexes.resolve("proj", &root).is_ok(), "kept index stays");
+
+    // 2) A temporary index (`lifetime: 7`) removes directly without approval.
+    run_with(
+        &no_ask_tools,
+        &ctx,
+        "index_create",
+        json!({"path": docs.to_string_lossy(), "lifetime": 7, "embed": false}),
+    )
+    .unwrap();
+    let removed = run_with(
+        &no_ask_tools,
+        &ctx,
+        "index_manage",
+        json!({"action": "remove", "index": "handbook"}),
+    )
+    .unwrap();
+    assert!(removed.contains("Removed the index handbook"), "{removed}");
+    assert!(indexes.resolve("handbook", &root).is_err());
+
+    // 3) With interactive Approvals wired to a Feed: rejecting keeps it; approving removes it.
+    let feed = crate::remote::Feed::new("main");
+    let approvals = crate::approvals::Approvals::new(Some(feed.clone()), true, None);
+    let ask_tools = indexes.tools_for(Some("sess-1".into()), Some(approvals));
+    let manage = ask_tools
+        .iter()
+        .find(|t| t.definition().name == "index_manage")
+        .unwrap()
+        .clone();
+
+    // Reject first.
+    let rejected_text = fixture.runtime.block_on(async {
+        let feed_answer = feed.clone();
+        let responder = tokio::spawn(async move {
+            let req = loop {
+                let list = feed_answer.approvals();
+                if let Some(first) = list.into_iter().next() {
+                    break first;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            assert_eq!(req.approval.kind_word(), "Index");
+            assert_eq!(req.approval.name(), "proj");
+            assert_eq!(req.approval.title(), "Remove the kept index proj?");
+            feed_answer.answer_approvals(&crate::approvals::ApprovalAnswers {
+                choices: vec![crate::approvals::ApprovalChoice {
+                    id: req.id,
+                    approve: false,
+                    option: false,
+                }],
+                words: Some("still using it".into()),
+            });
+        });
+        let res = manage
+            .execute(&ctx, params(json!({"action": "remove", "index": "proj"})))
+            .await
+            .unwrap();
+        responder.await.unwrap();
+        res
+    });
+    assert!(
+        rejected_text.contains("chose not to remove") && rejected_text.contains("still using it"),
+        "{rejected_text}"
+    );
+    assert!(indexes.resolve("proj", &root).is_ok());
+
+    // Approve next.
+    let approved_text = fixture.runtime.block_on(async {
+        let feed_answer = feed.clone();
+        let responder = tokio::spawn(async move {
+            let req = loop {
+                let list = feed_answer.approvals();
+                if let Some(first) = list.into_iter().next() {
+                    break first;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            feed_answer.answer_approvals(&crate::approvals::ApprovalAnswers {
+                choices: vec![crate::approvals::ApprovalChoice {
+                    id: req.id,
+                    approve: true,
+                    option: false,
+                }],
+                words: Some("go ahead".into()),
+            });
+        });
+        let res = manage
+            .execute(&ctx, params(json!({"action": "remove", "index": "proj"})))
+            .await
+            .unwrap();
+        responder.await.unwrap();
+        res
+    });
+    assert!(
+        approved_text.contains("Removed the index proj") && approved_text.contains("go ahead"),
+        "{approved_text}"
+    );
+    assert!(indexes.resolve("proj", &root).is_err());
+
+    fixture.shutdown(&indexes);
+}
+
+/// Prompt discovery (`known`) orders covering cwd -> kept -> temporary by most
+/// recent search, hides worktree indexes; banner (`summary`) names kept indexes
+/// and counts temporary ones; watcher scoping watches ONLY covering cwd and
+/// kept indexes inside cwd.
+#[test]
+fn discovery_ordering_banner_summary_and_watcher_scoping() {
+    let fixture = Fixture::new();
+    let workspace = fixture.base.join("ws");
+    let kept_in_ws = workspace.join("zeta-kept");
+    let temp_old = workspace.join("alpha-temp-old");
+    let temp_recent = workspace.join("beta-temp-recent");
+    let outside_kept = fixture.base.join("outside-kept");
+    for dir in [&kept_in_ws, &temp_old, &temp_recent, &outside_kept] {
+        write(&dir.join("src/lib.rs"), "pub fn hello() {}\n");
+    }
+    init_git_repo(&kept_in_ws);
+    let wt_dir = workspace.join("wt/branch1");
+    git(
+        &kept_in_ws,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/one",
+            wt_dir.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+
+    let indexes = fixture.open(&workspace, Backend::Hash, true, fast(false));
+    indexes.set_active_day(10);
+
+    // Create kept + temporary indexes inside workspace, and one kept outside workspace.
+    let kept_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("zeta-kept".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            ..create_args(&kept_in_ws, Some(Kind::Code))
+        })
+        .unwrap();
+    let old_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("alpha-temp-old".into()),
+            lifetime: Some(Lifetime::Days(14)),
+            embed: Some(false),
+            ..create_args(&temp_old, Some(Kind::Code))
+        })
+        .unwrap();
+    let recent_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("beta-temp-recent".into()),
+            lifetime: Some(Lifetime::Days(14)),
+            embed: Some(false),
+            ..create_args(&temp_recent, Some(Kind::Code))
+        })
+        .unwrap();
+    let outside_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("outside-kept".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            ..create_args(&outside_kept, Some(Kind::Code))
+        })
+        .unwrap();
+
+    // Search `temp_old` on day 10, `temp_recent` on day 12, and auto-create a worktree index.
+    indexes
+        .search_blocking(&search_args(&temp_old, "hello", Some(ModeArg::Lexical)))
+        .unwrap();
+    indexes.set_active_day(12);
+    indexes
+        .search_blocking(&search_args(&temp_recent, "hello", Some(ModeArg::Lexical)))
+        .unwrap();
+    indexes
+        .search_blocking(&search_args(&wt_dir, "hello", Some(ModeArg::Lexical)))
+        .unwrap();
+
+    // `known(&workspace)` lists kept BEFORE temporary even though "alpha" < "zeta",
+    // then temporary by most recent search (`beta-temp-recent` before `alpha-temp-old`),
+    // then outside, and NEVER lists the worktree index!
+    let known: Vec<String> = indexes
+        .known(&workspace)
+        .into_iter()
+        .map(|k| k.name)
+        .collect();
+    assert_eq!(
+        known,
+        vec![
+            "zeta-kept",
+            "beta-temp-recent",
+            "alpha-temp-old",
+            "outside-kept"
+        ]
+    );
+
+    // Banner `summary()` names kept workspace index and counts the rest (2 temp + 1 worktree = 3).
+    wait_for("kept watcher", || {
+        indexes.watch_state(&kept_out.layout).active()
+    });
+    let summary = indexes.summary().unwrap();
+    assert!(
+        summary.contains("index zeta-kept (code, lexical, monitored) (+3 temporary)"),
+        "{summary}"
+    );
+
+    // Watcher scoping: ONLY `kept_in_ws` is watched! Temporary inside ws, outside kept,
+    // and worktree index are NOT watched.
+    assert!(indexes.watch_state(&kept_out.layout).active());
+    assert_eq!(indexes.watch_state(&old_out.layout), WatchState::Off);
+    assert_eq!(indexes.watch_state(&recent_out.layout), WatchState::Off);
+    assert_eq!(indexes.watch_state(&outside_out.layout), WatchState::Off);
+    let wt_found = indexes.resolve("zeta-kept@feat-one", &workspace).unwrap();
+    assert_eq!(indexes.watch_state(&wt_found.layout), WatchState::Off);
+
+    // Promoting `alpha-temp-old` to `Keep` starts watching it; demoting `zeta-kept` stops watching it!
+    indexes
+        .manage_blocking(
+            "alpha-temp-old",
+            &Action::SetLifetime(Lifetime::Keep),
+            &workspace,
+        )
+        .unwrap();
+    wait_for("promoted watcher", || {
+        indexes.watch_state(&old_out.layout).active()
+    });
+    indexes
+        .manage_blocking(
+            "zeta-kept",
+            &Action::SetLifetime(Lifetime::Days(7)),
+            &workspace,
+        )
+        .unwrap();
+    assert_eq!(indexes.watch_state(&kept_out.layout), WatchState::Off);
+
+    // When NO workspace indexes are kept, banner counts temporary ones cleanly.
+    indexes
+        .manage_blocking(
+            "alpha-temp-old",
+            &Action::SetLifetime(Lifetime::Days(7)),
+            &workspace,
+        )
+        .unwrap();
+    let temp_only = indexes.summary().unwrap();
+    assert_eq!(temp_only, "4 temporary indexes");
+
+    fixture.shutdown(&indexes);
+}
+
+/// `index_status` scopes visibility to cwd + current session (with `index: "all"`
+/// showing hidden ones), groups worktree indexes indented under their main index,
+/// shows a top expiring-soon warning line, and reports lifetime, last search,
+/// disk size, and health flags (`folder missing`, `branch merged`).
+#[test]
+fn index_status_visibility_grouping_warnings_and_health_flags() {
+    let fixture = Fixture::new();
+    let main_repo = fixture.code_project();
+    init_git_repo(&main_repo);
+    let wt_merged = fixture.base.join("wt/merged-branch");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "merged-branch",
+            wt_merged.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let session_other = fixture.base.join("created-by-session");
+    let hidden_other = fixture.base.join("hidden-other");
+    let missing_drive = fixture.base.join("unmounted-drive/sub/gone-repo");
+    write(&session_other.join("lib.rs"), "pub fn s() {}\n");
+    write(&hidden_other.join("lib.rs"), "pub fn h() {}\n");
+    write(&missing_drive.join("lib.rs"), "pub fn m() {}\n");
+
+    let indexes = fixture.open(&main_repo, Backend::Hash, false, fast(false));
+    indexes.set_active_day(10);
+
+    // Create main (kept), session_other (14d, created by sess-A), hidden_other (kept, other session),
+    // and missing_drive (kept, whose parent dir will be deleted to simulate unmounted drive).
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("proj".into()),
+            lifetime: Some(Lifetime::Keep),
+            ..create_args(&main_repo, Some(Kind::Code))
+        })
+        .unwrap();
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("task-idx".into()),
+            lifetime: Some(Lifetime::Days(5)),
+            embed: Some(false),
+            created_by_session: Some("sess-A".into()),
+            ..create_args(&session_other, Some(Kind::Code))
+        })
+        .unwrap();
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("hidden-idx".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            created_by_session: Some("sess-B".into()),
+            ..create_args(&hidden_other, Some(Kind::Code))
+        })
+        .unwrap();
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("drive-idx".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            created_by_session: Some("sess-A".into()),
+            ..create_args(&missing_drive, Some(Kind::Code))
+        })
+        .unwrap();
+    // Auto-create worktree index (its HEAD == main HEAD and clean -> branch merged!).
+    indexes
+        .search_blocking(&search_args(&wt_merged, "retry", Some(ModeArg::Hybrid)))
+        .unwrap();
+
+    // Remove the whole "unmounted-drive" directory (parent gone -> folder missing).
+    std::fs::remove_dir_all(fixture.base.join("unmounted-drive")).unwrap();
+
+    // Advance to day 13 so `task-idx` (5d created on day 10) has 2d left (<= 3d warning!).
+    indexes.set_active_day(13);
+
+    let tools = indexes.tools_for(Some("sess-A".into()), None);
+    let status_tool = tools
+        .iter()
+        .find(|t| t.definition().name == "index_status")
+        .unwrap()
+        .clone();
+    let ctx = TaskContext::new(uuid::Uuid::new_v4(), "main", "", &main_repo);
+
+    // Default `index_status` shows visible indexes (proj + indented proj@merged-branch,
+    // task-idx, drive-idx) and hides `hidden-idx`.
+    let visible = fixture
+        .runtime
+        .block_on(status_tool.execute(&ctx, params(json!({}))))
+        .unwrap();
+    // Top warning line for task-idx (2d left).
+    assert!(
+        visible.starts_with(
+            "task-idx (2d left) expires within 3 days of use unless searched or kept.\n"
+        ),
+        "{visible}"
+    );
+    // Worktree index is indented under `proj` with `(branch merged)` flag!
+    assert!(
+        visible.contains("\n  proj@merged-branch — code") && visible.contains("(branch merged)"),
+        "{visible}"
+    );
+    // `drive-idx` shows `(folder missing)`.
+    assert!(
+        visible.contains("drive-idx — code") && visible.contains("(folder missing)"),
+        "{visible}"
+    );
+    // Shows lifetime, last search, and size.
+    assert!(
+        visible.contains("lifetime: 5d (2d left), never searched"),
+        "{visible}"
+    );
+    assert!(
+        visible.contains("lifetime: worktree (27d left), searched 3 active days ago"),
+        "{visible}"
+    );
+    assert!(
+        visible.contains("KB") || visible.contains(" B"),
+        "{visible}"
+    );
+    // Hides `hidden-idx` and reports 1 hidden index.
+    assert!(!visible.contains("hidden-idx"), "{visible}");
+    assert!(
+        visible.contains("1 other index outside this directory (call index_status with index=\"all\" to list them)"),
+        "{visible}"
+    );
+
+    // `index_status(index: "all")` shows `hidden-idx` too with no hidden footer.
+    let all_text = fixture
+        .runtime
+        .block_on(status_tool.execute(&ctx, params(json!({"index": "all"}))))
+        .unwrap();
+    assert!(all_text.contains("hidden-idx"), "{all_text}");
+    assert!(!all_text.contains("outside this directory"), "{all_text}");
+
+    // Searching `task-idx` resets its countdown so the top warning disappears!
+    indexes
+        .search_blocking(&search_args(&session_other, "s", Some(ModeArg::Lexical)))
+        .unwrap();
+    let after_search = fixture
+        .runtime
+        .block_on(status_tool.execute(&ctx, params(json!({}))))
+        .unwrap();
+    assert!(
+        !after_search.contains("expires within 3 days"),
+        "{after_search}"
+    );
+    assert!(
+        after_search.contains("lifetime: 5d (5d left), searched today"),
+        "{after_search}"
+    );
+
+    fixture.shutdown(&indexes);
+}
+
+/// Legacy manifests without `lifetime` migrate to Worktree (when in a linked
+/// worktree with an indexed main repo), Keep (when embedded), or Days(30) with
+/// full grace (when lexical-only).
+#[test]
+fn migration_classifies_legacy_manifests_correctly() {
+    let fixture = Fixture::new();
+    let main_repo = fixture.code_project();
+    init_git_repo(&main_repo);
+    let wt_dir = fixture.base.join("wt/legacy-wt");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "legacy-branch",
+            wt_dir.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    // Make an unmerged commit in wt_dir so sweep migrates it without removing it as merged.
+    write(&wt_dir.join("src/unmerged.rs"), "pub fn unmerged() {}\n");
+    git(&wt_dir, &["add", "."]);
+    git(&wt_dir, &["commit", "-m", "Branch work"]);
+
+    let lex_repo = fixture.base.join("lex-only");
+    write(&lex_repo.join("lib.rs"), "pub fn lex() {}\n");
+
+    let indexes = fixture.open(&main_repo, Backend::Hash, false, fast(false));
+    indexes.set_active_day(40);
+
+    // Create three indexes and strip their `lifetime` and `created_day` to simulate legacy manifests.
+    let main_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("proj".into()),
+            embed: Some(true),
+            ..create_args(&main_repo, Some(Kind::Code))
+        })
+        .unwrap();
+    let lex_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("lex-only".into()),
+            embed: Some(false),
+            ..create_args(&lex_repo, Some(Kind::Code))
+        })
+        .unwrap();
+    let wt_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("legacy-wt".into()),
+            embed: Some(true),
+            monitor: true,
+            ..create_args(&wt_dir, Some(Kind::Code))
+        })
+        .unwrap();
+
+    for layout in [&main_out.layout, &lex_out.layout, &wt_out.layout] {
+        let mut m = store::load_manifest(&layout.dir).unwrap();
+        m.lifetime = None;
+        m.parent_index = None;
+        m.created_day = 0;
+        m.lifetime_changed_day = 0;
+        store::save_manifest(&layout.dir, &m).unwrap();
+    }
+
+    let report = indexes.sweep_once();
+    assert_eq!(report.migrated, 3, "{report:?}");
+    assert!(report.removed_deleted.is_empty());
+    assert!(report.removed_merged.is_empty());
+    assert!(report.removed_expired.is_empty());
+
+    let main_m = store::load_manifest(&main_out.layout.dir).unwrap();
+    assert_eq!(main_m.lifetime, Some(Lifetime::Keep));
+
+    let lex_m = store::load_manifest(&lex_out.layout.dir).unwrap();
+    assert_eq!(lex_m.lifetime, Some(Lifetime::Days(30)));
+    assert_eq!(
+        lex_m.created_day, 40,
+        "gets full 30-day grace from migration day"
+    );
+
+    let wt_m = store::load_manifest(&wt_out.layout.dir).unwrap();
+    assert_eq!(
+        wt_m.lifetime,
+        Some(Lifetime::Worktree {
+            main: "proj".into()
+        })
+    );
+    assert_eq!(
+        wt_m.parent_index.as_deref(),
+        Some(main_out.layout.id().as_str())
+    );
+    assert!(!wt_m.monitor, "migrated worktree index disables monitoring");
+
+    fixture.shutdown(&indexes);
+}
+
+/// Sweep removes deleted folders (only when parent exists), merged+clean
+/// worktrees, and expired `Days`/`Worktree` indexes; spares unmounted drives,
+/// `Keep` indexes, dirty/unmerged worktrees, and locked indexes.
+#[test]
+fn sweep_applies_all_cleanup_and_safety_rules() {
+    let fixture = Fixture::new();
+    let main_repo = fixture.code_project();
+    init_git_repo(&main_repo);
+
+    // Worktree 1: branch with a commit that gets merged into main (clean) -> REMOVED.
+    let wt_merged = fixture.base.join("wt/merged");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "br-merged",
+            wt_merged.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    write(&wt_merged.join("src/m.rs"), "pub fn merged_fn() {}\n");
+    git(&wt_merged, &["add", "."]);
+    git(&wt_merged, &["commit", "-m", "Merged work"]);
+
+    // Worktree 2: merged commit, BUT has an uncommitted file -> SPARED.
+    let wt_dirty = fixture.base.join("wt/dirty");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "br-dirty",
+            wt_dirty.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    write(&wt_dirty.join("src/untracked.rs"), "pub fn dirty_fn() {}\n");
+
+    // Worktree 3: unmerged commit (clean) -> SPARED until 30 active days pass.
+    let wt_unmerged = fixture.base.join("wt/unmerged");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "br-unmerged",
+            wt_unmerged.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    write(&wt_unmerged.join("src/u.rs"), "pub fn unmerged_fn() {}\n");
+    git(&wt_unmerged, &["add", "."]);
+    git(&wt_unmerged, &["commit", "-m", "Unmerged work"]);
+
+    // Folder that will be deleted while parent exists -> REMOVED.
+    let deleted_dir = fixture.base.join("deleted-proj");
+    write(&deleted_dir.join("lib.rs"), "pub fn gone() {}\n");
+
+    // Folder on simulated unmounted drive (parent will also disappear) -> SPARED.
+    let unmounted_dir = fixture.base.join("ext-drive/repos/usb-proj");
+    write(&unmounted_dir.join("lib.rs"), "pub fn usb() {}\n");
+
+    // Expiring Days(7) project.
+    let expiring_dir = fixture.base.join("temp-7d");
+    write(&expiring_dir.join("lib.rs"), "pub fn temp7() {}\n");
+
+    // Locked expiring Days(7) project -> SKIPPED while locked.
+    let locked_dir = fixture.base.join("locked-7d");
+    write(&locked_dir.join("lib.rs"), "pub fn locked7() {}\n");
+
+    let indexes = fixture.open(&main_repo, Backend::Hash, false, fast(false));
+    indexes.set_active_day(10);
+
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("proj".into()),
+            lifetime: Some(Lifetime::Keep),
+            ..create_args(&main_repo, Some(Kind::Code))
+        })
+        .unwrap();
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("deleted-proj".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            ..create_args(&deleted_dir, Some(Kind::Code))
+        })
+        .unwrap();
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("usb-proj".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            ..create_args(&unmounted_dir, Some(Kind::Code))
+        })
+        .unwrap();
+    indexes
+        .create_blocking(&CreateArgs {
+            name: Some("temp-7d".into()),
+            lifetime: Some(Lifetime::Days(7)),
+            embed: Some(false),
+            ..create_args(&expiring_dir, Some(Kind::Code))
+        })
+        .unwrap();
+    let locked_out = indexes
+        .create_blocking(&CreateArgs {
+            name: Some("locked-7d".into()),
+            lifetime: Some(Lifetime::Days(7)),
+            embed: Some(false),
+            ..create_args(&locked_dir, Some(Kind::Code))
+        })
+        .unwrap();
+
+    // Auto-create all 3 worktree indexes via search.
+    for wt in [&wt_merged, &wt_dirty, &wt_unmerged] {
+        indexes
+            .search_blocking(&search_args(wt, "retry", Some(ModeArg::Lexical)))
+            .unwrap();
+    }
+
+    // Merge `br-merged` into `main` so `wt_merged` becomes merged and clean.
+    git(
+        &main_repo,
+        &["merge", "--no-ff", "br-merged", "-m", "Merge br-merged"],
+    );
+    // Delete `deleted_dir` (parent `fixture.base` still exists).
+    std::fs::remove_dir_all(&deleted_dir).unwrap();
+    // Unmount simulated drive (parent `ext-drive/repos` also gone!).
+    std::fs::remove_dir_all(fixture.base.join("ext-drive")).unwrap();
+
+    // Sweep on day 16 (6 active days elapsed):
+    // - `deleted-proj` removed (deleted folder)
+    // - `proj@br-merged` removed (merged + clean)
+    // - `usb-proj`, `proj@br-dirty`, `proj@br-unmerged`, `temp-7d`, `locked-7d`, `proj` SPARED!
+    indexes.set_active_day(16);
+    let r1 = indexes.sweep_once();
+    assert_eq!(r1.removed_deleted, vec!["deleted-proj"]);
+    assert_eq!(r1.removed_merged, vec!["proj@br-merged"]);
+    assert!(r1.removed_expired.is_empty(), "{r1:?}");
+    assert!(indexes.resolve("usb-proj", &main_repo).is_ok());
+    assert!(indexes.resolve("proj@br-dirty", &main_repo).is_ok());
+    assert!(indexes.resolve("proj@br-unmerged", &main_repo).is_ok());
+    assert!(indexes.resolve("temp-7d", &main_repo).is_ok());
+    assert!(indexes.resolve("locked-7d", &main_repo).is_ok());
+
+    // Hold `.index.lock` exclusively on `locked-7d`, then advance to day 17 (7 active days elapsed).
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(locked_out.layout.state().join(".index.lock"))
+        .unwrap();
+    lock_file.lock().unwrap();
+
+    indexes.set_active_day(17);
+    let r2 = indexes.sweep_once();
+    assert_eq!(r2.removed_expired, vec!["temp-7d"], "{r2:?}");
+    assert_eq!(r2.skipped_locked, vec!["locked-7d"], "{r2:?}");
+    assert!(indexes.resolve("locked-7d", &main_repo).is_ok());
+    drop(lock_file);
+
+    // Once unlocked, `locked-7d` is removed; advancing to day 40 (30 active days elapsed)
+    // expires even the unmerged & dirty worktrees, while `Keep` indexes (`proj`, `usb-proj`) stay forever!
+    indexes.set_active_day(40);
+    let r3 = indexes.sweep_once();
+    assert!(
+        r3.removed_expired.contains(&"locked-7d".to_string()),
+        "{r3:?}"
+    );
+    assert!(
+        r3.removed_expired.contains(&"proj@br-unmerged".to_string()),
+        "{r3:?}"
+    );
+    assert!(
+        r3.removed_expired.contains(&"proj@br-dirty".to_string()),
+        "{r3:?}"
+    );
+    assert!(indexes.resolve("proj", &main_repo).is_ok());
+    assert!(indexes.resolve("usb-proj", &main_repo).is_ok());
+
+    fixture.shutdown(&indexes);
+}
+
+/// `Indexes::open` starts the background startup sweep thread (removing orphans
+/// off the caller's thread) and `shutdown()` wakes and joins it promptly.
+#[test]
+fn background_sweep_runs_at_open_and_shuts_down_promptly() {
+    let fixture = Fixture::new();
+    let gone = fixture.base.join("orphan-proj");
+    write(&gone.join("lib.rs"), "pub fn orphan() {}\n");
+
+    let setup = fixture.open(&fixture.base, Backend::Hash, false, fast(false));
+    setup
+        .create_blocking(&CreateArgs {
+            name: Some("orphan-proj".into()),
+            lifetime: Some(Lifetime::Keep),
+            embed: Some(false),
+            ..create_args(&gone, Some(Kind::Code))
+        })
+        .unwrap();
+    fixture.shutdown(&setup);
+
+    std::fs::remove_dir_all(&gone).unwrap();
+
+    // `Indexes::open` spawns the background sweep thread.
+    let live = {
+        let _guard = fixture.runtime.enter();
+        Indexes::open(&fixture.data(), &fixture.base, None, false).unwrap()
+    };
+    wait_for("startup sweep to remove orphan", || live.all().is_empty());
+
+    let started_shutdown = Instant::now();
+    fixture.shutdown(&live);
+    assert!(
+        started_shutdown.elapsed() < Duration::from_secs(3),
+        "shutdown should wake sweep thread immediately"
+    );
+}
+
+/// CLI `create --lifetime` and `lifetime` subcommand work cleanly.
+#[test]
+fn cli_lifetime_defaults_and_changes() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let id = store::index_id(&root, Kind::Code);
+
+    // Default `arko index create` sets lifetime to `keep`.
+    assert_eq!(
+        cli(&fixture, &root, &["create", "--no-embed", "--no-monitor"]),
+        Ok(ExitCode::SUCCESS)
+    );
+    let m = store::load_manifest(&store::indexes_dir(&fixture.data()).join(&id)).unwrap();
+    assert_eq!(m.lifetime, Some(Lifetime::Keep));
+
+    // `arko index lifetime proj 14` changes it to 14 days.
+    assert_eq!(
+        cli(&fixture, &root, &["lifetime", "proj", "14"]),
+        Ok(ExitCode::SUCCESS)
+    );
+    let m = store::load_manifest(&store::indexes_dir(&fixture.data()).join(&id)).unwrap();
+    assert_eq!(m.lifetime, Some(Lifetime::Days(14)));
+
+    // `arko index create --lifetime 7` sets explicit lifetime.
+    assert_eq!(
+        cli(
+            &fixture,
+            &root,
+            &["create", "--no-embed", "--no-monitor", "--lifetime", "7"]
+        ),
+        Ok(ExitCode::SUCCESS)
+    );
+    let m = store::load_manifest(&store::indexes_dir(&fixture.data()).join(&id)).unwrap();
+    assert_eq!(m.lifetime, Some(Lifetime::Days(7)));
+
+    // `arko index remove proj` works directly even on a kept index.
+    assert_eq!(
+        cli(&fixture, &root, &["lifetime", "proj", "keep"]),
+        Ok(ExitCode::SUCCESS)
+    );
+    assert_eq!(
+        cli(&fixture, &root, &["remove", "proj"]),
+        Ok(ExitCode::SUCCESS)
+    );
+    assert!(!store::indexes_dir(&fixture.data()).join(&id).exists());
 }

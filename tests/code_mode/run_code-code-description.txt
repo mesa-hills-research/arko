@@ -45,9 +45,9 @@ index_search(args: {
   language?: string;
 }): Promise<string>;
 
-/** Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create. */
+/** Shows Arko's search indexes (those covering or inside the working directory and those this session created, or index="all" for every index, or one named): root, kind, lifetime, last search, size, chunks, embedding coverage and cost, monitoring, health flags and errors. Check it before index_create. */
 index_status(args?: {
-  /** An index name, or a directory or file inside an index (default: all indexes). */
+  /** An index name, a directory or file inside an index, or "all" for every index on this machine (default: visible indexes for this directory and session). */
   index?: string;
 }): Promise<string>;
 

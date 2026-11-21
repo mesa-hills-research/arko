@@ -19,10 +19,10 @@
 //!   anything did. An index another Arko process watches is left to it (a
 //!   monitoring Arko takes over once the other stops).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -38,7 +38,7 @@ use super::census::{self, Census};
 use super::embed::{self, Backend};
 use super::lexical::{Cursor, Lines, Literal, columns};
 use super::monitor::{self, OpenError};
-use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
+use super::store::{self, BuildRecord, Kind, LastSearch, Layout, Lifetime, Manifest, Rules};
 
 /// Serializes manifest updates in this process. An app runs several sessions
 /// in one process, each with its own [`Indexes`] over the same folder, and
@@ -164,6 +164,10 @@ pub struct Timing {
     /// How often a watcher thread tries again to take over an index another
     /// process watches (or holds briefly, reconciling it).
     pub busy_retry: Duration,
+    /// Maximum wait for git commands during worktree merge checks.
+    pub git_timeout: Duration,
+    /// Interval between background sweep runs after startup.
+    pub sweep_interval: Duration,
     /// Use the polling watcher on Linux too (tests).
     pub force_polling: bool,
 }
@@ -179,6 +183,8 @@ impl Default for Timing {
             reconcile_interval: Duration::from_secs(30),
             busy_wait: Duration::from_secs(60),
             busy_retry: Duration::from_secs(30),
+            git_timeout: Duration::from_secs(5),
+            sweep_interval: Duration::from_secs(24 * 60 * 60),
             force_polling: false,
         }
     }
@@ -296,6 +302,46 @@ enum Caller {
     Background,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecordMode {
+    /// Don't write to the manifest (free estimates with cap == 0).
+    None,
+    /// Record tokens and cost spent without touching `cap_reached`.
+    SpendOnly,
+    /// Record tokens, cost, `cap_reached` and `embed_error`.
+    Full,
+}
+
+/// Which indexes `status_for` reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusScope<'a> {
+    /// Indexes visible to an agent: covering or inside `cwd`, created by
+    /// `session`, and worktree indexes under visible main indexes.
+    Visible { session: Option<&'a str> },
+    /// Every index on disk (including unreadable manifests).
+    All,
+    /// One named index (or `"."` for `cwd`).
+    One(&'a str),
+}
+
+/// What `status_for` returns.
+#[derive(Clone, Debug)]
+pub struct StatusOutput {
+    pub reports: Vec<IndexReport>,
+    /// Readable indexes omitted by visibility scoping (0 for `All` or `One`).
+    pub hidden: usize,
+}
+
+/// What one sweep pass did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    pub migrated: usize,
+    pub removed_deleted: Vec<String>,
+    pub removed_merged: Vec<String>,
+    pub removed_expired: Vec<String>,
+    pub skipped_locked: Vec<String>,
+}
+
 /// An index found on disk.
 #[derive(Clone, Debug)]
 pub struct Found {
@@ -358,6 +404,10 @@ pub struct SearchArgs {
     /// An exact search matches any case of the query's ASCII letters.
     pub ignore_case: bool,
     pub cwd: PathBuf,
+    /// Session creating an automatic worktree index on first search, if any.
+    pub created_by_session: Option<String>,
+    /// Agent run creating an automatic worktree index on first search, if any.
+    pub created_by_run: Option<String>,
 }
 
 /// A search result.
@@ -427,6 +477,18 @@ pub struct IndexReport {
     pub dir: PathBuf,
     /// The manifest, or why it couldn't be read.
     pub manifest: Result<Manifest, String>,
+    /// Effective lifetime (after legacy migration rules when `manifest.lifetime` is `None`).
+    pub lifetime: Option<Lifetime>,
+    pub last_search: Option<LastSearch>,
+    pub active_day: u64,
+    /// Disk usage of the index folder in bytes.
+    pub disk_bytes: u64,
+    /// True when the indexed folder does not exist on disk.
+    pub folder_missing: bool,
+    /// True for a worktree index whose branch is merged into main and clean.
+    pub branch_merged: bool,
+    /// Resolved folder id of the main index for a worktree index.
+    pub parent_id: Option<String>,
     pub watch: WatchState,
     /// Chunks in the current generation (none means never built).
     pub chunks: Option<u64>,
@@ -459,6 +521,8 @@ pub struct EmbedSummary {
     pub tokens: u64,
     pub dollars: f64,
     pub new: u64,
+    /// Distinct texts copied from other indexes' caches without calling the embedder.
+    pub borrowed: u64,
     pub embedded: u64,
     pub docs: u64,
     pub cap: u64,
@@ -494,6 +558,8 @@ pub struct CreateOutcome {
     pub updated: bool,
     pub census: Option<Census>,
     pub record: BuildRecord,
+    /// Disk size of the index folder after building.
+    pub disk_bytes: u64,
     pub estimate: Option<Result<Estimate, String>>,
     pub embedding: EmbedPlan,
     pub watch: WatchState,
@@ -514,6 +580,12 @@ pub struct CreateArgs {
     /// None means the existing index's setting, else whether a key is set.
     pub embed: Option<bool>,
     pub max_embed_tokens: Option<u64>,
+    /// Explicit lifetime (`None` from CLI preserves existing lifetime or defaults to `Keep`).
+    pub lifetime: Option<Lifetime>,
+    /// Session creating this index, if created from an Arko session.
+    pub created_by_session: Option<String>,
+    /// Agent run creating this index, if created by a tool call.
+    pub created_by_run: Option<String>,
     /// Embed before returning (else in the background).
     pub wait: bool,
     /// Estimate only, and the caller embeds (the CLI, with progress).
@@ -527,6 +599,7 @@ pub enum Action {
     Embed { max_tokens: Option<u64>, wait: bool },
     Estimate,
     Monitor(bool),
+    SetLifetime(Lifetime),
     Remove,
 }
 
@@ -546,6 +619,14 @@ pub struct Indexes {
     entries: Mutex<HashMap<String, Arc<Entry>>>,
     spent: Mutex<(u64, f64)>,
     stopping: AtomicBool,
+    /// Throttle cache for per-index `last_search.json` writes: id -> (day, written_at).
+    last_search_cache: Mutex<HashMap<String, (u64, DateTime<Utc>)>>,
+    /// Test-only active-day override (0 reads/updates `usage.json` normally).
+    #[cfg(test)]
+    day_override: AtomicU64,
+    /// Wake signal for the background sweep thread.
+    sweep_wake: Arc<(Mutex<bool>, Condvar)>,
+    sweep_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for Indexes {
@@ -582,6 +663,7 @@ impl Indexes {
             None,
         )?;
         this.watch_related();
+        this.start_sweep();
         Ok(this)
     }
 
@@ -611,8 +693,80 @@ impl Indexes {
             entries: Mutex::new(HashMap::new()),
             spent: Mutex::new((0, 0.0)),
             stopping: AtomicBool::new(false),
+            last_search_cache: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            day_override: AtomicU64::new(0),
+            sweep_wake: Arc::new((Mutex::new(false), Condvar::new())),
+            sweep_thread: Mutex::new(None),
         });
+        let _ = this.active_day();
         Ok(this)
+    }
+
+    /// Current active-day count, advancing `<data root>/indexes/usage.json`
+    /// once per UTC calendar day Arko is used.
+    pub(crate) fn active_day(&self) -> u64 {
+        #[cfg(test)]
+        {
+            let overridden = self.day_override.load(Ordering::SeqCst);
+            if overridden > 0 {
+                return overridden;
+            }
+        }
+        store::record_active_day(&self.indexes_dir(), &store::utc_date_today())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_active_day(&self, day: u64) {
+        self.day_override.store(day, Ordering::SeqCst);
+    }
+
+    /// Records that the index at `layout` was searched, writing
+    /// `last_search.json` at most once per hour unless the active-day count
+    /// advanced.
+    fn touch_last_search(&self, layout: &Layout) {
+        let day = self.active_day();
+        let now = Utc::now();
+        let id = layout.id();
+        let recent_in_mem = {
+            let cache = lock(&self.last_search_cache);
+            cache.get(&id).is_some_and(|(d, at)| {
+                *d >= day && now.signed_duration_since(*at) < chrono::Duration::hours(1)
+            })
+        };
+        if recent_in_mem {
+            return;
+        }
+        if let Some(disk) = store::load_last_search(&layout.dir)
+            && disk.day >= day
+            && now.signed_duration_since(disk.at) < chrono::Duration::hours(1)
+        {
+            lock(&self.last_search_cache).insert(id, (disk.day, disk.at));
+            return;
+        }
+        let record = LastSearch { day, at: now };
+        if let Err(error) = store::save_last_search(&layout.dir, &record) {
+            log::warn!("index: {error}");
+            return;
+        }
+        lock(&self.last_search_cache).insert(id, (day, now));
+    }
+
+    /// Whether this Arko process should keep a watcher running on `manifest`:
+    /// only when monitoring is enabled for both the process and the index,
+    /// never for worktree indexes or deleted folders, and only for indexes
+    /// covering `self.workspace` or kept indexes inside `self.workspace`.
+    pub(crate) fn should_watch(&self, manifest: &Manifest, lifetime: &Lifetime) -> bool {
+        if !self.monitor || !manifest.monitor || lifetime.is_worktree() {
+            return false;
+        }
+        if store::folder_deleted(&manifest.root) {
+            return false;
+        }
+        if self.workspace.starts_with(&manifest.root) {
+            return true;
+        }
+        manifest.root.starts_with(&self.workspace) && lifetime.is_keep()
     }
 
     /// The index's file rules, leaving out Arko's index folder when it lies in
@@ -638,21 +792,258 @@ impl Indexes {
         rules
     }
 
-    /// Starts watching the monitored indexes of the workspace (when this
-    /// instance monitors), and returns the number started.
+    /// Starts watching the monitored indexes of the workspace (covering cwd,
+    /// plus kept ones inside cwd), and returns the number started.
     pub(crate) fn watch_related(self: &Arc<Self>) -> usize {
         if !self.monitor {
             return 0;
         }
+        let all = self.all();
         let mut started = 0;
-        for found in self.related(&self.workspace) {
-            if found.manifest.monitor {
+        for found in &all {
+            let lifetime = self.effective_lifetime(found, &all);
+            if self.should_watch(&found.manifest, &lifetime) {
                 let entry = self.entry(&found.layout);
                 self.start_watch(&entry);
                 started += 1;
             }
         }
         started
+    }
+
+    /// Starts the background sweep thread (runs once at startup, then daily).
+    fn start_sweep(self: &Arc<Self>) {
+        if self.stopping() {
+            return;
+        }
+        let mut slot = lock(&self.sweep_thread);
+        if slot.is_some() {
+            return;
+        }
+        let this = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("arko-index-sweep".into())
+            .spawn(move || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.sweep_loop();
+                }));
+            });
+        match spawned {
+            Ok(thread) => *slot = Some(thread),
+            Err(error) => log::warn!("index: cannot start sweep thread: {error}"),
+        }
+    }
+
+    fn sweep_loop(&self) {
+        loop {
+            if self.stopping() {
+                break;
+            }
+            let _ = self.sweep_once();
+            let (lock_flag, condvar) = &*self.sweep_wake;
+            let mut wake = lock(lock_flag);
+            if *wake || self.stopping() {
+                break;
+            }
+            let (guard, _) = condvar
+                .wait_timeout(wake, self.timing.sweep_interval)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            wake = guard;
+            if *wake || self.stopping() {
+                break;
+            }
+        }
+    }
+
+    /// Runs one migration + cleanup sweep synchronously (blocking).
+    /// Migrates legacy manifests without a `lifetime`, then removes indexes
+    /// whose root folder was deleted (while parent exists), worktree indexes
+    /// whose branch is merged and clean, and expired `Days`/`Worktree` indexes.
+    /// Skips any index locked by another process or active in this process.
+    pub(crate) fn sweep_once(&self) -> SweepReport {
+        let mut report = SweepReport::default();
+        let active_day = self.active_day();
+        let all = self.all();
+        // Pass 1: persist migrated lifetimes for legacy manifests.
+        for found in &all {
+            if found.manifest.lifetime.is_some() {
+                continue;
+            }
+            let (lifetime, parent_index) = Self::migrated_lifetime(found, &all);
+            if self
+                .update_manifest(&found.layout, |m| {
+                    if m.lifetime.is_none() {
+                        m.lifetime = Some(lifetime.clone());
+                        if let Some(parent) = &parent_index {
+                            m.parent_index = Some(parent.clone());
+                        }
+                        if lifetime.is_worktree() {
+                            m.monitor = false;
+                        }
+                        if m.created_day == 0 {
+                            m.created_day = active_day;
+                        }
+                    }
+                })
+                .is_some()
+            {
+                report.migrated += 1;
+            }
+        }
+        // Pass 2: apply removal rules on freshly read manifests.
+        let all = self.all();
+        enum Reason {
+            Deleted,
+            Merged,
+            Expired,
+        }
+        for found in &all {
+            if self.stopping() {
+                break;
+            }
+            let lifetime = self.effective_lifetime(found, &all);
+            let reason = if store::folder_deleted(&found.manifest.root) {
+                Some(Reason::Deleted)
+            } else if lifetime.is_worktree() {
+                let last_search = store::load_last_search(&found.layout.dir);
+                if days_left(&found.manifest, &lifetime, last_search.as_ref(), active_day)
+                    == Some(0)
+                {
+                    Some(Reason::Expired)
+                } else {
+                    let main_root = worktree_of(&found.manifest.root)
+                        .map(|wt| wt.main_root)
+                        .or_else(|| {
+                            Self::parent_of(found, &all).map(|parent| parent.manifest.root.clone())
+                        });
+                    if let Some(main_root) = main_root
+                        && is_worktree_merged_and_clean(
+                            &found.manifest.root,
+                            &main_root,
+                            self.timing.git_timeout,
+                        )
+                    {
+                        Some(Reason::Merged)
+                    } else {
+                        None
+                    }
+                }
+            } else if matches!(lifetime, Lifetime::Days(_)) {
+                let last_search = store::load_last_search(&found.layout.dir);
+                if days_left(&found.manifest, &lifetime, last_search.as_ref(), active_day)
+                    == Some(0)
+                {
+                    Some(Reason::Expired)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let Some(reason) = reason else {
+                continue;
+            };
+            if monitor::is_locked_elsewhere(&found.layout) {
+                report.skipped_locked.push(found.manifest.name.clone());
+                continue;
+            }
+            let entry = lock(&self.entries).get(&found.layout.id()).cloned();
+            if let Some(entry) = &entry {
+                let watching = lock(&entry.live).watch.active();
+                let embedding = lock(&entry.embed).running;
+                if watching || embedding {
+                    report.skipped_locked.push(found.manifest.name.clone());
+                    continue;
+                }
+                self.remove_entry(entry);
+            }
+            if monitor::is_locked_elsewhere(&found.layout) {
+                report.skipped_locked.push(found.manifest.name.clone());
+                continue;
+            }
+            match std::fs::remove_dir_all(&found.layout.dir) {
+                Ok(()) => {
+                    let name = found.manifest.name.clone();
+                    match reason {
+                        Reason::Deleted => {
+                            self.event(&format!(
+                                "Removed index {name} (its folder {} was deleted)",
+                                found.manifest.root.display()
+                            ));
+                            report.removed_deleted.push(name);
+                        }
+                        Reason::Merged => {
+                            self.event(&format!(
+                                "Removed worktree index {name} (branch merged and clean)"
+                            ));
+                            report.removed_merged.push(name);
+                        }
+                        Reason::Expired => {
+                            self.event(&format!(
+                                "Removed expired index {name} (unused past its lifetime)"
+                            ));
+                            report.removed_expired.push(name);
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "index: sweep could not remove {} ({error})",
+                        found.manifest.name
+                    );
+                }
+            }
+        }
+        report
+    }
+
+    /// Removes any worktree index whose root is `worktree_root` or inside it
+    /// (called when `stop_agent` removes a worker's worktree). Blocking.
+    pub fn remove_worktree_indexes(&self, worktree_root: &Path) -> usize {
+        let target_canon = canonicalize_best_effort(worktree_root);
+        let all = self.all();
+        let mut removed = 0;
+        for found in &all {
+            let lifetime = self.effective_lifetime(found, &all);
+            if !lifetime.is_worktree() {
+                continue;
+            }
+            let root = &found.manifest.root;
+            let matches = root == &target_canon
+                || root.starts_with(&target_canon)
+                || root == worktree_root
+                || root.starts_with(worktree_root);
+            if !matches {
+                continue;
+            }
+            let entry = lock(&self.entries).get(&found.layout.id()).cloned();
+            if let Some(entry) = entry {
+                self.remove_entry(&entry);
+            }
+            if monitor::is_locked_elsewhere(&found.layout) {
+                log::warn!(
+                    "index: skipping removal of worktree index {} (locked by another process)",
+                    found.manifest.name
+                );
+                continue;
+            }
+            match std::fs::remove_dir_all(&found.layout.dir) {
+                Ok(()) => {
+                    self.event(&format!(
+                        "Removed worktree index {} with its worktree",
+                        found.manifest.name
+                    ));
+                    removed += 1;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "index: could not remove worktree index {} ({error})",
+                        found.manifest.name
+                    );
+                }
+            }
+        }
+        removed
     }
 
     /// Whether a Voyage key is set.
@@ -692,50 +1083,84 @@ impl Indexes {
         }
     }
 
-    /// One line for Arko's banner, meaning the indexes of the workspace, e.g.
-    /// `index arko (code, monitored)`. None when there are none.
+    /// One line for Arko's banner: names kept indexes of the workspace and
+    /// counts any temporary or worktree ones. None when there are none.
     pub fn summary(&self) -> Option<String> {
-        let related = self.related(&self.workspace);
+        let all = self.all();
+        let related = self.workspace_direct(&all);
         if related.is_empty() {
             return None;
         }
-        let parts: Vec<String> = related
-            .iter()
-            .map(|found| {
-                let monitored = match self.watch_state(&found.layout) {
-                    WatchState::Starting | WatchState::Watching { .. } => ", monitored",
-                    WatchState::Elsewhere => ", monitored by another Arko",
-                    _ => "",
-                };
-                let lexical = if found.manifest.embed {
-                    ""
-                } else {
-                    ", lexical"
-                };
-                format!(
-                    "{} ({}{lexical}{monitored})",
-                    found.manifest.name,
-                    found.manifest.kind.as_str()
-                )
-            })
-            .collect();
-        let mut line = format!(
-            "{} {}",
-            if parts.len() == 1 { "index" } else { "indexes" },
-            parts.join(", ")
-        );
+        let mut kept = Vec::new();
+        let mut temp_count = 0u64;
+        for found in &related {
+            if self.effective_lifetime(found, &all).is_keep() {
+                kept.push(found);
+            } else {
+                temp_count += 1;
+            }
+        }
+        let mut line = if kept.is_empty() {
+            fmt_counted(temp_count, "temporary index", "temporary indexes")
+        } else {
+            let parts: Vec<String> = kept
+                .iter()
+                .map(|found| {
+                    let monitored = match self.watch_state(&found.layout) {
+                        WatchState::Starting | WatchState::Watching { .. } => ", monitored",
+                        WatchState::Elsewhere => ", monitored by another Arko",
+                        _ => "",
+                    };
+                    let lexical = if found.manifest.embed {
+                        ""
+                    } else {
+                        ", lexical"
+                    };
+                    format!(
+                        "{} ({}{lexical}{monitored})",
+                        found.manifest.name,
+                        found.manifest.kind.as_str()
+                    )
+                })
+                .collect();
+            let mut text = format!(
+                "{} {}",
+                if parts.len() == 1 { "index" } else { "indexes" },
+                parts.join(", ")
+            );
+            if temp_count > 0 {
+                text.push_str(&format!(" (+{temp_count} temporary)"));
+            }
+            text
+        };
         if !self.backend().has_key() && related.iter().any(|found| found.manifest.embed) {
             line.push_str(&format!(" · semantic search needs {}", embed::KEY_NAME));
         }
         Some(line)
     }
 
-    /// The states of the workspace's indexes, the ones [`Self::summary`]
-    /// names, by name (they read a few small files each).
+    /// Direct indexes covering or inside `self.workspace` (for banner & details).
+    fn workspace_direct(&self, all: &[Found]) -> Vec<Found> {
+        let dir = &self.workspace;
+        all.iter()
+            .filter(|found| {
+                dir.starts_with(&found.manifest.root) || found.manifest.root.starts_with(dir)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The states of the workspace's indexes, by name (they read a few small
+    /// files each).
     pub(crate) fn workspace_reports(&self) -> Vec<IndexReport> {
-        self.related(&self.workspace)
+        let all = self.all();
+        let active_day = self.active_day();
+        self.workspace_direct(&all)
             .into_iter()
-            .map(|found| self.report(found.layout, Ok(found.manifest)))
+            .filter(|found| !self.effective_lifetime(found, &all).is_worktree())
+            .map(|found| {
+                self.report_with(found.layout, Ok(found.manifest), &all, active_day, false)
+            })
             .collect()
     }
 
@@ -769,17 +1194,29 @@ impl Indexes {
     /// Stops everything and returns the threads to join.
     fn stop_all(&self) -> Vec<JoinHandle<()>> {
         self.stopping.store(true, Ordering::SeqCst);
+        {
+            let (lock_flag, condvar) = &*self.sweep_wake;
+            *lock(lock_flag) = true;
+            condvar.notify_all();
+        }
         let entries: Vec<Arc<Entry>> = lock(&self.entries).values().cloned().collect();
         let mut threads = Vec::new();
+        let sweep = lock(&self.sweep_thread).take();
+        if let Some(thread) = sweep {
+            threads.push(thread);
+        }
         for entry in entries {
-            for run in lock(&entry.runs).iter() {
+            let runs: Vec<Arc<StopSignal>> = lock(&entry.runs).clone();
+            for run in runs {
                 run.stop("Arko is exiting");
             }
-            if let Some(watch) = lock(&entry.watcher).take() {
+            let watch = lock(&entry.watcher).take();
+            if let Some(watch) = watch {
                 watch.stop.store(true, Ordering::SeqCst);
                 threads.push(watch.thread);
             }
-            if let Some(thread) = lock(&entry.embed).thread.take() {
+            let embed = lock(&entry.embed).thread.take();
+            if let Some(thread) = embed {
                 threads.push(thread);
             }
         }
@@ -822,12 +1259,151 @@ impl Indexes {
             .collect()
     }
 
-    /// Every readable index, for the agents' instructions, meaning those of the
-    /// working directory (`workspace`) first, then the others, each group by
-    /// name, so the same indexes give the same list. When `workspace` is in a
-    /// git worktree with no index of its own, falls back to its main repository.
+    /// Effective lifetime of `found` (applying migration classification when
+    /// `manifest.lifetime` is `None`).
+    pub(crate) fn effective_lifetime(&self, found: &Found, all: &[Found]) -> Lifetime {
+        if let Some(lifetime) = &found.manifest.lifetime {
+            return lifetime.clone();
+        }
+        Self::migrated_lifetime(found, all).0
+    }
+
+    /// Effective lifetime of a single index by scanning current indexes.
+    pub(crate) fn effective_lifetime_of(&self, found: &Found) -> Lifetime {
+        if let Some(lifetime) = &found.manifest.lifetime {
+            return lifetime.clone();
+        }
+        let all = self.all();
+        Self::migrated_lifetime(found, &all).0
+    }
+
+    /// Classifies a legacy manifest (one with `lifetime: None`):
+    /// - linked git worktree whose main checkout is indexed -> `Worktree { main }`
+    /// - otherwise embedded (`embed` enabled or dense vectors present) -> `Keep`
+    /// - otherwise lexical-only -> `Days(30)`
+    pub(crate) fn migrated_lifetime(found: &Found, all: &[Found]) -> (Lifetime, Option<String>) {
+        if let Some(wt) = worktree_of(&found.manifest.root)
+            && let Some(main) =
+                Self::find_main_index(&wt, &found.manifest.root, found.manifest.kind, all)
+        {
+            return (
+                Lifetime::Worktree {
+                    main: main.manifest.name.clone(),
+                },
+                Some(main.layout.id()),
+            );
+        }
+        let has_vectors = index2::dense_info(&found.layout.state())
+            .ok()
+            .flatten()
+            .is_some_and(|info| info.embedded > 0);
+        if found.manifest.embed || has_vectors {
+            (Lifetime::Keep, None)
+        } else {
+            (Lifetime::Days(store::MIGRATE_LEXICAL_DAYS), None)
+        }
+    }
+
+    /// Finds the main checkout index corresponding to a linked worktree root.
+    fn find_main_index<'a>(
+        wt: &Worktree,
+        wt_index_root: &Path,
+        kind: Kind,
+        all: &'a [Found],
+    ) -> Option<&'a Found> {
+        let rebased = wt.rebase(wt_index_root);
+        let candidates: Vec<&Found> = all
+            .iter()
+            .filter(|other| {
+                other.manifest.root == rebased
+                    && !other
+                        .manifest
+                        .lifetime
+                        .as_ref()
+                        .is_some_and(Lifetime::is_worktree)
+            })
+            .collect();
+        candidates
+            .iter()
+            .copied()
+            .find(|other| other.manifest.kind == kind)
+            .or_else(|| candidates.first().copied())
+    }
+
+    /// Resolves the parent main index of a worktree index, if it still exists.
+    fn parent_of<'a>(found: &Found, all: &'a [Found]) -> Option<&'a Found> {
+        if let Some(parent_id) = &found.manifest.parent_index
+            && let Some(parent) = all.iter().find(|other| other.layout.id() == *parent_id)
+        {
+            return Some(parent);
+        }
+        let main_name = found
+            .manifest
+            .lifetime
+            .as_ref()
+            .and_then(Lifetime::main_name)
+            .or_else(|| {
+                worktree_of(&found.manifest.root).and_then(|wt| {
+                    Self::find_main_index(&wt, &found.manifest.root, found.manifest.kind, all)
+                        .map(|m| m.manifest.name.as_str())
+                })
+            })?;
+        all.iter().find(|other| other.manifest.name == main_name)
+    }
+
+    /// Collects donor `state/` directories from other indexes matching `kind`
+    /// and `model` for borrowing cached embeddings. Puts `prefer_main_id` first
+    /// (for worktree builds) and child worktree indexes next (for main builds
+    /// after a merge).
+    fn borrow_caches(
+        &self,
+        self_id: &str,
+        kind: Option<Kind>,
+        model: &str,
+        prefer_main_id: Option<&str>,
+    ) -> Vec<PathBuf> {
+        let mut primary = Vec::new();
+        let mut children = Vec::new();
+        let mut others = Vec::new();
+        for found in self.all() {
+            let id = found.layout.id();
+            if id == self_id {
+                continue;
+            }
+            if !found.manifest.embed || found.manifest.model != model {
+                continue;
+            }
+            if let Some(kind) = kind
+                && found.manifest.kind != kind
+            {
+                continue;
+            }
+            let state = found.layout.state();
+            if !state.is_dir() {
+                continue;
+            }
+            if prefer_main_id == Some(id.as_str()) {
+                primary.push(state);
+            } else if found.manifest.parent_index.as_deref() == Some(self_id) {
+                children.push(state);
+            } else {
+                others.push(state);
+            }
+        }
+        primary.extend(children);
+        primary.extend(others);
+        primary
+    }
+
+    /// Every readable non-worktree index, for the agents' instructions, ordered:
+    /// covering cwd first, then kept ones (by name), then temporary ones by
+    /// most recent search, with workspace-scoped ones before outside ones.
+    /// Worktree indexes are never listed. When `workspace` is inside a linked
+    /// git worktree with no direct non-worktree index covering it, falls back
+    /// to recognizing its main repository's index as covering it.
     pub fn known(&self, workspace: &Path) -> Vec<Known> {
         let workspace = canonicalize_best_effort(workspace);
+        let all = self.all();
         let place_for = |root: &Path, dir: &Path| {
             if root == dir {
                 Some("the working directory")
@@ -839,55 +1415,107 @@ impl Indexes {
                 None
             }
         };
-        let mut known: Vec<Known> = self
-            .all()
-            .into_iter()
-            .map(|found| {
-                let root = found.manifest.root;
-                let place = place_for(&root, &workspace);
-                Known {
-                    name: found.manifest.name,
-                    kind: found.manifest.kind.as_str(),
-                    root,
-                    place,
+        struct Item {
+            known: Known,
+            kept: bool,
+            last_day: u64,
+            last_ts: i64,
+        }
+        let mut items: Vec<Item> = all
+            .iter()
+            .filter_map(|found| {
+                let lifetime = self.effective_lifetime(found, &all);
+                if lifetime.is_worktree() {
+                    return None;
                 }
+                let root = found.manifest.root.clone();
+                let place = place_for(&root, &workspace);
+                let last = store::load_last_search(&found.layout.dir);
+                Some(Item {
+                    known: Known {
+                        name: found.manifest.name.clone(),
+                        kind: found.manifest.kind.as_str(),
+                        root,
+                        place,
+                    },
+                    kept: lifetime.is_keep(),
+                    last_day: last.as_ref().map_or(0, |ls| ls.day),
+                    last_ts: last.as_ref().map_or(0, |ls| ls.at.timestamp()),
+                })
             })
             .collect();
-        if known.iter().all(|item| item.place.is_none())
-            && let Some(wt) = worktree_of(&workspace)
-        {
+        let covers_direct = items.iter().any(|item| {
+            matches!(
+                item.known.place,
+                Some("the working directory" | "holds the working directory")
+            )
+        });
+        if !covers_direct && let Some(wt) = worktree_of(&workspace) {
             let mapped = wt.rebase(&workspace);
-            for item in &mut known {
-                item.place = place_for(&item.root, &mapped);
+            for item in &mut items {
+                if item.known.place.is_none() {
+                    item.known.place = place_for(&item.known.root, &mapped);
+                }
             }
         }
-        known.sort_by(|a, b| {
-            (a.place.is_none(), &a.name, &a.root).cmp(&(b.place.is_none(), &b.name, &b.root))
+        items.sort_by(|a, b| {
+            let tier = |item: &Item| match (item.known.place, item.kept) {
+                (Some("the working directory"), true) => 0u8,
+                (Some("the working directory"), false) => 1,
+                (Some("holds the working directory"), true) => 2,
+                (Some("holds the working directory"), false) => 3,
+                (Some("in the working directory"), true) => 4,
+                (Some("in the working directory"), false) => 5,
+                (None, true) => 6,
+                (None, false) => 7,
+                (Some(_), true) => 4,
+                (Some(_), false) => 5,
+            };
+            let ta = tier(a);
+            let tb = tier(b);
+            ta.cmp(&tb)
+                .then_with(|| {
+                    if !a.kept && !b.kept {
+                        b.last_day
+                            .cmp(&a.last_day)
+                            .then_with(|| b.last_ts.cmp(&a.last_ts))
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| a.known.name.cmp(&b.known.name))
+                .then_with(|| a.known.root.cmp(&b.known.root))
         });
-        known
+        items.into_iter().map(|item| item.known).collect()
     }
 
-    /// The indexes whose root contains `dir` or lies in it. When none matches
-    /// directly and `dir` is inside a git worktree, falls back to its main
-    /// repository.
+    /// The indexes whose root contains `dir` or lies in it. Excludes worktree
+    /// indexes unless `dir` itself is inside that worktree. When none matches
+    /// directly and `dir` is inside a linked git worktree, falls back to its
+    /// main repository's indexes.
     pub fn related(&self, dir: &Path) -> Vec<Found> {
         let dir = canonicalize_best_effort(dir);
         let all = self.all();
-        let find = |target: &Path| -> Vec<Found> {
+        let in_wt = worktree_of(&dir);
+        let find = |target: &Path, include_worktrees: bool| -> Vec<Found> {
             all.iter()
                 .filter(|found| {
+                    let is_wt = self.effective_lifetime(found, &all).is_worktree();
+                    if is_wt && !include_worktrees {
+                        return false;
+                    }
                     target.starts_with(&found.manifest.root)
                         || found.manifest.root.starts_with(target)
                 })
                 .cloned()
                 .collect()
         };
-        let direct = find(&dir);
+        let direct = find(&dir, in_wt.is_some());
         if !direct.is_empty() {
             return direct;
         }
-        if let Some(wt) = worktree_of(&dir) {
-            return find(&wt.rebase(&dir));
+        if let Some(wt) = in_wt {
+            return find(&wt.rebase(&dir), false);
         }
         direct
     }
@@ -1123,6 +1751,16 @@ impl Indexes {
         } else {
             None
         };
+        let borrow = if manifest.embed {
+            self.borrow_caches(
+                &entry.layout.id(),
+                Some(manifest.kind),
+                &manifest.model,
+                manifest.parent_index.as_deref(),
+            )
+        } else {
+            Vec::new()
+        };
         let deadline = Instant::now()
             + match caller {
                 Caller::Interactive => self.timing.busy_wait,
@@ -1137,7 +1775,8 @@ impl Indexes {
                 settings = settings.with_dense(
                     DenseBuild::new(embedder.as_ref())
                         .with_max_tokens(Some(manifest.max_embed_tokens))
-                        .with_embed_later(true),
+                        .with_embed_later(true)
+                        .with_borrow_caches(borrow.clone()),
                 );
             }
             match index2::build(&manifest.root, &state, &options, &settings) {
@@ -1148,6 +1787,7 @@ impl Indexes {
                         files: stats.report.files,
                         seconds: began.elapsed().as_secs_f64(),
                         summary: stats.report.summary(),
+                        borrowed: stats.dense.as_ref().map_or(0, |d| d.borrowed),
                     });
                 }
                 Err(error) => {
@@ -1171,12 +1811,13 @@ impl Indexes {
     // ----- embedding -----
 
     /// One embedding run of the index's current generation, with a cap of `cap`
-    /// tokens (0 means a free estimate). `record` saves the run in the manifest.
+    /// tokens (0 means a free estimate). `record` controls what is saved in the
+    /// manifest.
     fn run_embed(
         &self,
         entry: &Entry,
         cap: u64,
-        record: bool,
+        record: RecordMode,
         progress: Option<&(dyn Fn(&EmbedProgress) + Sync)>,
         stop: Option<Arc<StopSignal>>,
     ) -> Result<EmbedSummary, String> {
@@ -1189,6 +1830,13 @@ impl Indexes {
             .backend()
             .embedder(&info.embedder, &self.handle, Some(stop.clone()))?;
         let model = info.embedder.model.clone();
+        let manifest = store::load_manifest(&entry.layout.dir).ok();
+        let borrow = self.borrow_caches(
+            &entry.layout.id(),
+            manifest.as_ref().map(|m| m.kind),
+            &model,
+            manifest.as_ref().and_then(|m| m.parent_index.as_deref()),
+        );
         let billed = AtomicU64::new(0);
         let on_progress = |update: &EmbedProgress| {
             let before = billed.swap(update.tokens, Ordering::SeqCst);
@@ -1208,6 +1856,7 @@ impl Indexes {
         }
         let dense = DenseBuild::new(embedder.as_ref())
             .with_max_tokens(Some(cap))
+            .with_borrow_caches(borrow)
             .with_progress(&on_progress)
             .with_stop(&stop);
         let result = index2::embed(&state, &dense).map_err(|error| error.to_string());
@@ -1220,26 +1869,39 @@ impl Indexes {
             self.add_spent(extra, embed::cost(&model, extra));
             tokens = stats.tokens;
         }
-        if record && cap > 0 {
-            self.update_manifest(&entry.layout, |m| {
-                m.embed_tokens += tokens;
-                m.embed_cost += embed::cost(&model, tokens);
-                match &result {
-                    Ok(stats) => {
-                        if !stats.superseded && !stats.stopped {
-                            m.cap_reached = stats.cap_reached;
+        match record {
+            RecordMode::Full if cap > 0 => {
+                self.update_manifest(&entry.layout, |m| {
+                    m.embed_tokens += tokens;
+                    m.embed_cost += embed::cost(&model, tokens);
+                    match &result {
+                        Ok(stats) => {
+                            if !stats.superseded && !stats.stopped {
+                                m.cap_reached = stats.cap_reached;
+                            }
+                            m.embed_error = None;
                         }
+                        Err(error) => m.embed_error = Some(format!("embedding failed ({error})")),
+                    }
+                });
+            }
+            RecordMode::SpendOnly if cap > 0 && tokens > 0 => {
+                self.update_manifest(&entry.layout, |m| {
+                    m.embed_tokens += tokens;
+                    m.embed_cost += embed::cost(&model, tokens);
+                    if result.is_ok() {
                         m.embed_error = None;
                     }
-                    Err(error) => m.embed_error = Some(format!("embedding failed ({error})")),
-                }
-            });
+                });
+            }
+            _ => {}
         }
         let stats = result?;
         Ok(EmbedSummary {
             tokens,
             dollars: embed::cost(&model, tokens),
             new: stats.new,
+            borrowed: stats.borrowed,
             embedded: stats.embedded_docs,
             docs: stats.docs,
             cap,
@@ -1260,7 +1922,7 @@ impl Indexes {
         let info = index2::dense_info(&state)
             .map_err(|error| error.to_string())?
             .ok_or("the index has no embeddings (it was built lexical only)")?;
-        let summary = self.run_embed(entry, 0, false, None, None)?;
+        let summary = self.run_embed(entry, 0, RecordMode::None, None, None)?;
         Ok(Estimate {
             tokens: summary.not_embedded_tokens,
             texts: summary.docs.saturating_sub(summary.embedded),
@@ -1350,11 +2012,11 @@ impl Indexes {
                 ),
                 Ok(manifest) => {
                     let cap = cap.unwrap_or(manifest.max_embed_tokens);
-                    match self.run_embed(entry, cap, true, None, None) {
+                    match self.run_embed(entry, cap, RecordMode::Full, None, None) {
                         Ok(summary) => {
                             superseded = summary.superseded;
                             let line = format!("{} {}", manifest.name, summary.line());
-                            if summary.new > 0 || summary.cap_reached {
+                            if summary.new > 0 || summary.borrowed > 0 || summary.cap_reached {
                                 self.event(&line);
                             }
                             line
@@ -1702,7 +2364,13 @@ impl Indexes {
                     && !manifest.cap_reached
                     && Self::embedding_incomplete(entry)
                 {
-                    match self.run_embed(entry, FRESHEN_EMBED_TOKENS, false, None, None) {
+                    match self.run_embed(
+                        entry,
+                        FRESHEN_EMBED_TOKENS,
+                        RecordMode::SpendOnly,
+                        None,
+                        None,
+                    ) {
                         Ok(summary) if summary.cap_reached => notes.push(format!(
                             "{name} has vectors for {}/{} chunks, and the rest are found by keywords until an interactive Arko monitors it (or `arko index embed`)",
                             fmt_count(summary.embedded),
@@ -1718,10 +2386,308 @@ impl Indexes {
             Ok(None) => {}
             Err(error) => notes.push(format!("Couldn't check {name} for changes ({error})")),
         }
-        // A monitored index outside the workspace has no watcher yet, so once
-        // searched, it is kept current too.
-        if self.monitor && manifest.monitor {
+        // Only restart watching for indexes that belong in this process's
+        // watch scope (covering cwd, or kept inside cwd; never worktrees or
+        // temporary/outside indexes).
+        let lifetime = self.effective_lifetime_of(&Found {
+            layout: entry.layout.clone(),
+            manifest: manifest.clone(),
+        });
+        if self.should_watch(manifest, &lifetime) {
             self.start_watch(entry);
+        }
+    }
+
+    /// Locates or automatically creates a per-worktree index derived from `main`.
+    /// Inherits `main`'s kind, rules, embed setting, model and token cap; never
+    /// watched; borrows cached vectors from `main` (and siblings) on build so
+    /// unchanged chunks immediately have dense vectors.
+    #[allow(clippy::too_many_arguments)]
+    fn ensure_worktree_index(
+        self: &Arc<Self>,
+        main: &Found,
+        wt: &Worktree,
+        wt_index_root: &Path,
+        session: Option<&str>,
+        run: Option<&str>,
+        notes: &mut Vec<String>,
+    ) -> Result<Found, String> {
+        let kind = main.manifest.kind;
+        let id = store::index_id(wt_index_root, kind);
+        let layout = Layout::new(self.indexes_dir().join(&id));
+        if let Ok(manifest) = store::load_manifest(&layout.dir)
+            && manifest.last_build.is_some()
+        {
+            return Ok(Found { layout, manifest });
+        }
+        let entry = self.entry(&layout);
+        let created_manifest = {
+            let _build_guard = lock(&entry.build_lock);
+            // Re-check under build_lock in case a concurrent search just created it.
+            if let Ok(manifest) = store::load_manifest(&layout.dir)
+                && manifest.last_build.is_some()
+            {
+                return Ok(Found { layout, manifest });
+            }
+            let others: Vec<Found> = self
+                .all()
+                .into_iter()
+                .filter(|found| found.layout.id() != id)
+                .collect();
+            let taken =
+                |candidate: &str| others.iter().any(|found| found.manifest.name == candidate);
+            let branch = worktree_branch(wt);
+            let name = worktree_index_name(&main.manifest.name, &branch, wt_index_root, taken, &id);
+            let active_day = self.active_day();
+            let manifest = {
+                let _guard = lock(&MANIFESTS);
+                let mut m = Manifest {
+                    version: store::MANIFEST_VERSION,
+                    name,
+                    root: wt_index_root.to_path_buf(),
+                    kind,
+                    model: main.manifest.model.clone(),
+                    embed: main.manifest.embed,
+                    rules: main.manifest.rules.clone(),
+                    monitor: false,
+                    max_embed_tokens: main.manifest.max_embed_tokens,
+                    created: Some(Utc::now()),
+                    lifetime: Some(Lifetime::Worktree {
+                        main: main.manifest.name.clone(),
+                    }),
+                    parent_index: Some(main.layout.id()),
+                    created_by_session: session.map(str::to_string),
+                    created_by_run: run.map(str::to_string),
+                    created_day: active_day,
+                    ..Manifest::default()
+                };
+                if m.model.is_empty() {
+                    m.model = self.backend().model_for(kind);
+                }
+                store::save_manifest(&layout.dir, &m)?;
+                m
+            };
+            let opened = monitor::open_changes(
+                wt_index_root,
+                &layout,
+                &self.file_rules(&manifest),
+                kind == Kind::Docs,
+                self.timing.force_polling,
+            );
+            let built = match opened {
+                Ok(mut changes) => {
+                    let last = monitor::drain(changes.as_mut());
+                    let built = self.build_locked(&entry, &manifest, Caller::Interactive);
+                    if let (Ok(Some(sequence)), Ok(_)) = (&last, &built) {
+                        let _ = changes.ack(*sequence);
+                    }
+                    built
+                }
+                Err(_) => self.build_locked(&entry, &manifest, Caller::Interactive),
+            };
+            match built {
+                Ok(record) => {
+                    lock(&entry.live).last_reconcile = Some(Instant::now());
+                    let borrowed_note = if record.borrowed > 0 {
+                        format!(
+                            ", borrowed {}",
+                            fmt_counted(record.borrowed, "cached vector", "cached vectors")
+                        )
+                    } else {
+                        String::new()
+                    };
+                    notes.push(format!(
+                        "Created worktree index {} from {} ({:.1} s{borrowed_note})",
+                        manifest.name, main.manifest.name, record.seconds
+                    ));
+                    store::load_manifest(&layout.dir).unwrap_or(manifest)
+                }
+                Err(error) => {
+                    if !error.contains("already in use") {
+                        let _ = std::fs::remove_dir_all(&layout.dir);
+                        lock(&self.entries).remove(&id);
+                    }
+                    return Err(format!(
+                        "building worktree index {} failed ({error})",
+                        manifest.name
+                    ));
+                }
+            }
+        };
+        if created_manifest.embed
+            && self.backend().has_key()
+            && !created_manifest.cap_reached
+            && Self::embedding_incomplete(&entry)
+        {
+            if self.monitor {
+                self.request_embed(&entry, None, false);
+            } else {
+                match self.run_embed(
+                    &entry,
+                    FRESHEN_EMBED_TOKENS,
+                    RecordMode::SpendOnly,
+                    None,
+                    None,
+                ) {
+                    Ok(summary) if summary.cap_reached => notes.push(format!(
+                        "{} has vectors for {}/{} chunks, and the rest are found by keywords until `arko index embed` runs",
+                        created_manifest.name,
+                        fmt_count(summary.embedded),
+                        fmt_count(summary.docs)
+                    )),
+                    Ok(_) => {}
+                    Err(error) => notes.push(format!(
+                        "Embedding the changes of {} failed ({error})",
+                        created_manifest.name
+                    )),
+                }
+            }
+        }
+        Ok(Found {
+            layout,
+            manifest: created_manifest,
+        })
+    }
+
+    /// Resolves targets for `search_blocking`, automatically creating
+    /// per-worktree indexes when searching from (or naming a path in) a linked
+    /// git worktree whose main checkout is indexed.
+    #[allow(clippy::too_many_arguments)]
+    fn search_targets(
+        self: &Arc<Self>,
+        named: Option<&str>,
+        place: &Path,
+        cwd: &Path,
+        session: Option<&str>,
+        run: Option<&str>,
+        notes: &mut Vec<String>,
+    ) -> Result<Vec<Found>, String> {
+        let all = self.all();
+        if let Some(name) = named {
+            let name = name.trim();
+            if let Some(found) = all.iter().find(|found| found.manifest.name == name) {
+                return Ok(vec![found.clone()]);
+            }
+            if let Some(found) = all.iter().find(|found| found.layout.id() == name) {
+                return Ok(vec![found.clone()]);
+            }
+            if let Ok(path) = store::absolute(Path::new(name), cwd).canonicalize() {
+                // First check for a direct index covering `path`.
+                let direct_root = all
+                    .iter()
+                    .map(|found| &found.manifest.root)
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+                    .cloned();
+                let direct: Vec<&Found> = all
+                    .iter()
+                    .filter(|found| Some(&found.manifest.root) == direct_root.as_ref())
+                    .collect();
+                if !direct.is_empty() {
+                    if direct.len() == 1 {
+                        return Ok(vec![direct[0].clone()]);
+                    }
+                    let names: Vec<&str> = direct
+                        .iter()
+                        .map(|found| found.manifest.name.as_str())
+                        .collect();
+                    return Err(format!(
+                        "{} has several indexes ({}), so name one",
+                        direct[0].manifest.root.display(),
+                        names.join(", ")
+                    ));
+                }
+                // If `path` is inside a linked git worktree, derive worktree index(es) from main.
+                if let Some(wt) = worktree_of(&path) {
+                    let rebased = wt.rebase(&path);
+                    let main_root = all
+                        .iter()
+                        .filter(|found| {
+                            !self.effective_lifetime(found, &all).is_worktree()
+                                && found.manifest.root.starts_with(&wt.main_root)
+                                && rebased.starts_with(&found.manifest.root)
+                        })
+                        .map(|found| &found.manifest.root)
+                        .max_by_key(|root| root.components().count())
+                        .cloned();
+                    let mains: Vec<&Found> = all
+                        .iter()
+                        .filter(|found| {
+                            !self.effective_lifetime(found, &all).is_worktree()
+                                && Some(&found.manifest.root) == main_root.as_ref()
+                        })
+                        .collect();
+                    if !mains.is_empty() {
+                        let mut targets = Vec::new();
+                        for main in mains {
+                            let wt_root = wt_root_for_main(&wt, &main.manifest.root);
+                            if wt_root.is_dir() {
+                                targets.push(self.ensure_worktree_index(
+                                    main, &wt, &wt_root, session, run, notes,
+                                )?);
+                            }
+                        }
+                        if !targets.is_empty() {
+                            return Ok(targets);
+                        }
+                    }
+                }
+            }
+            return self.resolve(name, cwd).map(|found| vec![found]);
+        }
+
+        // No index named: check if `place` is inside a linked git worktree.
+        if let Some(wt) = worktree_of(place) {
+            let mut targets = Vec::new();
+            let mut seen_ids = HashSet::new();
+            let mains: Vec<&Found> = all
+                .iter()
+                .filter(|found| {
+                    !self.effective_lifetime(found, &all).is_worktree()
+                        && found.manifest.root.starts_with(&wt.main_root)
+                })
+                .collect();
+            for main in mains {
+                let wt_root = wt_root_for_main(&wt, &main.manifest.root);
+                if wt_root.is_dir() && (place.starts_with(&wt_root) || wt_root.starts_with(place)) {
+                    let ensured =
+                        self.ensure_worktree_index(main, &wt, &wt_root, session, run, notes)?;
+                    if seen_ids.insert(ensured.layout.id()) {
+                        targets.push(ensured);
+                    }
+                }
+            }
+            // Include any directly covering/contained indexes inside this worktree not derived above.
+            for found in &all {
+                if !seen_ids.contains(&found.layout.id())
+                    && (place.starts_with(&found.manifest.root)
+                        || found.manifest.root.starts_with(place))
+                    && found.manifest.root.starts_with(&wt.root)
+                {
+                    seen_ids.insert(found.layout.id());
+                    targets.push(found.clone());
+                }
+            }
+            if !targets.is_empty() {
+                return Ok(targets);
+            }
+            return Err(self.no_index_message(place));
+        }
+
+        // Not inside a worktree: direct non-worktree indexes covering or inside `place`.
+        let direct: Vec<Found> = all
+            .iter()
+            .filter(|found| {
+                !self.effective_lifetime(found, &all).is_worktree()
+                    && (place.starts_with(&found.manifest.root)
+                        || found.manifest.root.starts_with(place))
+            })
+            .cloned()
+            .collect();
+        if direct.is_empty() {
+            Err(self.no_index_message(place))
+        } else {
+            Ok(direct)
         }
     }
 
@@ -1778,14 +2744,21 @@ impl Indexes {
             }
             _ => cwd.clone(),
         };
-        let targets = self.targets(named, &place)?;
+        let mut output = SearchOutput::default();
+        let targets = self.search_targets(
+            named,
+            &place,
+            &cwd,
+            args.created_by_session.as_deref(),
+            args.created_by_run.as_deref(),
+            &mut output.notes,
+        )?;
         let language = args
             .language
             .as_deref()
             .map(str::trim)
             .filter(|language| !language.is_empty());
         let literal = exact.then(|| Literal::new(query, args.ignore_case));
-        let mut output = SearchOutput::default();
         let mut lists: Vec<Vec<Hit>> = Vec::new();
         for target in &targets {
             let root = &target.manifest.root;
@@ -1814,6 +2787,7 @@ impl Indexes {
             if let Some(language) = language {
                 filter = filter.with_language(language.to_ascii_lowercase());
             }
+            self.touch_last_search(&target.layout);
             let entry = self.entry(&target.layout);
             self.freshen(&entry, &target.manifest, &mut output.notes);
             let manifest = store::load_manifest(&target.layout.dir)
@@ -2130,53 +3104,165 @@ impl Indexes {
 
     // ----- status -----
 
+    /// The state of the indexes selected by `scope` (blocking).
+    pub(crate) fn status_for(
+        &self,
+        scope: StatusScope<'_>,
+        cwd: &Path,
+    ) -> Result<StatusOutput, String> {
+        let active_day = self.active_day();
+        let scanned_all = store::scan(&self.indexes_dir());
+        let all: Vec<Found> = scanned_all
+            .iter()
+            .filter_map(|scanned| {
+                scanned.manifest.as_ref().ok().map(|manifest| Found {
+                    layout: scanned.layout.clone(),
+                    manifest: manifest.clone(),
+                })
+            })
+            .collect();
+        let (selected, hidden): (Vec<store::Scanned>, usize) = match scope {
+            StatusScope::All => (scanned_all, 0),
+            StatusScope::One(name) if Path::new(name.trim()) == Path::new(".") => {
+                let related = self.related(cwd);
+                if related.is_empty() {
+                    return Err(self.no_index_message(cwd));
+                }
+                let mut ids: HashSet<String> =
+                    related.iter().map(|found| found.layout.id()).collect();
+                let mut picked = related;
+                // Include worktree indexes belonging to any selected main index.
+                for found in &all {
+                    if !ids.contains(&found.layout.id())
+                        && self.effective_lifetime(found, &all).is_worktree()
+                        && let Some(parent) = Self::parent_of(found, &all)
+                        && ids.contains(&parent.layout.id())
+                    {
+                        ids.insert(found.layout.id());
+                        picked.push(found.clone());
+                    }
+                }
+                (
+                    picked
+                        .into_iter()
+                        .map(|found| store::Scanned {
+                            layout: found.layout,
+                            manifest: Ok(found.manifest),
+                        })
+                        .collect(),
+                    0,
+                )
+            }
+            StatusScope::One(name) => {
+                let found = self.resolve(name, cwd)?;
+                let target_id = found.layout.id();
+                let mut picked = vec![store::Scanned {
+                    layout: found.layout,
+                    manifest: Ok(found.manifest),
+                }];
+                // Also include child worktree indexes under a named main index.
+                for other in &all {
+                    if other.layout.id() != target_id
+                        && self.effective_lifetime(other, &all).is_worktree()
+                        && Self::parent_of(other, &all)
+                            .is_some_and(|parent| parent.layout.id() == target_id)
+                    {
+                        picked.push(store::Scanned {
+                            layout: other.layout.clone(),
+                            manifest: Ok(other.manifest.clone()),
+                        });
+                    }
+                }
+                (picked, 0)
+            }
+            StatusScope::Visible { session } => {
+                let cwd = canonicalize_best_effort(cwd);
+                let wt_mapped = worktree_of(&cwd).map(|wt| wt.rebase(&cwd));
+                let mut visible_ids: HashSet<String> = HashSet::new();
+                for found in &all {
+                    let root = &found.manifest.root;
+                    let in_cwd = cwd.starts_with(root) || root.starts_with(&cwd);
+                    let in_wt_main = wt_mapped
+                        .as_ref()
+                        .is_some_and(|mapped| mapped.starts_with(root) || root.starts_with(mapped));
+                    let by_session = session.is_some()
+                        && found.manifest.created_by_session.as_deref() == session;
+                    if in_cwd || in_wt_main || by_session {
+                        visible_ids.insert(found.layout.id());
+                    }
+                }
+                // Include worktree indexes whose parent main index is visible.
+                for found in &all {
+                    if !visible_ids.contains(&found.layout.id())
+                        && self.effective_lifetime(found, &all).is_worktree()
+                        && let Some(parent) = Self::parent_of(found, &all)
+                        && visible_ids.contains(&parent.layout.id())
+                    {
+                        visible_ids.insert(found.layout.id());
+                    }
+                }
+                let mut hidden_count = 0usize;
+                let mut picked = Vec::new();
+                for scanned in scanned_all {
+                    let id = scanned.layout.id();
+                    if scanned.manifest.is_ok() {
+                        if visible_ids.contains(&id) {
+                            picked.push(scanned);
+                        } else {
+                            hidden_count += 1;
+                        }
+                    }
+                }
+                (picked, hidden_count)
+            }
+        };
+        let reports = selected
+            .into_iter()
+            .map(|scanned| {
+                self.report_with(scanned.layout, scanned.manifest, &all, active_day, true)
+            })
+            .collect();
+        Ok(StatusOutput { reports, hidden })
+    }
+
     /// The state of the index `name` names, or of every index (blocking).
     pub(crate) fn status_blocking(
         &self,
         name: Option<&str>,
         cwd: &Path,
     ) -> Result<Vec<IndexReport>, String> {
-        let scanned = match name.map(str::trim).filter(|name| !name.is_empty()) {
-            Some(name) if Path::new(name) == Path::new(".") => {
-                let related = self.related(cwd);
-                if related.is_empty() {
-                    return Err(self.no_index_message(cwd));
-                }
-                related
-                    .into_iter()
-                    .map(|found| store::Scanned {
-                        layout: found.layout,
-                        manifest: Ok(found.manifest),
-                    })
-                    .collect()
-            }
-            Some(name) => {
-                let found = self.resolve(name, cwd)?;
-                vec![store::Scanned {
-                    layout: found.layout,
-                    manifest: Ok(found.manifest),
-                }]
-            }
-            None => store::scan(&self.indexes_dir()),
+        let scope = match name.map(str::trim).filter(|name| !name.is_empty()) {
+            Some(name) if name.eq_ignore_ascii_case("all") => StatusScope::All,
+            Some(name) => StatusScope::One(name),
+            None => StatusScope::All,
         };
-        Ok(scanned
-            .into_iter()
-            .map(|scanned| self.report(scanned.layout, scanned.manifest))
-            .collect())
+        self.status_for(scope, cwd).map(|output| output.reports)
     }
 
-    fn report(&self, layout: Layout, manifest: Result<Manifest, String>) -> IndexReport {
+    fn report_with(
+        &self,
+        layout: Layout,
+        manifest: Result<Manifest, String>,
+        all: &[Found],
+        active_day: u64,
+        check_git: bool,
+    ) -> IndexReport {
         let entry = lock(&self.entries).get(&layout.id()).cloned();
         let (watch, pending, running, last) = match &entry {
             Some(entry) => {
-                let live = lock(&entry.live);
-                let slot = lock(&entry.embed);
-                (
-                    live.watch.clone(),
-                    if live.dirty { live.changes } else { 0 },
-                    slot.running,
-                    slot.last.clone(),
-                )
+                // One lock per statement (locks-and-blocking).
+                let (watch, pending) = {
+                    let live = lock(&entry.live);
+                    (
+                        live.watch.clone(),
+                        if live.dirty { live.changes } else { 0 },
+                    )
+                };
+                let (running, last) = {
+                    let slot = lock(&entry.embed);
+                    (slot.running, slot.last.clone())
+                };
+                (watch, pending, running, last)
             }
             None => (WatchState::Off, 0, false, None),
         };
@@ -2198,10 +3284,49 @@ impl Indexes {
             ),
             Err(error) => (None, Some(error.to_string()), None, false, None),
         };
+        let last_search = store::load_last_search(&layout.dir);
+        let disk_bytes = store::dir_size(&layout.dir);
+        let (lifetime, folder_missing, branch_merged, parent_id) = match &manifest {
+            Ok(m) => {
+                let found = Found {
+                    layout: layout.clone(),
+                    manifest: m.clone(),
+                };
+                let lifetime = self.effective_lifetime(&found, all);
+                let folder_missing = !m.root.exists();
+                let parent = if lifetime.is_worktree() {
+                    Self::parent_of(&found, all)
+                } else {
+                    None
+                };
+                let parent_id = parent
+                    .map(|p| p.layout.id())
+                    .or_else(|| m.parent_index.clone());
+                let branch_merged = if check_git && lifetime.is_worktree() && !folder_missing {
+                    let main_root = worktree_of(&m.root)
+                        .map(|wt| wt.main_root)
+                        .or_else(|| parent.map(|p| p.manifest.root.clone()));
+                    main_root.is_some_and(|main_root| {
+                        is_worktree_merged_and_clean(&m.root, &main_root, self.timing.git_timeout)
+                    })
+                } else {
+                    false
+                };
+                (Some(lifetime), folder_missing, branch_merged, parent_id)
+            }
+            Err(_) => (None, false, false, None),
+        };
         IndexReport {
             id: layout.id(),
             dir: layout.dir.clone(),
             manifest,
+            lifetime,
+            last_search,
+            active_day,
+            disk_bytes,
+            folder_missing,
+            branch_merged,
+            parent_id,
             watch,
             chunks,
             status_error,
@@ -2304,6 +3429,7 @@ impl Indexes {
             }
         }
         let model = self.backend().model_for(kind);
+        let active_day = self.active_day();
         let manifest = {
             let _guard = lock(&MANIFESTS);
             // Read again, since another session may have saved a build or
@@ -2320,7 +3446,30 @@ impl Indexes {
             if let Some(cap) = args.max_embed_tokens {
                 manifest.max_embed_tokens = cap;
             }
-            manifest.created = manifest.created.or(Some(Utc::now()));
+            let chosen_lifetime = args
+                .lifetime
+                .clone()
+                .or_else(|| manifest.lifetime.clone())
+                .unwrap_or(Lifetime::Keep);
+            if manifest.lifetime.as_ref() != Some(&chosen_lifetime) {
+                manifest.lifetime_changed_day = active_day;
+            }
+            if !chosen_lifetime.is_worktree() {
+                manifest.parent_index = None;
+            }
+            manifest.lifetime = Some(chosen_lifetime);
+            if manifest.created.is_none() {
+                manifest.created = Some(Utc::now());
+            }
+            if manifest.created_day == 0 {
+                manifest.created_day = active_day;
+            }
+            if manifest.created_by_session.is_none() {
+                manifest.created_by_session = args.created_by_session.clone();
+            }
+            if manifest.created_by_run.is_none() {
+                manifest.created_by_run = args.created_by_run.clone();
+            }
             manifest.build_error = None;
             manifest.embed_error = None;
             manifest.cap_reached = false;
@@ -2388,29 +3537,38 @@ impl Indexes {
             if args.defer_embed {
                 EmbedPlan::Deferred
             } else if args.wait {
-                EmbedPlan::Done(self.run_embed(&entry, manifest.max_embed_tokens, true, None, stop))
+                EmbedPlan::Done(self.run_embed(
+                    &entry,
+                    manifest.max_embed_tokens,
+                    RecordMode::Full,
+                    None,
+                    stop,
+                ))
             } else if self.request_embed(&entry, None, true) {
                 EmbedPlan::Background
             } else {
                 EmbedPlan::Done(Err("couldn't start embedding".into()))
             }
         };
+        let lifetime = manifest.lifetime.clone().unwrap_or(Lifetime::Keep);
         if manifest.monitor {
-            if self.monitor {
+            if self.should_watch(&manifest, &lifetime) {
                 self.start_watch(&entry);
-            } else {
+            } else if !self.monitor {
                 notes.push(
                     "it will be monitored while an interactive Arko runs in its directory".into(),
                 );
             }
         }
         let watch = lock(&entry.live).watch.clone();
+        let disk_bytes = store::dir_size(&layout.dir);
         Ok(CreateOutcome {
             layout,
             manifest,
             updated: existing.is_some(),
             census,
             record,
+            disk_bytes,
             estimate,
             embedding,
             watch,
@@ -2454,6 +3612,12 @@ impl Indexes {
                     record.seconds,
                     record.summary
                 );
+                if record.borrowed > 0 {
+                    text.push_str(&format!(
+                        " Borrowed {}.",
+                        fmt_counted(record.borrowed, "cached vector", "cached vectors")
+                    ));
+                }
                 if self.request_embed(&entry, None, false) {
                     text.push_str(" Embedding the changed chunks in the background.");
                 }
@@ -2486,7 +3650,7 @@ impl Indexes {
                 }
                 let cap = max_tokens.unwrap_or(manifest.max_embed_tokens);
                 if *wait {
-                    let summary = self.run_embed(&entry, cap, true, None, stop)?;
+                    let summary = self.run_embed(&entry, cap, RecordMode::Full, None, stop)?;
                     lines.push(format!("{name} {}.", summary.line()));
                 } else if self.request_embed(&entry, Some(cap), true) {
                     lines.push(format!(
@@ -2497,7 +3661,14 @@ impl Indexes {
                 Ok(lines.join("\n"))
             }
             Action::Monitor(on) => {
-                self.update_manifest(&found.layout, |m| m.monitor = *on)
+                let lifetime = self.effective_lifetime_of(&found);
+                if *on && lifetime.is_worktree() {
+                    return Err(format!(
+                        "{name} is a worktree index, which is updated on search and isn't watched"
+                    ));
+                }
+                let manifest = self
+                    .update_manifest(&found.layout, |m| m.monitor = *on)
                     .ok_or("the index's manifest can't be read")?;
                 if !on {
                     if let Some(thread) = self.stop_watch(&entry) {
@@ -2507,7 +3678,7 @@ impl Indexes {
                         "{name} is no longer monitored, so it is brought up to date when searched."
                     ));
                 }
-                if self.monitor {
+                if self.should_watch(&manifest, &lifetime) {
                     self.start_watch(&entry);
                     Ok(format!(
                         "{name} is monitored, so this Arko watches it now, as will interactive Arko sessions in its directory."
@@ -2517,6 +3688,30 @@ impl Indexes {
                         "{name} is monitored by interactive Arko sessions in its directory."
                     ))
                 }
+            }
+            Action::SetLifetime(new_lifetime) => {
+                let active_day = self.active_day();
+                let manifest = self
+                    .update_manifest(&found.layout, |m| {
+                        m.lifetime = Some(new_lifetime.clone());
+                        m.lifetime_changed_day = active_day;
+                        if m.created_day == 0 {
+                            m.created_day = active_day;
+                        }
+                        if !new_lifetime.is_worktree() {
+                            m.parent_index = None;
+                        }
+                    })
+                    .ok_or("the index's manifest can't be read")?;
+                if self.should_watch(&manifest, new_lifetime) {
+                    self.start_watch(&entry);
+                } else if let Some(thread) = self.stop_watch(&entry) {
+                    let _ = thread.join();
+                }
+                Ok(format!(
+                    "{name}'s lifetime is now {}.",
+                    new_lifetime.describe()
+                ))
             }
             Action::Remove => {
                 self.remove_entry(&entry);
@@ -2588,7 +3783,7 @@ impl Indexes {
         stop: Arc<StopSignal>,
     ) -> Result<EmbedSummary, String> {
         let entry = self.entry(&found.layout);
-        self.run_embed(&entry, cap, true, Some(progress), Some(stop))
+        self.run_embed(&entry, cap, RecordMode::Full, Some(progress), Some(stop))
     }
 
     #[cfg(feature = "tui")]
@@ -2773,14 +3968,33 @@ fn changed_since(file: &Path, built: Option<DateTime<Utc>>) -> bool {
 
 impl EmbedSummary {
     pub fn line(&self) -> String {
-        let mut line = format!(
-            "embedded {} for {} tokens ({}), and {}/{} chunks have vectors",
-            fmt_counted(self.new, "text", "texts"),
-            fmt_count(self.tokens),
-            fmt_dollars(self.dollars),
-            fmt_count(self.embedded),
-            fmt_count(self.docs),
-        );
+        let mut line = if self.borrowed > 0 && self.new == 0 && self.tokens == 0 {
+            format!(
+                "borrowed {}, and {}/{} chunks have vectors",
+                fmt_counted(self.borrowed, "cached vector", "cached vectors"),
+                fmt_count(self.embedded),
+                fmt_count(self.docs),
+            )
+        } else if self.borrowed > 0 {
+            format!(
+                "borrowed {} and embedded {} for {} tokens ({}), and {}/{} chunks have vectors",
+                fmt_counted(self.borrowed, "cached vector", "cached vectors"),
+                fmt_counted(self.new, "text", "texts"),
+                fmt_count(self.tokens),
+                fmt_dollars(self.dollars),
+                fmt_count(self.embedded),
+                fmt_count(self.docs),
+            )
+        } else {
+            format!(
+                "embedded {} for {} tokens ({}), and {}/{} chunks have vectors",
+                fmt_counted(self.new, "text", "texts"),
+                fmt_count(self.tokens),
+                fmt_dollars(self.dollars),
+                fmt_count(self.embedded),
+                fmt_count(self.docs),
+            )
+        };
         if self.cap_reached {
             line.push_str(&format!(
                 ". The run stopped at the cap of {} tokens (~{} tokens are left, and embedding again with a higher max_tokens continues)",
@@ -2890,12 +4104,37 @@ pub fn describe_dense(info: &DenseIndexInfo) -> &'static str {
     }
 }
 
-/// A git linked worktree's checkout root and the main repository root that
-/// owns it.
+/// Reference active-day used to calculate expiry for `manifest`.
+pub(crate) fn reference_day(
+    manifest: &Manifest,
+    last_search: Option<&LastSearch>,
+    active_day: u64,
+) -> u64 {
+    let search_day = last_search.map_or(0, |ls| ls.day);
+    let base = search_day
+        .max(manifest.created_day)
+        .max(manifest.lifetime_changed_day);
+    if base == 0 { active_day } else { base }
+}
+
+/// Active days remaining before `manifest` expires (`None` for `Keep`).
+pub(crate) fn days_left(
+    manifest: &Manifest,
+    lifetime: &Lifetime,
+    last_search: Option<&LastSearch>,
+    active_day: u64,
+) -> Option<u64> {
+    let limit = lifetime.expire_days()?;
+    let ref_day = reference_day(manifest, last_search, active_day);
+    Some(limit.saturating_sub(active_day.saturating_sub(ref_day)))
+}
+
+/// A git linked worktree's checkout root, main repository root, and gitdir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Worktree {
     root: PathBuf,
     main_root: PathBuf,
+    gitdir: PathBuf,
 }
 
 impl Worktree {
@@ -2908,6 +4147,193 @@ impl Worktree {
             Err(_) => self.main_root.clone(),
         }
     }
+}
+
+/// Maps a main index root inside `wt.main_root` to its corresponding directory
+/// inside `wt.root`.
+fn wt_root_for_main(wt: &Worktree, main_index_root: &Path) -> PathBuf {
+    match main_index_root.strip_prefix(&wt.main_root) {
+        Ok(rel) if rel.as_os_str().is_empty() => wt.root.clone(),
+        Ok(rel) => wt.root.join(rel),
+        Err(_) => wt.root.clone(),
+    }
+}
+
+/// Reads the worktree's checked-out branch from `<gitdir>/HEAD` without
+/// spawning git. Detached HEADs use the 7-character commit prefix, and
+/// unreadable HEADs fall back to the worktree folder's name.
+fn worktree_branch(wt: &Worktree) -> String {
+    if let Ok(head) = std::fs::read_to_string(wt.gitdir.join("HEAD")) {
+        let trimmed = head.trim();
+        if let Some(rest) = trimmed.strip_prefix("ref: ") {
+            let ref_name = rest.trim();
+            let branch = ref_name
+                .strip_prefix("refs/heads/")
+                .or_else(|| ref_name.strip_prefix("refs/"))
+                .unwrap_or(ref_name);
+            if !branch.is_empty() {
+                return branch.to_string();
+            }
+        } else if trimmed.len() >= 7 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return trimmed[..7].to_string();
+        }
+    }
+    wt.root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "worktree".into())
+}
+
+fn sanitize_branch(branch: &str) -> String {
+    let mut out = String::new();
+    for c in branch.chars() {
+        if c == '/' || c == '\\' || c.is_control() || c.is_whitespace() {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        "worktree".into()
+    } else {
+        out
+    }
+}
+
+fn worktree_index_name(
+    main_name: &str,
+    branch: &str,
+    wt_root: &Path,
+    taken: impl Fn(&str) -> bool,
+    fallback_id: &str,
+) -> String {
+    let branch = sanitize_branch(branch);
+    let fit = |prefix: &str, suffix: &str| -> String {
+        let base = format!("{prefix}@{suffix}");
+        if base.chars().count() <= 64 {
+            return base;
+        }
+        let p: String = prefix.chars().take(30).collect();
+        let room = 64usize.saturating_sub(p.chars().count() + 1);
+        let s: String = suffix.chars().take(room).collect();
+        let s = s.trim_end_matches('-');
+        format!("{p}@{s}")
+    };
+    let candidate = fit(main_name, &branch);
+    if store::validate_name(&candidate).is_ok() && !taken(&candidate) {
+        return candidate;
+    }
+    if let Some(dir_name) = wt_root
+        .file_name()
+        .map(|name| sanitize_branch(&name.to_string_lossy()))
+    {
+        let candidate = fit(main_name, &format!("{branch}-{dir_name}"));
+        if store::validate_name(&candidate).is_ok() && !taken(&candidate) {
+            return candidate;
+        }
+    }
+    for n in 2..=99 {
+        let candidate = fit(main_name, &format!("{branch}-{n}"));
+        if store::validate_name(&candidate).is_ok() && !taken(&candidate) {
+            return candidate;
+        }
+    }
+    fallback_id.to_string()
+}
+
+/// Runs a git command with a strict wall-clock timeout, draining stdout
+/// concurrently so large outputs can't fill the pipe buffer, and killing and
+/// reaping the child process if it exceeds `timeout`.
+fn run_git_timeout(dir: &Path, args: &[&str], timeout: Duration) -> Option<(bool, Vec<u8>)> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            if buf.len() < 64 * 1024 {
+                let room = 64 * 1024 - buf.len();
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        }
+        buf
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = reader.join().unwrap_or_default();
+                return Some((status.success(), out));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = reader.join();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return None;
+            }
+        }
+    }
+}
+
+/// Returns true only when `wt_root`'s `HEAD` is an ancestor of `main_root`'s
+/// `HEAD` (`git merge-base --is-ancestor`) AND `wt_root` has no uncommitted or
+/// untracked files (`git status --porcelain` is empty). Returns `false` on any
+/// error or timeout.
+pub(crate) fn is_worktree_merged_and_clean(
+    wt_root: &Path,
+    main_root: &Path,
+    timeout: Duration,
+) -> bool {
+    if !wt_root.is_dir() || !main_root.is_dir() {
+        return false;
+    }
+    let Some((true, main_out)) =
+        run_git_timeout(main_root, &["rev-parse", "--verify", "HEAD"], timeout)
+    else {
+        return false;
+    };
+    let main_head = String::from_utf8_lossy(&main_out).trim().to_string();
+    if main_head.is_empty() {
+        return false;
+    }
+    let Some((true, _)) = run_git_timeout(
+        wt_root,
+        &["merge-base", "--is-ancestor", "HEAD", &main_head],
+        timeout,
+    ) else {
+        return false;
+    };
+    let Some((true, status_out)) = run_git_timeout(wt_root, &["status", "--porcelain"], timeout)
+    else {
+        return false;
+    };
+    status_out.is_empty()
 }
 
 /// Canonicalizes `path` if it exists, or canonicalizes its deepest existing
@@ -2934,8 +4360,8 @@ fn canonicalize_best_effort(path: &Path) -> PathBuf {
 }
 
 /// If `path` (or an ancestor) is a git linked worktree (`.git` file pointing
-/// into `.../.git/worktrees/<name>`), returns its worktree root and main
-/// repository root. Stops at a regular `.git` directory.
+/// into `.../.git/worktrees/<name>`), returns its worktree root, main
+/// repository root, and gitdir. Stops at a regular `.git` directory.
 fn worktree_of(path: &Path) -> Option<Worktree> {
     let start = if path.is_file() { path.parent()? } else { path };
     let start = canonicalize_best_effort(start);
@@ -2964,6 +4390,7 @@ fn worktree_of(path: &Path) -> Option<Worktree> {
         return Some(Worktree {
             root: canonicalize_best_effort(ancestor),
             main_root,
+            gitdir,
         });
     }
     None

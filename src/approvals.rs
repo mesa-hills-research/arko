@@ -28,9 +28,9 @@ use uuid::Uuid;
 use crate::remote::Feed;
 pub use crate::remote::protocol::{
     Approval, ApprovalAnswers, ApprovalChoice, ApprovalRequest, BillingApproval, Detail, EnvName,
-    Look, MAX_APPROVAL_WORDS, MessageSwitch, ProfileApproval, Scope, ServerApproval,
-    ShownApprovals, SkillApproval, SkillFile, SkillSource, SkillUpdate, answer_labels,
-    approval_words_refusal, approvals_heading, approve_label, reject_label,
+    Look, MAX_APPROVAL_WORDS, MessageSwitch, ProfileApproval, RemoveIndexApproval, Scope,
+    ServerApproval, ShownApprovals, SkillApproval, SkillFile, SkillSource, SkillUpdate,
+    answer_labels, approval_words_refusal, approvals_heading, approve_label, reject_label,
 };
 use crate::ui::Output;
 

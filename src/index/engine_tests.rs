@@ -32,6 +32,9 @@ fn create_keeps_what_another_session_saved_while_it_waited() {
         monitor: false,
         embed: Some(false),
         max_embed_tokens: None,
+        lifetime: Some(Lifetime::Keep),
+        created_by_session: None,
+        created_by_run: None,
         wait: false,
         defer_embed: false,
     };
@@ -87,4 +90,76 @@ fn create_keeps_what_another_session_saved_while_it_waited() {
         "the creation undid the other session's spending"
     );
     assert_eq!(saved.embed_cost, 0.25);
+}
+
+/// Concurrent status reads, `known`, `summary`, `touch_last_search`, and
+/// `sweep_once` across multiple threads make forward progress without deadlock.
+#[test]
+fn concurrent_status_search_touch_and_sweep_all_finish() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _entered = runtime.enter();
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("proj");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn example() {}\n").unwrap();
+    let data = temp.path().join("data");
+    let indexes =
+        Indexes::open_with(&data, &root, Backend::Hash, false, Timing::default(), None).unwrap();
+    let args = CreateArgs {
+        path: root.clone(),
+        cwd: root.clone(),
+        kind: Some(Kind::Code),
+        name: Some("proj".into()),
+        include: Vec::new(),
+        exclude: Vec::new(),
+        monitor: false,
+        embed: Some(false),
+        max_embed_tokens: None,
+        lifetime: Some(Lifetime::Keep),
+        created_by_session: None,
+        created_by_run: None,
+        wait: false,
+        defer_embed: false,
+    };
+    let outcome = indexes.create_blocking(&args).unwrap();
+    let done = Arc::new(AtomicU64::new(0));
+    let mut threads = Vec::new();
+    for worker in 0..4u64 {
+        let indexes = Arc::clone(&indexes);
+        let root = root.clone();
+        let layout = outcome.layout.clone();
+        let done = Arc::clone(&done);
+        threads.push(std::thread::spawn(move || {
+            for i in 0..100u64 {
+                match (worker + i) % 4 {
+                    0 => {
+                        let _ = indexes.status_for(StatusScope::Visible { session: None }, &root);
+                    }
+                    1 => {
+                        let _ = indexes.known(&root);
+                        let _ = indexes.summary();
+                    }
+                    2 => {
+                        indexes.touch_last_search(&layout);
+                    }
+                    _ => {
+                        let _ = indexes.sweep_once();
+                    }
+                }
+            }
+            done.fetch_add(1, Ordering::SeqCst);
+        }));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while done.load(Ordering::SeqCst) < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "concurrent index operations stalled"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    runtime.block_on(indexes.shutdown());
 }
