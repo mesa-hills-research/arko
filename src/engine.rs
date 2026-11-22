@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::{AgentSettings, MAIN};
@@ -1143,6 +1144,7 @@ impl Engine {
         // Before the workflow opens, since it may restart a worker that hadn't started.
         harness.give_workers_project();
         prompter.opening();
+        let launched_at = Utc::now();
         harness.open(!new)?;
         if !new {
             // The conversation it goes on in may hold a list that changed
@@ -1150,7 +1152,14 @@ impl Engine {
             // rebuilds the workflow of a session that never closed.)
             harness.kept.tell_lead(harness.workflow());
         }
-        harness.import_seed().await?;
+        let branched = harness.import_seed().await?;
+        let launch_kind = if new {
+            crate::build_info::LaunchKind::New
+        } else if branched {
+            crate::build_info::LaunchKind::Branch
+        } else {
+            crate::build_info::LaunchKind::Resume
+        };
         harness.start_new_workers();
         harness.publish_models();
         harness.keep_warm_at_start();
@@ -1160,6 +1169,15 @@ impl Engine {
         }
         if !new && let Some(tokens) = options.workers_handover_at {
             harness.workers_handover_at_start(tokens);
+        }
+        if let Err(error) = crate::build_info::record_launch(
+            &harness.session.dir,
+            launched_at,
+            launch_kind,
+            options.app,
+            &harness.settings,
+        ) {
+            log::warn!("could not record session launch ({error})");
         }
         if one_shot && let Some(note) = &harness.unoffered {
             output.line(&output.warn(&crate::ui::sentence(note)));
@@ -6073,5 +6091,126 @@ note("stop")
         assert_eq!(end.unwrap().unwrap(), RunEnd::Quit);
         let late = wait(seam.send(Input::Message(app_message("Late.")))).await;
         assert_eq!(late, Verdict::closed());
+    }
+
+    /// Each session open appends its build and settings to `launches.jsonl`,
+    /// distinguishing new, resumed and first-opened branched sessions, and
+    /// every checkpoint stamps the build ID in `workflow_metadata.version`.
+    #[tokio::test]
+    async fn session_opens_and_checkpoints_record_the_build_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+
+        let read_launches = |dir: &std::path::Path| -> Vec<serde_json::Value> {
+            let text = std::fs::read_to_string(dir.join(crate::build_info::LAUNCHES_FILE))
+                .expect("launches.jsonl");
+            text.lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        };
+        let checkpoint_version = |root: &std::path::Path, id: &str| -> String {
+            let path = Session::open(root, id)
+                .unwrap()
+                .latest_checkpoint()
+                .expect("checkpoint");
+            let text = std::fs::read_to_string(path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            value["workflow_metadata"]["version"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // New session.
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let id = seam.session.id.clone();
+        let dir = seam.session.dir.clone();
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        let branch = ask_for(&seam, |reply| Request::Branch {
+            before: None,
+            reply,
+        })
+        .await
+        .unwrap();
+        quit(seam, ended).await;
+
+        let launches = read_launches(&dir);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0]["schema"], 1);
+        assert_eq!(launches[0]["kind"], "new");
+        assert_eq!(launches[0]["app"], "app");
+        assert_eq!(launches[0]["build"]["id"], crate::build_info::ID);
+        assert_eq!(checkpoint_version(&root, &id), crate::build_info::ID);
+
+        // Resumed session with a launch-time setting override.
+        let running = spawn(
+            Options {
+                root: Some(root.clone()),
+                session: SessionChoice::Resume(id.clone()),
+                workspace: Some(project.clone()),
+                model: Some("luna".into()),
+                openai_auth: Some(OpenAiAuth::ApiKey),
+                cache_1h: Some(false),
+                text_replies: Some(true),
+                worker_billing: Some(crate::billing::WorkerBilling::Api),
+                client: Some(GivenClient(Arc::new(server.client()))),
+                allow_outside_workspace: true,
+                ..Options::default()
+            },
+            Arc::new(NoPrompter),
+        );
+        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        quit(seam, running.ended).await;
+
+        let launches = read_launches(&dir);
+        assert_eq!(launches.len(), 2);
+        assert_eq!(launches[1]["kind"], "resume");
+        assert_eq!(launches[1]["build"]["id"], crate::build_info::ID);
+        assert_eq!(launches[0]["settings"]["allow_outside_workspace"], false);
+        assert_eq!(launches[1]["settings"]["allow_outside_workspace"], true);
+        assert_ne!(launches[0]["launch_id"], launches[1]["launch_id"]);
+
+        // First opening of the branch records "branch", and its checkpoint has the build ID.
+        let (seam, ended) = open_app(
+            &root,
+            &project,
+            &server,
+            SessionChoice::Resume(branch.clone()),
+        )
+        .await;
+        let branch_dir = seam.session.dir.clone();
+        quit(seam, ended).await;
+
+        let branch_launches = read_launches(&branch_dir);
+        assert_eq!(branch_launches.len(), 1);
+        assert_eq!(branch_launches[0]["kind"], "branch");
+        assert_eq!(branch_launches[0]["build"]["id"], crate::build_info::ID);
+        assert_eq!(checkpoint_version(&root, &branch), crate::build_info::ID);
+
+        // A later opening of the branch is a normal resume.
+        let (seam, ended) = open_app(
+            &root,
+            &project,
+            &server,
+            SessionChoice::Resume(branch.clone()),
+        )
+        .await;
+        quit(seam, ended).await;
+
+        let branch_launches = read_launches(&branch_dir);
+        assert_eq!(branch_launches.len(), 2);
+        assert_eq!(branch_launches[1]["kind"], "resume");
+        assert_ne!(
+            branch_launches[0]["launch_id"],
+            branch_launches[1]["launch_id"]
+        );
     }
 }

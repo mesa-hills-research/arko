@@ -39,6 +39,7 @@ mod asking;
 #[cfg_attr(not(feature = "remote"), allow(dead_code))]
 pub mod attachments;
 mod billing;
+pub mod build_info;
 pub mod builtin_skills;
 mod cache_memory;
 pub mod cache_timer;

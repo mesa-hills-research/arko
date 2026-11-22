@@ -891,6 +891,10 @@ impl Harness {
             .clone();
         let mut builder = Workflow::builder()
             .name(name)
+            .metadata(WorkflowMetadata {
+                version: crate::build_info::ID.to_string(),
+                ..Default::default()
+            })
             .workspace(&self.settings.workspace)
             .llm_client(self.client.clone())
             .agent(MAIN, main_config.clone())
@@ -2676,16 +2680,17 @@ impl Harness {
     }
 
     /// A branch's first opening, meaning its conversation, from its seed, becomes
-    /// its main agent's run, saved in a checkpoint (then the seed goes).
-    pub(crate) async fn import_seed(&mut self) -> Result<(), String> {
+    /// its main agent's run, saved in a checkpoint (then the seed goes). Returns
+    /// whether a seed was imported.
+    pub(crate) async fn import_seed(&mut self) -> Result<bool, String> {
         let seed = self.session.dir.join(crate::session::SEED_FILE);
         if !seed.exists() {
-            return Ok(());
+            return Ok(false);
         }
         if self.session.latest_checkpoint().is_some() {
             // Saved already, because the checkpoint has it.
             let _ = std::fs::remove_file(&seed);
-            return Ok(());
+            return Ok(false);
         }
         let unreadable =
             |error: String| format!("could not read the branch's conversation ({error})");
@@ -2703,7 +2708,7 @@ impl Harness {
         let _ = std::fs::remove_file(&seed);
         self.conversation = Conversation::Answered(result);
         self.track_conversations();
-        Ok(())
+        Ok(true)
     }
 
     /// Keeps the main agent's prompt cache warm, out of band where the
