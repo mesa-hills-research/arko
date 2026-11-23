@@ -3226,6 +3226,7 @@ impl Indexes {
     }
 
     /// The state of the index `name` names, or of every index (blocking).
+    #[cfg(any(test, feature = "tui"))]
     pub(crate) fn status_blocking(
         &self,
         name: Option<&str>,
