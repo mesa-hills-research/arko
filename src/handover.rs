@@ -435,9 +435,10 @@ impl Handover {
         }
         match &event.event {
             AgentEvent::ModelCallUsageReported(usage) => {
-                watch.input = Some(usage.input_tokens);
+                let size = usage.context_size();
+                watch.input = Some(size);
                 if watch.fresh && watch.fresh_input.is_none() {
-                    watch.fresh_input = Some(usage.input_tokens);
+                    watch.fresh_input = Some(size);
                 }
             }
             AgentEvent::HandoverRequested { .. } => watch.asked = true,
@@ -836,6 +837,32 @@ mod tests {
             ]
         );
         drop(sender);
+    }
+
+    #[test]
+    fn a_fresh_conversation_uses_context_for_the_handover_warning() {
+        let runs = Arc::new(Runs::default());
+        let (handover, feed) = handover_at(&runs, Some(100_000));
+        let run = Uuid::new_v4();
+        handover.event(&event(
+            run,
+            AgentEvent::ConversationHandedOver {
+                report: "R".into(),
+                input_tokens: 120_000,
+                handovers: 1,
+            },
+        ));
+        let usage = serde_json::from_value(serde_json::json!({
+            "call_id": "c", "provider": "antigravity", "model": "gemini-4-neon",
+            "input_tokens": 1_200_000, "output_tokens": 1, "context_tokens": 92_000,
+        }))
+        .unwrap();
+        handover.event(&event(run, AgentEvent::ModelCallUsageReported(usage)));
+        let watch = crate::lock(&handover.watch);
+        assert_eq!(watch.input, Some(92_000));
+        assert_eq!(watch.fresh_input, Some(92_000));
+        drop(watch);
+        assert!(notices(&feed).is_empty());
     }
 
     /// A compaction resets the watch as a handover does, and a turn that

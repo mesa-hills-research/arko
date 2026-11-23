@@ -780,8 +780,7 @@ pub async fn print_events(
     printer.flush();
 }
 
-/// Keeps the worker's context for the status, meaning the input of its latest model
-/// request and what its model accepts. The requests Claude Code's subagents
+/// Keeps the worker's context size and limit for the status. The requests Claude Code's subagents
 /// make aren't the worker's conversation, so they leave it as it was.
 fn record_worker_context(stats: &Mutex<Stats>, worker: &str, event: &AgentEvent) {
     if let AgentEvent::ModelCallUsageReported(usage) = event
@@ -789,7 +788,7 @@ fn record_worker_context(stats: &Mutex<Stats>, worker: &str, event: &AgentEvent)
     {
         stats.lock().unwrap().workers.insert(
             worker.to_string(),
-            (usage.input_tokens, usage.max_input_tokens),
+            (usage.context_size(), usage.max_input_tokens),
         );
     }
 }
@@ -1210,7 +1209,7 @@ impl EventPrinter {
             }
             AgentEvent::ModelCallUsageReported(usage) if main && usage.subagent.is_none() => {
                 let mut stats = self.stats.lock().unwrap();
-                stats.context_tokens = Some(usage.input_tokens);
+                stats.context_tokens = Some(usage.context_size());
                 if usage.max_input_tokens.is_some() {
                     stats.context_window = usage.max_input_tokens;
                 }
@@ -2767,6 +2766,33 @@ mod tests {
             crate::cache_memory::Memory::open(temp.path()).find(&[run]),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn the_meter_shows_context_instead_of_the_turn_total() {
+        let stats: Arc<Mutex<Stats>> = Arc::default();
+        let output = Arc::new(Output::new(None, true));
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
+        let usage = AgentEvent::ModelCallUsageReported(
+            serde_json::from_value(serde_json::json!({
+                "call_id": "c", "provider": "antigravity", "model": "gemini-4-neon",
+                "input_tokens": 1_200_000, "output_tokens": 1,
+                "context_tokens": 92_000, "max_input_tokens": 950_000,
+            }))
+            .unwrap(),
+        );
+        record_worker_context(&stats, "r1", &usage);
+        printer.event(WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event: usage,
+        });
+        let stats = stats.lock().unwrap();
+        assert_eq!(stats.context_tokens, Some(92_000));
+        assert_eq!(stats.context_window, Some(950_000));
+        assert_eq!(stats.workers["r1"], (92_000, Some(950_000)));
     }
 
     /// A worker's context follows its own requests. The requests of the

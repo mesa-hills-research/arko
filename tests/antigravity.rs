@@ -188,6 +188,35 @@ async fn antigravity_reads_through_arko_in_a_saved_session() {
         String::from_utf8_lossy(&second.stderr)
     );
     assert!(String::from_utf8_lossy(&second.stdout).contains("I can still read the note."));
+    let after: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .skip(events.len())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let resume = after
+        .iter()
+        .find(|entry| entry["event"] == "session_resume")
+        .expect("Arko resumed the saved conversation after a process restart");
+    let session_id = &resume["params"]["sessionId"];
+    let original = event("prompt").find(|entry| &entry["pid"] == pid).unwrap();
+    assert_eq!(session_id, &original["sessionId"]);
+    let launch = after
+        .iter()
+        .find(|entry| entry["pid"] == resume["pid"] && entry["event"] == "argv")
+        .unwrap();
+    let args = launch["argv"].as_array().unwrap();
+    let at = args.iter().position(|arg| arg == "--gemini-dir").unwrap();
+    assert_eq!(args[at + 1], directory.to_str().unwrap());
+    let prompt = after
+        .iter()
+        .find(|entry| entry["pid"] == resume["pid"] && entry["event"] == "prompt")
+        .unwrap();
+    assert_eq!(&prompt["sessionId"], session_id);
+    assert_eq!(
+        prompt["blocks"],
+        json!([{"type": "text", "text": "Carry on."}])
+    );
 
     let outdated = run(command().env("FAKE_AGY_VERSION", "1.5.13").args([
         "-m",
