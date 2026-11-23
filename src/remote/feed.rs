@@ -3540,7 +3540,7 @@ impl Feed {
     }
 
     /// Whether the user stopped the turn and it hasn't ended yet.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn turn_is_stopping(&self) -> bool {
         matches!(
             self.lock().phase,
