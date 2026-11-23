@@ -499,11 +499,13 @@ mod tests {
         assert!(ended.starts_with("finished in the background"), "{ended}");
     }
 
+    #[cfg(unix)]
     struct ToggleWorkers {
         running: std::sync::atomic::AtomicBool,
         changes: tokio::sync::watch::Sender<u64>,
     }
 
+    #[cfg(unix)]
     impl ToggleWorkers {
         fn new(running: bool) -> Arc<Self> {
             Arc::new(Self {
@@ -519,6 +521,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl terminal::WorkerLiveness for ToggleWorkers {
         fn has_running_workers(&self, _owner: Uuid) -> bool {
             self.running.load(std::sync::atomic::Ordering::Acquire)
