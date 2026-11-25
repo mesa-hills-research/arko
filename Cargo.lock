@@ -3543,6 +3543,8 @@ dependencies = [
 [[package]]
 name = "sandbolt"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bd4d63f98db08fe3c9980617ac2b88be2ab63fcf98ceb483598ee029f8cb54a"
 dependencies = [
  "sandbolt-runtime",
 ]
@@ -3550,14 +3552,20 @@ dependencies = [
 [[package]]
 name = "sandbolt-bigint"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9a841bbe0c26ce56fb12215965b058f928b276d2bbf233cef44fcb3c84af03"
 
 [[package]]
 name = "sandbolt-bytecode"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06e640e2649b6c675c4cd324183b0f5bfa857f48f6bfbf50f12cbec4c425107a"
 
 [[package]]
 name = "sandbolt-compiler"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0407a8a7456d90c0252a8dcf94c1aaa2dd738a9b0e77ec755a6c8dfef1456e64"
 dependencies = [
  "sandbolt-bytecode",
  "sandbolt-regexp",
@@ -3568,10 +3576,14 @@ dependencies = [
 [[package]]
 name = "sandbolt-dtoa"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa4b2c4c2aefc700082a3c6b246b3be769228037df94646ebdc8c45b2e336bb2"
 
 [[package]]
 name = "sandbolt-regexp"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ce4ec4800ff7ce8776e08b688a25b2287020c34fd68e38665fedc14ea5758b8"
 dependencies = [
  "sandbolt-unicode",
 ]
@@ -3579,6 +3591,8 @@ dependencies = [
 [[package]]
 name = "sandbolt-runtime"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1873c65a2c04db50c5d88c5d2a9e1b3c2e715b5b51d5078b0bfaca814ea2e7e6"
 dependencies = [
  "sandbolt-bigint",
  "sandbolt-bytecode",
@@ -3592,6 +3606,8 @@ dependencies = [
 [[package]]
 name = "sandbolt-syntax"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fada1e8c07837214633d4c2341c9054f81d2fb2b206a7f75476db844de25425f"
 dependencies = [
  "sandbolt-dtoa",
  "sandbolt-regexp",
@@ -3601,6 +3617,8 @@ dependencies = [
 [[package]]
 name = "sandbolt-unicode"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbde06cd6aec90e963ed9de3da2cc0de20599601238f221e4eed5b84165a8cde"
 
 [[package]]
 name = "schannel"
