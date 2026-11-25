@@ -164,3 +164,14 @@ strip = true
 # The speech engine is far too slow to dictate with unoptimized.
 [profile.dev.package.telmo]
 opt-level = 3
+
+# TEMPORARY, for CI on the release-0240 branch only. The framework's and
+# termelon's release commits, until arko_ai 0.4.0, arko_agents 0.10.0,
+# arko_workflows 0.11.0, arko_index 0.3.3 and termelon 0.2.2 are on crates.io.
+# The publish drops this commit.
+[patch.crates-io]
+arko_ai = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+arko_agents = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+arko_workflows = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+arko_index = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "0c1381371456b665470c6b055dec96e51d8a4b79" }
+termelon = { git = "https://github.com/mesa-hills-research/termelon", rev = "79a2e20cf175c490b8d6f0585ae71bcfaa2bcdc3" }

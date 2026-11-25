@@ -213,9 +213,8 @@ dependencies = [
 
 [[package]]
 name = "arko_agents"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef546713510848fb1948d7798b79741bbfc6fcd240e73350c7056861fcb70bb"
+version = "0.10.0"
+source = "git+https://github.com/mesa-hills-research/arko_framework?rev=0c1381371456b665470c6b055dec96e51d8a4b79#0c1381371456b665470c6b055dec96e51d8a4b79"
 dependencies = [
  "arko_ai",
  "async-trait",
@@ -241,9 +240,8 @@ dependencies = [
 
 [[package]]
 name = "arko_ai"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d62786100a8ddd9af070311aac12373054471753a4f2e98ca6b429c396486dcd"
+version = "0.4.0"
+source = "git+https://github.com/mesa-hills-research/arko_framework?rev=0c1381371456b665470c6b055dec96e51d8a4b79#0c1381371456b665470c6b055dec96e51d8a4b79"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -272,9 +270,8 @@ dependencies = [
 
 [[package]]
 name = "arko_index"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddff887a1ad8fd47da43c9e768cb2b9aee9c8f22c522030ff4764b4de6bb390a"
+version = "0.3.3"
+source = "git+https://github.com/mesa-hills-research/arko_framework?rev=0c1381371456b665470c6b055dec96e51d8a4b79#0c1381371456b665470c6b055dec96e51d8a4b79"
 dependencies = [
  "caprock",
  "fs2",
@@ -340,9 +337,8 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b423f28a14fffe70f3e466dd44a80ee7e4d560e4b25acf39d38820dcf66c2ad5"
+version = "0.11.0"
+source = "git+https://github.com/mesa-hills-research/arko_framework?rev=0c1381371456b665470c6b055dec96e51d8a4b79#0c1381371456b665470c6b055dec96e51d8a4b79"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -4003,9 +3999,8 @@ dependencies = [
 
 [[package]]
 name = "termelon"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b528b2842a3d71386a085c4a714a93879d2901bbf46a600f0da5d87086c682ea"
+version = "0.2.2"
+source = "git+https://github.com/mesa-hills-research/termelon?rev=79a2e20cf175c490b8d6f0585ae71bcfaa2bcdc3#79a2e20cf175c490b8d6f0585ae71bcfaa2bcdc3"
 dependencies = [
  "rustix",
  "signal-hook",
@@ -4017,9 +4012,8 @@ dependencies = [
 
 [[package]]
 name = "termelon-vt"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "195fb0bf266e3bac5c2e0ad1fa1e4c85d08bdf47b00561b093d2fbdf20b3d4e2"
+version = "0.1.1"
+source = "git+https://github.com/mesa-hills-research/termelon?rev=79a2e20cf175c490b8d6f0585ae71bcfaa2bcdc3#79a2e20cf175c490b8d6f0585ae71bcfaa2bcdc3"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
