@@ -718,6 +718,7 @@ impl Harness {
             banner_model: self.settings.describe(&conversation),
             banner_workers: self.workers_summary(),
             reachable: self.keys.reachable(),
+            antigravity: self.providers.antigravity.helper_command.is_some(),
             openai_auth: self
                 .settings
                 .openai_auth

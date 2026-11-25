@@ -347,7 +347,12 @@
   `apply_diff` call of several blocks, makes (zero for one), so code that builds an `Act` field by
   field needs it.
 - An app that offers `agy:` models sets `Options::antigravity_helper` to a command that runs
-  Antigravity's relay and hooks, as `arko agy-helper` does.
+  Antigravity's relay and hooks, as `arko agy-helper` does. In an app without one,
+  `models::menu` and `models::for_new_session` have no Antigravity group, a new session takes no
+  `agy:` model by default, and `models::needs` says the app can't run them.
+- `models::needs` takes the session's `Models` in place of its `reachable` list, and
+  `models::for_new_session` takes whether the app runs `agy:` models. `Models::antigravity` says
+  whether a session's app does.
 - `ExtraRules` is gone, with `Options::extra_rules`.
 - `approvals::Answer` has `Woken`, for a request a note ended, so an exhaustive `match` on it
   needs an arm for it. `remote::Approval` has `RemoveIndex`.

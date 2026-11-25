@@ -3312,9 +3312,9 @@ mod tests {
             app.ask_quit(vec![job("sleep 300", Duration::from_secs(150))]);
             look(&mut app, "quit");
             app.overlay = None;
-            app.model_needs = |reachable, name| {
+            app.model_needs = |models, name| {
                 (!name.starts_with("cc:"))
-                    .then(|| crate::tui::model_picker::needs(reachable, name))
+                    .then(|| crate::tui::model_picker::needs(models, name))
                     .flatten()
             };
             app.set_reading(crate::remote::Reading {
@@ -4249,11 +4249,11 @@ mod tests {
     #[test]
     fn the_model_picker_draws_both_steps() {
         let mut app = app();
-        app.model_needs = |reachable, name| {
+        app.model_needs = |models, name| {
             if name.starts_with("cc:") {
                 Some("Claude Code signed in".into())
             } else {
-                crate::tui::model_picker::needs(reachable, name)
+                crate::tui::model_picker::needs(models, name)
             }
         };
         app.set_reading(crate::remote::Reading {
@@ -4264,6 +4264,7 @@ mod tests {
                 workers_effort: "high".into(),
                 workers_follow: true,
                 reachable: vec!["openai".into()],
+                antigravity: true,
                 openai_auth: Some("OpenAI API key".into()),
                 has_workers: true,
                 main_fast: false,

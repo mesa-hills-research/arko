@@ -547,6 +547,13 @@ pub struct Models {
     /// The providers the session's client reaches (`anthropic`, `openai`,
     /// `gemini`, `openrouter`), whose models `/model` offers.
     pub reachable: Vec<String>,
+    /// The app runs `agy:` models, since it set
+    /// [`Options::antigravity_helper`](crate::Options::antigravity_helper).
+    /// Without it, [`models::menu`](crate::models::menu) has no Antigravity
+    /// group, and [`models::needs`](crate::models::needs) says the app can't
+    /// run them.
+    #[serde(skip)]
+    pub antigravity: bool,
     /// How the session reaches OpenAI models (`ChatGPT login`, `OpenAI API
     /// key`), when it can.
     pub openai_auth: Option<String>,

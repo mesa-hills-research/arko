@@ -16,7 +16,9 @@ fn openai_auth(models: &Models) -> Option<providers::OpenAiAuth> {
     }
 }
 
-/// The models by the way they are reached, as the picker lists them.
+/// The models by the way they are reached, as the picker lists them. In an
+/// app that doesn't run `agy:` models ([`Models::antigravity`]) there is no
+/// Antigravity group.
 pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
     // (The conversation's may be none of the others, because one /resume went back
     // to.)
@@ -25,7 +27,20 @@ pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<prov
         models.workers.as_str(),
         models.conversation.as_str(),
     ];
-    providers::model_menu(needs, openai_auth(models), &current, &models.recent)
+    in_app(
+        providers::model_menu(needs, openai_auth(models), &current, &models.recent),
+        models.antigravity,
+    )
+}
+
+/// `menu` without the Antigravity group in an app that doesn't run `agy:`
+/// models (`antigravity` false), since nothing the user does there makes them
+/// usable.
+fn in_app(mut menu: Vec<ModelGroup>, antigravity: bool) -> Vec<ModelGroup> {
+    if !antigravity {
+        menu.retain(|group| group.name != providers::ANTIGRAVITY_GROUP);
+    }
+    menu
 }
 
 /// How the model `name` (as `/model` takes it) is billed in the session of
@@ -66,17 +81,22 @@ pub fn note(name: &str) -> Option<&'static str> {
     providers::model_note(name)
 }
 
-/// What the model `name` needs that the session doesn't have. That is
-/// Claude Code installed and signed in, or a provider the session's client
-/// reaches (`reachable`, as the session publishes it).
-pub fn needs(reachable: &[String], name: &str) -> Option<String> {
+/// What the model `name` needs that the session of `models` doesn't have.
+/// That is Claude Code or Antigravity installed and signed in, a provider
+/// the session's client reaches ([`Models::reachable`]), or for an `agy:`
+/// model an app that runs them ([`Models::antigravity`]).
+pub fn needs(models: &Models, name: &str) -> Option<String> {
     let model = providers::resolve_model(name).ok()?;
     match &model.provider {
+        arko_ai::Provider::Antigravity if !models.antigravity => {
+            Some(crate::antigravity::UNSUPPORTED_HOST.to_string())
+        }
         arko_ai::Provider::ClaudeCode | arko_ai::Provider::Antigravity => {
             providers::missing_credential(name, None)
         }
         provider
-            if reachable
+            if models
+                .reachable
                 .iter()
                 .any(|key| key == providers::provider_key(provider)) =>
         {
@@ -106,21 +126,25 @@ pub struct NewSessionModels {
 /// The models a new session in Arko's folder `root` can start on, checked
 /// as opening one checks them. That covers the keys (also those in the
 /// `.env` files of `workspace`, the session's folder, else the current
-/// directory), the ChatGPT login and Claude Code. It may run
-/// `claude auth status`, so call it off a UI thread.
+/// directory), the ChatGPT login, Claude Code and Antigravity. `antigravity`
+/// says whether the app runs `agy:` models (it sets
+/// [`Options::antigravity_helper`](crate::Options::antigravity_helper)).
+/// Without it there is no Antigravity group, and no `agy:` model is a
+/// default. It may run `claude auth status`, so call it off a UI thread.
 pub fn for_new_session(
     root: &std::path::Path,
     workspace: Option<&std::path::Path>,
+    antigravity: bool,
 ) -> NewSessionModels {
     let folder = workspace
         .map(std::path::Path::to_path_buf)
         .or_else(|| std::env::current_dir().ok());
     let env = crate::credentials::Env::for_folder_in(folder.as_deref(), true, Some(root));
-    crate::context::with_env(env, || models_for_new_session(root))
+    crate::context::with_env(env, || models_for_new_session(root, antigravity))
 }
 
-fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
-    let default = providers::default_models(None, root);
+fn models_for_new_session(root: &std::path::Path, antigravity: bool) -> NewSessionModels {
+    let default = providers::default_models(None, root, antigravity);
     let auth = providers::choose_openai_auth(None, None)
         .ok()
         .map(|(auth, _)| auth);
@@ -129,13 +153,13 @@ fn models_for_new_session(root: &std::path::Path) -> NewSessionModels {
         .flat_map(|default| std::iter::once(default.main.as_str()).chain(default.worker.as_deref()))
         .collect();
     let groups = providers::model_menu(
-        |name| providers::missing_credential(name, None),
+        |name| providers::missing_in_app(name, None, antigravity),
         auth,
         &current,
         &crate::openrouter::Settings::load(root).recent_names(),
     );
     NewSessionModels {
-        groups,
+        groups: in_app(groups, antigravity),
         main: default.as_ref().map(|default| default.main.clone()),
         worker: default.as_ref().and_then(|default| default.worker.clone()),
         note: default.and_then(|default| default.reason),
@@ -294,14 +318,14 @@ mod tests {
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>()
         };
-        let before = for_new_session(root.path(), Some(root.path()));
+        let before = for_new_session(root.path(), Some(root.path()), false);
         assert_eq!(
             openrouter(before.groups),
             ["openrouter:anthropic/claude-opus-5.5"]
         );
         crate::openrouter::remember(root.path(), "openrouter:acme/one");
         crate::openrouter::remember(root.path(), "openrouter:acme/two");
-        let after = for_new_session(root.path(), Some(root.path()));
+        let after = for_new_session(root.path(), Some(root.path()), false);
         assert_eq!(
             openrouter(after.groups),
             ["openrouter:acme/two", "openrouter:acme/one"]
@@ -321,11 +345,42 @@ mod tests {
         assert!(openrouter(menu(&resumed, |_| None)).contains(&"openrouter:acme/four".to_string()));
     }
 
+    /// An app that doesn't run `agy:` models is offered none, before a session
+    /// opens and in one, and is told why one can't be used. An app that runs
+    /// them has the group.
+    #[test]
+    fn an_app_without_antigravity_is_offered_no_agy_models() {
+        let has_group = |groups: &[ModelGroup]| {
+            groups
+                .iter()
+                .any(|group| group.name == providers::ANTIGRAVITY_GROUP)
+        };
+        let cant = Some(crate::antigravity::UNSUPPORTED_HOST);
+        let models = Models {
+            reachable: vec!["openai".into()],
+            ..Models::default()
+        };
+        assert!(!has_group(&menu(&models, |name| needs(&models, name))));
+        assert_eq!(needs(&models, "agy:neon").as_deref(), cant);
+        assert!(!names(&models, |name| needs(&models, name)).contains(&"agy:neon".to_string()));
+        assert_eq!(needs(&models, "luna"), None);
+        let runs_agy = Models {
+            antigravity: true,
+            ..models.clone()
+        };
+        assert!(has_group(&menu(&runs_agy, |name| needs(&runs_agy, name))));
+        assert_ne!(needs(&runs_agy, "agy:neon").as_deref(), cant);
+        let root = tempfile::tempdir().unwrap();
+        let before = |antigravity| for_new_session(root.path(), Some(root.path()), antigravity);
+        assert!(!has_group(&before(false).groups));
+        assert!(has_group(&before(true).groups));
+    }
+
     /// A new session's models come grouped, before any session opens.
     #[test]
     fn a_new_sessions_models_are_listed_before_it_opens() {
         let root = tempfile::tempdir().unwrap();
-        let models = for_new_session(root.path(), Some(root.path()));
+        let models = for_new_session(root.path(), Some(root.path()), false);
         assert!(!models.groups.is_empty());
         assert!(models.groups.iter().all(|group| !group.models.is_empty()));
         // The thread is back in its own context, outside any session.
