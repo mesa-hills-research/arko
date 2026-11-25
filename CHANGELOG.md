@@ -10,6 +10,8 @@
   takes about 1 ms longer to start.
 - Some errors read differently, and a few say less. A ReferenceError doesn't name the variable,
   and a JSON.parse error doesn't say where in the text it failed.
+- A run whose code throws `null` no longer adds that the engine may have thrown it at the heap's
+  limit. Sandbolt always says when the heap is full.
 
 ### Dependencies
 

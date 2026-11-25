@@ -295,9 +295,13 @@ mod words_of_a_run {
             },
             &[],
         );
+        // A null the code throws is its own. A full heap ends a run as out
+        // of memory.
+        assert_eq!(result(&run, 300).unwrap_err(), "The code threw: null");
+        let run = done(Ended::OutOfMemory { line: None }, &[]);
         assert_eq!(
             result(&run, 300).unwrap_err(),
-            "The code threw: null\nThe engine also throws null when the heap passes the 64 MB a run may hold."
+            "The code ran out of memory. A run may hold 64 MB."
         );
         let mut run = done(Ended::ComputeLimit, &[]);
         run.outcome = Outcome::TimedOut;
