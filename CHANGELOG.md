@@ -1,21 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.24.1 (2026-11-25)
 
 ### Code mode
 
 - Code mode no longer needs a C compiler to build. Its JavaScript now runs on Sandbolt, a port of
   QuickJS-ng to safe Rust. Arko still needs a C compiler for other dependencies.
-- Code that computes a lot runs slower. A tight loop takes up to eight times as long, and a run
-  takes about 1 ms longer to start.
-- Some errors read differently, and a few say less. A ReferenceError doesn't name the variable,
-  and a JSON.parse error doesn't say where in the text it failed.
+- Loops run about twice as fast, with ten million iterations in 114 ms where they took 222 ms. A
+  run takes about 0.7 ms longer to start, and JSON.parse and JSON.stringify of large values take
+  about twice as long.
+- A syntax error from a TypeScript annotation names the token, such as "Unexpected token ':'",
+  where it said "missing initializer for variable".
 - A run whose code throws `null` no longer adds that the engine may have thrown it at the heap's
   limit. Sandbolt always says when the heap is full.
 
 ### Dependencies
 
-- Sandbolt 0.1.0 in place of rquickjs 0.14.0, behind the `code-mode` feature.
+- Sandbolt 0.1.1 in place of rquickjs 0.14.0, behind the `code-mode` feature.
 
 ### For apps
 
