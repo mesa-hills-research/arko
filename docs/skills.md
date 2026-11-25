@@ -82,10 +82,9 @@ Arko has three skills built in, so no files are needed.
 |---|---|
 | `prose` | Everything the agents write, from UI text and messages to READMEs, docs and commit messages |
 | `ui-taste` | Anything a person sees in an interface, graphical or terminal, designed, built or reviewed against sixteen checks |
-| `worker-choice` | Choosing a worker's model, effort and billing. It has the agent ask you before it starts a worker billed per token |
+| `worker-choice` | Choosing a worker's model, effort and billing, within what `/worker-billing` allows |
 
-`prose` is always in the agents' instructions. They load the others on demand like any other
-skill, and `/skills` lists them all as built in.
+The agents load them on demand like any other skill, and `/skills` lists them all as built in.
 
 A skill that is always in the instructions, under Active Skills, is loaded already, and `load_skill`
 doesn't load it again. When `load_skill` finds no skill of the name asked for, its answer ends with a
