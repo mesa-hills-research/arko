@@ -6,9 +6,9 @@
 
 - Code mode no longer needs a C compiler to build. Its JavaScript now runs on Sandbolt, a port of
   QuickJS-ng to safe Rust. Arko still needs a C compiler for other dependencies.
-- Loops run about twice as fast, with ten million iterations in 114 ms where they took 222 ms. A
-  run takes about 0.7 ms longer to start, and JSON.parse and JSON.stringify of large values take
-  about twice as long.
+- Loops run about twice as fast (ten million iterations take 124 ms, down from 222 ms), and a JSON
+  round trip of 100,000 objects takes 74 ms, down from 109 ms. A run takes 2.1 ms to start, 0.7 ms
+  longer than before, and making an 8 MB string takes 15.9 ms, up from 13.5 ms.
 - A syntax error from a TypeScript annotation names the token, such as "Unexpected token ':'",
   where it said "missing initializer for variable".
 - A run whose code throws `null` no longer adds that the engine may have thrown it at the heap's
