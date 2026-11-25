@@ -1,6 +1,6 @@
-//! The engine tests: the spike's cases with their outcomes asserted, run on
-//! QuickJS-ng through the host loop, in this process. A port of the engine
-//! passes these before it replaces [`QuickJs`].
+//! The engine tests, the spike's cases with their outcomes asserted, run on
+//! Sandbolt through the host loop, in this process. Another engine passes
+//! these before it replaces [`Sandbolt`].
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use super::host::{self, Calls};
 use super::protocol::{Answer, Call, Done, Ended, Limits, Start};
-use super::quickjs::QuickJs;
+use super::sandbolt::Sandbolt;
 use super::{HEAP_BYTES, STACK_BYTES, THREAD_STACK_BYTES};
 
 const MB: u64 = 1024 * 1024;
@@ -106,7 +106,7 @@ fn run_with(code: &str, limits: Limits, stop: Arc<AtomicBool>) -> Ran {
     let done = std::thread::Builder::new()
         .name("arko-code".into())
         .stack_size(THREAD_STACK_BYTES)
-        .spawn(move || host::run::<QuickJs>(&start, Echo { calls, answers }, stop))
+        .spawn(move || host::run::<Sandbolt>(&start, Echo { calls, answers }, stop))
         .unwrap()
         .join()
         .unwrap();
@@ -226,8 +226,8 @@ fn the_heap_cap_ends_a_run_and_code_may_catch_it() {
         small,
         Arc::default(),
     );
-    // QuickJS-ng throws null where it has no memory left for its Error, as
-    // on macOS, whose allocator counts allocations larger.
+    // An engine may throw null where it has no memory left for its Error,
+    // as QuickJS-ng did on macOS, whose allocator counts allocations larger.
     assert!(
         matches!(&ran.done.ended, Ended::OutOfMemory { .. })
             || matches!(&ran.done.ended, Ended::Threw { message, .. } if message == "null"),
@@ -261,10 +261,10 @@ fn a_promise_nothing_settles_ends_the_run() {
     assert_eq!(ran.done.ended, Ended::Unsettled);
 }
 
-/// What the global object holds: the language's own names, what
-/// QuickJS-ng adds (`performance`, `DOMException`, `atob`, `btoa`,
-/// `queueMicrotask`), and the prelude's. An engine update that adds a name
-/// fails here.
+/// The global object holds the language's own names, the few of the web's
+/// that Sandbolt has as QuickJS-ng does (`performance`, `DOMException`,
+/// `atob`, `btoa`, `queueMicrotask`), and the prelude's. An engine update
+/// that adds a name fails here.
 #[test]
 fn the_global_object_holds_only_the_allowed_names() {
     let names = returned(&run(

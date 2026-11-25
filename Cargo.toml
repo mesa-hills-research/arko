@@ -51,9 +51,9 @@ dbg-snapshot = ["tui"]
 # library. Not for builds that ship.
 testing = []
 # run_code (--tools both), which runs the agent's JavaScript in a child
-# process with QuickJS-ng. It needs a C compiler. Without it, run_code says
-# this build has no code mode.
-code-mode = ["dep:rquickjs", "dep:windows-sys"]
+# process with Sandbolt. Without it, run_code says this build has no code
+# mode.
+code-mode = ["dep:sandbolt", "dep:windows-sys"]
 # Dictation (/dictate, Ctrl+R) covers speech recognized on this computer, and the
 # microphone. It needs Rust 1.97, and ALSA's headers on Linux.
 dictation = ["dep:speech", "dep:cpal"]
@@ -117,9 +117,9 @@ mesquite_yaml = { version = "0.2.0", optional = true }
 pulldown-cmark = { version = "0.13.5", default-features = false, optional = true }
 # Built as arko_ai builds it, for OpenRouter's model list.
 reqwest = { version = "0.13.5", default-features = false }
-# QuickJS-ng with its bindings made beforehand (no bindgen), for run_code's
-# child process. Only `std`, so it has no file, network or process access.
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std"], optional = true }
+# run_code's JavaScript engine, in safe Rust, with no dependencies outside
+# its own crates. Code on it has no file, network or process access.
+sandbolt = { version = "0.1.0", optional = true }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 # The web page keeps its session cookies by their SHA-256, never as they are.
@@ -163,4 +163,30 @@ strip = true
 
 # The speech engine is far too slow to dictate with unoptimized.
 [profile.dev.package.telmo]
+opt-level = 3
+
+# Unoptimized, the JavaScript engine runs several times slower, and code
+# mode's tests reach their computing limit.
+[profile.dev.package.sandbolt-runtime]
+opt-level = 3
+
+[profile.dev.package.sandbolt-regexp]
+opt-level = 3
+
+[profile.dev.package.sandbolt-compiler]
+opt-level = 3
+
+[profile.dev.package.sandbolt-syntax]
+opt-level = 3
+
+[profile.dev.package.sandbolt-bigint]
+opt-level = 3
+
+[profile.dev.package.sandbolt-dtoa]
+opt-level = 3
+
+[profile.dev.package.sandbolt-unicode]
+opt-level = 3
+
+[profile.dev.package.sandbolt-bytecode]
 opt-level = 3

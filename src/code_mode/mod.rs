@@ -22,9 +22,9 @@ mod os_limits;
 #[cfg(feature = "code-mode")]
 mod protocol;
 #[cfg(feature = "code-mode")]
-mod quickjs;
-#[cfg(feature = "code-mode")]
 mod runner;
+#[cfg(feature = "code-mode")]
+mod sandbolt;
 mod tool;
 
 #[cfg(all(test, feature = "code-mode"))]

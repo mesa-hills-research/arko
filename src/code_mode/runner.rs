@@ -10,7 +10,7 @@ use std::sync::mpsc;
 
 use super::host::{self, Calls};
 use super::protocol::{self, Answer, Call, Done, Ended, FromChild, MAGIC, Start, ToChild};
-use super::quickjs::QuickJs;
+use super::sandbolt::Sandbolt;
 use super::{RUNNER_ARGUMENT, THREAD_STACK_BYTES, os_limits};
 
 /// This program runs as the code runner when started as one, so a run may
@@ -89,7 +89,7 @@ fn run_code(start: &Start, answers: mpsc::Receiver<Answer>) -> Done {
         out: std::io::stdout(),
         answers,
     };
-    host::run::<QuickJs>(start, calls, Default::default())
+    host::run::<Sandbolt>(start, calls, Default::default())
 }
 
 /// The code's calls as frames on standard output, and their answers from

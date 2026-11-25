@@ -1,6 +1,6 @@
 //! The interface between the host loop and a JavaScript engine. One file
-//! implements it ([`super::quickjs`], the only one that names rquickjs),
-//! and a port of the engine replaces that file and passes the engine
+//! implements it ([`super::sandbolt`], the only one that names the
+//! engine), and another engine replaces that file and passes the engine
 //! tests. Strings are the only values that cross it.
 
 /// What an interpreter is started with, set before any code runs.

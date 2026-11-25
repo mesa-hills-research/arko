@@ -48,6 +48,19 @@ termelon = { path = "../termelon/crates/termelon" }
 As with the framework, the checkout's version must match the one `Cargo.toml` asks for, and the
 lock must be regenerated without the override before committing.
 
+## Building against a local Sandbolt
+
+Code mode runs its JavaScript on [Sandbolt](https://github.com/mesa-hills-research/sandbolt), from
+crates.io. To work on both together, clone it beside this repository and add this override to
+`.cargo/config.toml`.
+
+```toml
+[patch.crates-io]
+sandbolt = { path = "../sandbolt/crates/sandbolt" }
+```
+
+The same rules apply to its version and the lock.
+
 ## Dictation
 
 The tests that run the real speech model skip unless `ARKO_TEST_SPEECH_PACK` names Granite
