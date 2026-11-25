@@ -4,28 +4,21 @@
 
 ### Editing files
 
-- The agents change files with `apply_diff` in place of `edit_file`. One call makes several
-  changes to a file, a SEARCH/REPLACE block for each, so an edit of many places takes one call
-  instead of one a place. Every block applies or none does, and when one doesn't, the error says
-  which block and why, and the file is left as it was.
-- A block's search lines must match whole lines of the file exactly and be found once, or with
-  `replace_all`, everywhere. The file is replaced in one step and keeps its permissions, owner,
-  group, ACL and other properties. A file with one that can't be kept, such as a second hard link
-  or another user as its owner, is left as it was, and the agent is told to change it with
-  `write_file` or the shell. On Unix systems other than Linux and macOS that is every file.
+- `edit_file` makes several changes to a file in one call, an edit for each, so an edit of many
+  places takes one call instead of one a place. The edits apply in order, each to the text the
+  ones before it left, and every edit applies or none does. When one doesn't, the error says which
+  and why, and the file is left as it was.
 - An edit's row says how many edits it made ("2 edits") and opens to the changes. The line prompt
-  says how many edits a call of several makes, and in Quiet each block counts as an edit ("Made 3
-  edits to app.rs").
+  says how many edits a call of several makes, and in Quiet each counts ("Made 3 edits to
+  app.rs").
 - An edit with `replace_all` counts each place it changed, "5 edits" on its row and "Made 5 edits
-  to app.rs" in Quiet, with `edit_file` too. It said "5 replacements" and "Made 1 edit". A Quiet
-  row of several edits counts only those that went in ("Made 2 edits to a.rs ✗"), and one whose
-  edits all failed reads "Couldn't edit a.rs ✗".
-- A failed edit's row reads "edit src/app.rs · ✗ Failed", and opening it shows why each block
+  to app.rs" in Quiet. It said "5 replacements" and "Made 1 edit". A Quiet row of several edits
+  counts only those that went in ("Made 2 edits to a.rs ✗"), and one whose edits all failed reads
+  "Couldn't edit a.rs ✗".
+- A failed edit's row reads "edit src/app.rs · ✗ Failed", and opening it shows why the edit
   didn't apply. A failed call's error no longer says "Execution failed:" twice.
 - On a narrow screen a file's row keeps the file's name whole. Its outcome's words give way first,
   then its folders ("edit …/app.rs").
-- `run_code` calls `apply_diff` in place of `edit_file`.
-- A session saved with `edit_file` resumes with it.
 - A path that leaves the working directory through a symbolic link is refused however it's
   written. This covers Arko's file tools, Claude Code's Read, Write, Edit, NotebookEdit, Glob and
   Grep, and a worker's workspace while outside access is off. It's checked when the call is made,
@@ -34,7 +27,7 @@
 ### Code only
 
 - `--tools code` (or `ARKO_TOOLS=code`) offers the agents `run_code` in place of `read_file`,
-  `list_files`, `write_file`, `apply_diff`, `shell`, `index_search` and `index_status`, which they
+  `list_files`, `write_file`, `edit_file`, `shell`, `index_search` and `index_status`, which they
   then reach only from code. `run_code`'s description declares each of them with its whole
   description and arguments, and a direct call of one is answered as unavailable. `index_create`,
   jobs, terminals, monitors, workers, questions, messages, notes, skills and MCP servers stay
@@ -167,6 +160,9 @@
 - Such a message reaches an agent that waits for an answer at once, in Arko's own runtime and in
   Claude Code. A message typed while the agent asked, before it began to wait, used to sit pending
   until the answer came, and the agent then got it together with the answer.
+- So does a worker's report, a monitor's alert or another update that comes while the agent waits
+  for your answers. The questions stay open in the answer panel, and your answers reach the agent
+  when you give them.
 - Messages typed while the agent asks show in the order they were sent. The one taken as the
   answer used to come before the one typed first.
 - In a worker's view, a message goes to that worker also while the main agent waits for an answer.
@@ -210,6 +206,30 @@
   Hydrogen and Carbon, for complex software engineering, knowledge work and science. Like
   Hydrogen, it takes the xhigh effort, and max runs it at xhigh. It needs a Gemini API key.
 
+### Antigravity
+
+- `agy:` models run in the Antigravity CLI on your Google AI plan, for the main agent and for
+  workers. Install the CLI (1.5.14 or later), run `agy` once to sign in, and start Arko with one,
+  such as `arko -m agy:neon`. The short names are `agy:neon`, `agy:argon`, `agy:hydrogen`,
+  `agy:flash`, `agy:opus`, `agy:sonnet` and `agy:gpt-oss`, and worker profiles take them too. The
+  CLI runs the model, and Arko gives it the instructions, the tools and the approvals.
+  Antigravity's own project customizations don't run, so project instructions go in `AGENTS.md`.
+  [Antigravity](docs/antigravity.md) has the details.
+- The model menu has a group "Antigravity, on your Google AI plan", whose heading says when the
+  CLI isn't installed or signed in. The effort step offers the levels your account has for the
+  model. Arko checks the CLI only when a model needs it.
+- `/cost` says how much of each of the plan's windows the session used ("3% of the Google AI
+  plan's week used and 9% of its 5 hours used"), for each model group when it used more than one,
+  and estimates the calls at API prices, which the plan covers. The status line and the worker
+  options show the windows too.
+- Workers on `agy:` models run on a plan, as `cc:` workers do, for `/worker-billing`.
+- An Antigravity conversation keeps its place across follow-ups and restarts. After a turn that
+  was cut off, it goes on from Arko's record of the conversation, with the messages you sent
+  during it.
+- The context meter shows the size of the conversation, not the sum of the turn's input.
+- An agent on Antigravity writes its report before a switch of model as a reply.
+- Keep-warm leaves Antigravity sessions alone, as it does Gemini and OpenRouter ones.
+
 ### Handovers
 
 - On the ChatGPT login, GPT-6.2 Sol, GPT-6.1 Sol and GPT-6.1 Terra hand over at 428k, and the
@@ -234,6 +254,53 @@
 - While outside access is off, a worker's workspace can't be reached through a link that leads out
   of the working directory, such as `up -> ..`. The link's target became the worker's working
   directory, so its file tools and commands could change anything in it.
+- A worker may have any number of workers of its own running or queued. It was held to 8.
+
+### Approvals
+
+- A message you send while a request waits in the approval tray reaches the agent at once, and so
+  does a worker's report or another update. The request leaves the tray, nothing it asked for is
+  done, and the agent asks again if it still needs it. This holds for an MCP server to add, a
+  skill or worker profile to save, a kept index to remove and a worker billed per token. The agent
+  used to wait for your answer first.
+
+### Search indexes
+
+- Each index has a lifetime, kept or a number of days. An agent that creates one gives it, and
+  `arko index create --lifetime` takes the same, kept by default. A temporary index goes after
+  that many days on which Arko ran without a search of it. `arko index lifetime INDEX LIFETIME`
+  changes it, and so can the agents, and `arko index list` shows it.
+- At its start and once a day, Arko removes the indexes whose folder was deleted, those of git
+  worktrees whose branch is merged with nothing left uncommitted, and those whose days ran out.
+  It leaves an index that is in use for later.
+- When 0.24.0 first starts, an index with embeddings is kept, an index of a git worktree whose
+  main checkout has one becomes that worktree's index, and an index searched by words alone goes
+  after 30 days of use without a search.
+- A search in a git worktree uses an index of its own, `<main>@<branch>`, made from the main
+  checkout's with its rules and its embeddings, so only changed files are embedded again. It
+  catches up on each search, and it goes with a worker's worktree, once its branch is merged, or
+  after 30 days of use without a search.
+- A build or an embedding run copies the embeddings other indexes of the same kind and model have
+  for the same text, and says how many it borrowed.
+- An agent asks you before it removes a kept index, in the approval tray, with its size and what
+  its embeddings cost.
+- `index_status` lists the indexes of the working directory, the session and its worktrees, with
+  worktree indexes under their main index, and warns of indexes that go within 3 days of use.
+
+### Skills
+
+- The built-in `ponytail` skill is gone, which leaves `prose`, `ui-taste` and `worker-choice`.
+  Settings that leave it out still load, with a warning.
+- `prose` loads when a task calls for it, as the other built-in skills do. Its whole text was in
+  every agent's instructions.
+- `worker-choice` follows `/worker-billing`. It had the agent ask before every worker billed per
+  token, also where the setting starts one without asking.
+
+### Extra rules
+
+- The extra rules for agents on small models are gone, with `--extra-rules`, `--no-extra-rules`,
+  `/extra-rules` and their row in `/settings` and on the web page. A command line with either flag
+  fails. A session saved with the setting still opens.
 
 ### Background jobs
 
@@ -245,19 +312,48 @@
   job's output as text, and "new output" means output past what the agent already had. Waits on a
   job merge only with waits on the same job.
 - Window titles, links and the other controls in a job's output no longer take text with them.
+- Each command the agents run may take half of the computer's memory, and at least 512 MiB, so
+  one that runs away ends on its own instead of taking Arko or the terminal down. On Linux the
+  cap needs systemd user scopes, and the out-of-memory killer ends the agents' commands before
+  Arko. On Windows the command's job object holds the cap, and macOS has none.
+  `ARKO_COMMAND_MEMORY_LIMIT`, in the environment or a `.env` file, sets another cap (`8G`) or
+  none (`off`). [Command memory limits](docs/command-limits.md) has the details.
+- When Arko is ended by SIGTERM or SIGHUP, as when its terminal closes, or ends while stuck, the
+  commands its agents started end with it. They and what they started ran on.
+- A monitor can last the whole session (`lasts: session`), or stand by for workers (`lasts:
+  standing`), paused while none runs and going on when one starts. Neither expires or asks to be
+  kept. `/jobs` and the web page show them without a countdown, and a standing monitor that waits
+  as paused.
+
+### Version
+
+- `arko --version` adds a short hash of the sources the build was made from, as in `arko
+  0.24.0+a4f8c91d2e0b`, with `-dev` after the version for a build with uncommitted changes or a
+  dependency from a local path. Each session's folder records every time it opened, with the
+  build, in `launches.jsonl`, and its checkpoints name the build.
 
 ### Dependencies
 
-- arko_ai 0.3.2, arko_agents 0.10.0 and arko_workflows 0.11.0, for Gemini 4 Neon, `apply_diff`,
-  the waits that notes end, the tools reached only from code and the workspace link check.
+- arko_ai 0.4.0, arko_agents 0.10.0, arko_workflows 0.11.0 and arko_index 0.3.3, for Gemini 4
+  Neon, Antigravity, `edit_file`'s edits, the waits that notes end, the tools reached only from
+  code, the workspace link check, the memory cap, the monitors and the borrowed embeddings.
 - termelon 0.2.2, for the terminal's background and the Esc key.
 
 ### For apps
 
-- An app that also names arko_agents' or arko_workflows' types takes arko_agents 0.10 and
-  arko_workflows 0.11.
-- `remote::Act` has `edits`, how many edits an `apply_diff` call of several blocks makes (zero for
-  one), so code that builds an `Act` field by field needs it.
+- An app that also names the framework's types takes arko_ai 0.4, arko_agents 0.10,
+  arko_workflows 0.11 and arko_index 0.3.3.
+- `remote::Act` has `edits`, how many edits an `edit_file` call of several edits, or an
+  `apply_diff` call of several blocks, makes (zero for one), so code that builds an `Act` field by
+  field needs it.
+- An app that offers `agy:` models sets `Options::antigravity_helper` to a command that runs
+  Antigravity's relay and hooks, as `arko agy-helper` does.
+- `ExtraRules` is gone, with `Options::extra_rules`.
+- `approvals::Answer` has `Woken`, for a request a note ended, so an exhaustive `match` on it
+  needs an arm for it. `remote::Approval` has `RemoveIndex`.
+- `remote::JobSummary` has `paused`, and its `expires_at` is `None` for a monitor that doesn't
+  expire.
+- `build_info` gives the build's ID and what `build.rs` recorded of it.
 - `code_mode::CALLABLE` holds `apply_diff` as well as `edit_file`, eight tools in all.
 - `code_mode::Tools` has `Code`, so an exhaustive `match` on it needs an arm for it, and
   `Tools::ALL` holds three. `Tools::calls_only_from_code` says whether a setting reaches the tools
