@@ -440,7 +440,7 @@ pub struct App {
     /// What a model needs that the session doesn't have, for `/model`'s
     /// picker (from the providers the session reaches, and Claude Code's
     /// login).
-    pub model_needs: fn(&[String], &str) -> Option<String>,
+    pub model_needs: fn(&crate::remote::Models, &str) -> Option<String>,
     /// The API keys as they are now, without their values, for the keys
     /// menu.
     pub key_states: fn() -> Vec<KeyState>,
@@ -622,11 +622,10 @@ impl App {
             return;
         }
         let needs = self.model_needs;
-        let reachable = models.reachable.clone();
         let mut picker = ModelPicker::open_in(
             target,
             &models,
-            |name| needs(&reachable, name),
+            |name| needs(&models, name),
             self.info.root.as_deref(),
         );
         if self.antigravity_models {
@@ -1000,7 +999,7 @@ impl App {
         let names = || {
             self.model_names.get_or_init(|| {
                 let needs = self.model_needs;
-                model_picker::names(models, |name| needs(&models.reachable, name))
+                model_picker::names(models, |name| needs(models, name))
             })
         };
         let mut found = match words {
@@ -5484,11 +5483,11 @@ pub(super) mod tests {
     /// A picker that doesn't ask Claude Code (whose login differs from one
     /// machine to the next), so it needs signing in.
     fn hermetic(app: &mut App) {
-        app.model_needs = |reachable, name| {
+        app.model_needs = |models, name| {
             if name.starts_with("cc:") {
                 Some("Claude Code signed in".into())
             } else {
-                model_picker::needs(reachable, name)
+                model_picker::needs(models, name)
             }
         };
     }

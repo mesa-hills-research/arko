@@ -705,13 +705,38 @@ pub struct DefaultModels {
 /// credentials allow ([`model_by_credentials`]). When the last model's
 /// credential is gone and there is no other, it is still the default, so
 /// the setup screen asks for exactly that credential. `None` without
-/// either.
-pub fn default_models(codex_auth: Option<&Path>, root: &Path) -> Option<DefaultModels> {
+/// either. Without `antigravity` (the app sets no
+/// `Options::antigravity_helper`), `agy:` models are never the default.
+pub fn default_models(
+    codex_auth: Option<&Path>,
+    root: &Path,
+    antigravity: bool,
+) -> Option<DefaultModels> {
     choose_default(
         LastModels::load(root),
-        |name| missing_credential(name, codex_auth),
-        model_by_credentials(codex_auth),
+        |name| missing_in_app(name, codex_auth, antigravity),
+        model_by_credentials(codex_auth, antigravity),
     )
+}
+
+/// What the model `name` needs that isn't there ([`missing_credential`]), in
+/// an app that runs `agy:` models (`antigravity`) or one that doesn't, which
+/// no credential changes.
+pub(crate) fn missing_in_app(
+    name: &str,
+    codex_auth: Option<&Path>,
+    antigravity: bool,
+) -> Option<String> {
+    if !antigravity && is_antigravity_name(name) {
+        return Some(antigravity::UNSUPPORTED_HOST.to_string());
+    }
+    missing_credential(name, codex_auth)
+}
+
+/// Whether `needs` (from [`missing_credential`] or [`missing_in_app`]) is a
+/// sentence of its own rather than the name of what's missing.
+fn needs_is_sentence(needs: &str) -> bool {
+    needs == antigravity::UNSUPPORTED_HOST || needs.starts_with(antigravity::CHECK_FAILED)
 }
 
 /// [`default_models`], from the last session's models, what a model needs
@@ -737,7 +762,7 @@ fn choose_default(
                     None => (Some(worker), None),
                     Some(needs) => {
                         let next = &last.main;
-                        let note = if needs.starts_with(antigravity::CHECK_FAILED) {
+                        let note = if needs_is_sentence(&needs) {
                             format!(
                                 "Your last session's workers ran {worker}. {needs} They run {next} now."
                             )
@@ -759,7 +784,7 @@ fn choose_default(
         }
         Some(needs) => match by_credentials {
             Some((main, _)) => Some(DefaultModels {
-                reason: Some(if needs.starts_with(antigravity::CHECK_FAILED) {
+                reason: Some(if needs_is_sentence(&needs) {
                     format!("Your last session ran {}. {needs}", last.main)
                 } else {
                     format!("Your last session ran {}, which needs {needs}.", last.main)
@@ -767,6 +792,9 @@ fn choose_default(
                 main: main.to_string(),
                 worker: None,
             }),
+            // No credential lets this app run the last model, so it asks for
+            // one.
+            None if needs == antigravity::UNSUPPORTED_HOST => None,
             // The setup screen asks for exactly what it needs.
             None => Some(DefaultModels {
                 main: last.main,
@@ -783,8 +811,12 @@ fn choose_default(
 /// API key, else GPT-6.2 Sol with a ChatGPT login, else Opus on OpenRouter,
 /// Sol on an OpenAI API key, or Gemini 4 Carbon on a Gemini key, else Opus
 /// in a Claude Code that isn't signed in yet (the setup screen helps sign
-/// it in), and `None` without any.
-pub fn model_by_credentials(codex_auth: Option<&Path>) -> Option<(&'static str, &'static str)> {
+/// it in), and `None` without any. An `agy:` model counts only in an app
+/// that runs them (`antigravity`).
+pub fn model_by_credentials(
+    codex_auth: Option<&Path>,
+    antigravity: bool,
+) -> Option<(&'static str, &'static str)> {
     first_by_credentials(Credentials {
         claude_code: claude_code::find_cli().map(|_| claude_code::check_recent().is_ok()),
         anthropic: credentials::var(credentials::ANTHROPIC_KEY).is_some(),
@@ -792,7 +824,9 @@ pub fn model_by_credentials(codex_auth: Option<&Path>) -> Option<(&'static str, 
         openrouter: credentials::var(credentials::OPENROUTER_KEY).is_some(),
         openai: credentials::var(credentials::OPENAI_KEY).is_some(),
         gemini: gemini_key().is_some(),
-        antigravity: antigravity::default_model(AGY_MODELS),
+        antigravity: antigravity
+            .then(|| antigravity::default_model(AGY_MODELS))
+            .flatten(),
     })
 }
 
@@ -1003,7 +1037,7 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
 /// What the user is told when `model` can't be used. It needs `needs`
 /// (from [`missing_credential`] or [`credential_name`]), and how to get it.
 pub fn needs_text(model: &str, needs: &str) -> String {
-    if needs == antigravity::UNSUPPORTED_HOST || needs.starts_with(antigravity::CHECK_FAILED) {
+    if needs_is_sentence(needs) {
         needs.to_string()
     } else if let Some(action) = antigravity::action(needs) {
         format!("{model} needs {needs}. {action}")
@@ -3559,6 +3593,37 @@ mod tests {
             choose(sol, Some(agy)).reason.unwrap(),
             format!("Your last session's workers ran {agy}. {reason} They run {sol} now.")
         );
+    }
+
+    /// In an app that doesn't run `agy:` models, the last session's `agy:`
+    /// model isn't the default, and without another credential there is none.
+    #[test]
+    fn an_app_without_antigravity_takes_no_agy_model_by_default() {
+        let agy = "agy:gemini-4-neon";
+        let sol = "gpt-6.2-sol";
+        let cant = antigravity::UNSUPPORTED_HOST;
+        assert_eq!(missing_in_app(agy, None, false).as_deref(), Some(cant));
+        assert_ne!(missing_in_app(agy, None, true).as_deref(), Some(cant));
+        let missing = |name: &str| missing_in_app(name, None, false).filter(|_| name == agy);
+        let default = choose_default(last(agy, None), missing, Some((sol, "an API key is set")));
+        assert_eq!(
+            default.map(|default| (default.main, default.reason)),
+            Some((
+                sol.to_string(),
+                Some(format!("Your last session ran {agy}. {cant}"))
+            ))
+        );
+        let workers = choose_default(last(sol, Some(agy)), missing, None).unwrap();
+        assert_eq!(
+            (workers.worker, workers.reason),
+            (
+                None,
+                Some(format!(
+                    "Your last session's workers ran {agy}. {cant} They run {sol} now."
+                ))
+            )
+        );
+        assert_eq!(choose_default(last(agy, None), missing, None), None);
     }
 
     #[test]

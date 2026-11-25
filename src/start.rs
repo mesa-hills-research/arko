@@ -396,5 +396,9 @@ pub(crate) fn default_model(options: &Options) -> Option<providers::DefaultModel
         Some(root) => root.clone(),
         None => session::data_root().ok()?,
     };
-    providers::default_models(options.codex_auth.as_deref(), &root)
+    providers::default_models(
+        options.codex_auth.as_deref(),
+        &root,
+        options.antigravity_helper.is_some(),
+    )
 }

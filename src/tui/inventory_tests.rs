@@ -1323,6 +1323,7 @@ fn antigravity_picker(app: &mut App, effort: bool) {
             workers: "agy:gemini-4-neon".into(),
             workers_effort: "high".into(),
             workers_follow: true,
+            antigravity: true,
             ..Models::default()
         },
         ..Reading::default()
@@ -1352,6 +1353,7 @@ fn model_picker(app: &mut App, workers: bool) {
             banner_model: "gpt-6-luna (high effort) via OpenAI API key".into(),
             banner_workers: "parallel workers".into(),
             reachable: vec!["openai".into()],
+            antigravity: true,
             openai_auth: Some("OpenAI API key".into()),
             has_workers: true,
             ..Models::default()

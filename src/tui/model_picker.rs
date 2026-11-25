@@ -95,8 +95,8 @@ pub struct ModelPicker {
     pub follows: bool,
     /// The main agent's model, which following means.
     pub main: String,
-    /// The providers the session reaches, for a typed model.
-    pub reachable: Vec<String>,
+    /// The session's models, for what a typed model needs.
+    pub session: Models,
     /// Arko's folder, where the efforts models ran at and OpenRouter's
     /// settings are kept (none in a picker without them).
     pub root: Option<std::path::PathBuf>,
@@ -223,7 +223,7 @@ impl ModelPicker {
             effort,
             follows,
             main: models.main.clone(),
-            reachable: models.reachable.clone(),
+            session: models.clone(),
             root: root.map(std::path::Path::to_path_buf),
             catalog,
             recent,
@@ -525,7 +525,7 @@ impl ModelPicker {
                                 {
                                     return self.efforts(providers::model_name(&model));
                                 }
-                                match needs(&self.reachable, &providers::model_name(&model)) {
+                                match needs(&self.session, &providers::model_name(&model)) {
                                     Some(needs) => {
                                         *error = Some(providers::needs_text(
                                             &providers::model_name(&model),
@@ -1033,6 +1033,7 @@ mod tests {
         let models = Models {
             main: "agy:gemini-4-neon".to_string(),
             main_effort: "high".to_string(),
+            antigravity: true,
             ..Models::default()
         };
         let mut picker =

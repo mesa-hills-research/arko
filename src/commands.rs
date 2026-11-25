@@ -674,8 +674,7 @@ fn model_choices(models: &crate::remote::Models, words: &[&str]) -> Vec<String> 
         ["worker" | "workers", rest @ ..] => (true, rest),
         _ => (false, words),
     };
-    let names =
-        || crate::models::names(models, |name| crate::models::needs(&models.reachable, name));
+    let names = || crate::models::names(models, |name| crate::models::needs(models, name));
     match words {
         [] if workers => std::iter::once("main".to_string()).chain(names()).collect(),
         [] => names()
