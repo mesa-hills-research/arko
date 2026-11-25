@@ -213,9 +213,9 @@ dependencies = [
 
 [[package]]
 name = "arko_agents"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef546713510848fb1948d7798b79741bbfc6fcd240e73350c7056861fcb70bb"
+checksum = "902e176a3f48ab048dce539725104e86e29d9b90b83f9e0217d4acb488bee42d"
 dependencies = [
  "arko_ai",
  "async-trait",
@@ -241,9 +241,9 @@ dependencies = [
 
 [[package]]
 name = "arko_ai"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d62786100a8ddd9af070311aac12373054471753a4f2e98ca6b429c396486dcd"
+checksum = "db61b0c8ae97007f50bf1a65c6385efa0ff12a49f560cf870a2eece4194c0a8f"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -272,9 +272,9 @@ dependencies = [
 
 [[package]]
 name = "arko_index"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddff887a1ad8fd47da43c9e768cb2b9aee9c8f22c522030ff4764b4de6bb390a"
+checksum = "051058ab87701a507209aeb856bae5762ee8734d0074824fbd59e78aad4072e3"
 dependencies = [
  "caprock",
  "fs2",
@@ -340,9 +340,9 @@ dependencies = [
 
 [[package]]
 name = "arko_workflows"
-version = "0.10.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b423f28a14fffe70f3e466dd44a80ee7e4d560e4b25acf39d38820dcf66c2ad5"
+checksum = "9f1ca5e2e69380528838824c7b4a5a7961f259271c7d5e6fd985a892ff756fcd"
 dependencies = [
  "arko_agents",
  "arko_ai",
@@ -4003,9 +4003,9 @@ dependencies = [
 
 [[package]]
 name = "termelon"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b528b2842a3d71386a085c4a714a93879d2901bbf46a600f0da5d87086c682ea"
+checksum = "dddf68fd1f704fe4a83bed39fb3b92734643df4e3b89c802af0e4eb6996eaf9f"
 dependencies = [
  "rustix",
  "signal-hook",
@@ -4017,9 +4017,9 @@ dependencies = [
 
 [[package]]
 name = "termelon-vt"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "195fb0bf266e3bac5c2e0ad1fa1e4c85d08bdf47b00561b093d2fbdf20b3d4e2"
+checksum = "bf0792b1f73264e5931a4575675f8d2c9d469b157ca5812b624748c4ab52d8db"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
